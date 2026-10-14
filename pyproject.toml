@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kyora"
+version = "0.1.0"
+description = "Kyora - AI game-development studio orchestrating Nemotron-3-Ultra, Kimi-K3, Claude Code (max effort) and NVIDIA Tokkio. Standard-library only."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Kyora contributors"}]
+dependencies = []
+
+[project.optional-dependencies]
+# Optional Messages-API code engine. Never required; Claude Code CLI (subscription login) is the primary engine.
+anthropic = ["anthropic>=1.0"]
+
+[project.scripts]
+kyora = "kyora.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["kyora*"]
+
+[tool.setuptools.package-data]
+kyora = ["web/**/*", "models/prompts/*.md", "defaults/*.json", "bench/tasks/*", "runners/*"]

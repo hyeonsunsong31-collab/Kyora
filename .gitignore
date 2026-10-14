@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+build/
+*.egg-info/
+.kyora/
+kyora/defaults/
+node_modules/
+tests/.tmp/
+.pytest_cache/
+# release zips ARE committed (dist/*.zip); intermediate pyz is rebuilt
+build/kyora.pyz

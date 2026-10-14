@@ -1,0 +1,25 @@
+{
+  "server": {"host": "127.0.0.1", "port": 8765, "workers": 2},
+  "claude_code": {
+    "command": ["claude"],
+    "model": "claude-fable-5-1",
+    "fallback_models": ["claude-opus-5-5", "claude-sonnet-5-5"],
+    "effort": "max",
+    "max_turns": 60,
+    "timeout_s": 3600,
+    "idle_timeout_s": 900,
+    "resume_for_fixes": true,
+    "judge_tools": ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"],
+    "extra_args": []
+  },
+  "kimi": {"reasoning_effort": "max", "judge_reasoning_effort": "max", "effort_field": "top_level"},
+  "nemotron": {"thinking_for_design": true},
+  "quality": {
+    "min_pass_rate": 0.94,
+    "max_fix_iterations": 3,
+    "browser_wait_s": 1800,
+    "require_plan_approval": false,
+    "auto_run_browser_tests": true
+  },
+  "hub": {"expose_ui": false}
+}
