@@ -100,10 +100,23 @@ def cmd_bench(args) -> int:
             print("aborted")
             return 1
     import threading as _t
-    result = app.bench.run(ids, confirm=True, cancel=_t.Event())
+    cancel = _t.Event()
+    box: dict = {}
+    worker = _t.Thread(target=lambda: box.update(result=app.bench.run(ids, confirm=True, cancel=cancel)),
+                       name="kyora-bench", daemon=True)
+    worker.start()
+    try:
+        while worker.is_alive():
+            worker.join(0.5)
+    except KeyboardInterrupt:
+        # Ctrl-C cancels the current pipeline run (working tree rolled back) instead of killing it mid-write.
+        print("\ncancelling the bench (current run is rolled back) ...", flush=True)
+        cancel.set()
+        worker.join()
+    result = box.get("result")
     print(json.dumps(result if isinstance(result, dict) else getattr(result, "to_dict", lambda: str(result))(), indent=2))
     app.stop()
-    return 0
+    return 0 if not cancel.is_set() else 130
 
 
 def main(argv=None) -> int:

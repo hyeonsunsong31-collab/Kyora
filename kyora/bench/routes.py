@@ -4,7 +4,7 @@
 ``POST /api/bench/run``     json ``{task_ids, confirm: true}`` -> 202 ``{started: true, estimate}``;
                             400 ``{error}`` without confirmation or without a code engine; 409 while running
 ``POST /api/bench/cancel``  -> ``{cancelled}``
-``GET /api/bench/results``  -> ``{results: <latest results.json> | null, running}``
+``GET /api/bench/results``  -> ``{results: <latest results.json> | null, tasks: [per-task rows], running}``
 ``GET /api/bench/badge``    -> badge computed from the latest measured run
 ``GET /api/bench/report``   -> the latest standalone ``report.html`` (404 when none)
 """
@@ -59,8 +59,9 @@ def register_routes(router: Router, app) -> None:
         bench, err = _bench()
         if err:
             return err
-        return Response.json({"results": bench.last_results(), "running": bench.is_running(),
-                              "status": bench.status()})
+        latest = bench.last_results()
+        return Response.json({"results": latest, "tasks": (latest or {}).get("tasks") or [],
+                              "running": bench.is_running(), "status": bench.status()})
 
     def badge(req: Request, params: dict) -> Response:
         bench, err = _bench()

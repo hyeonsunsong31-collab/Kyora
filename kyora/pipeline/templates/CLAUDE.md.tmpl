@@ -24,7 +24,7 @@ $constraints_list
 Every listed file must exist. Kyora checks the syntax of every listed script.
 
 ## Tests
-- `tests/browser-tests.js` runs inside the preview page through the Kyora harness. Register exactly one test per browser acceptance id listed in KYORA_TESTSPEC.md, with that id, for example `KyoraTest.test('at-01', 'name', async (t) => { ... })`.
+- `tests/browser-tests.js` runs inside the preview page through the Kyora harness. Register exactly one test per browser acceptance id listed in KYORA_TESTSPEC.md, with that id written literally, for example `KyoraTest.test('at-01', 'name', async (t) => { ... })` (no alias or computed ids: Kyora scans for `KyoraTest.test('<id>'`).
 - Optional `tests/logic-tests.mjs` (node:test) for acceptance tests of kind `node`; name each test starting with its id.
 - Never delete or weaken tests. If a test is wrong, fix the test so it checks the behaviour the plan describes.
 

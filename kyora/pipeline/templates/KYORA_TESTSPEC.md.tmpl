@@ -6,6 +6,7 @@ $tests_list
 
 ## KyoraTest API (available in tests/browser-tests.js)
 - `KyoraTest.test(id, name, async (t) => { ... })` registers a test; `t` is the same object as `KyoraTest`.
+- Write each registration literally as `KyoraTest.test('<id>', ...)` with the id as a string literal (no alias, no loop, no computed id): Kyora finds the registered ids by scanning for that text, and an id it cannot find counts as a missing test.
 - `t.expect(x)` with `toBe`, `toEqual`, `toBeTruthy`, `toBeFalsy`, `toBeDefined`, `toBeNull`, `toBeGreaterThan`, `toBeGreaterThanOrEqual`, `toBeLessThan`, `toBeLessThanOrEqual`, `toBeCloseTo`, `toContain`, `toHaveLength`, `toMatch`, `toThrow`; `.not` negates.
 - `await t.wait(ms)`, `await t.waitFor(() => condition, timeoutMs)`, `await t.frames(n)`.
 - `await t.input.key(code, holdMs)` (e.g. 'Space', 'ArrowLeft', 'KeyA'), `await t.input.click(x, y)`, `await t.input.touch(x, y, moveToX, moveToY, holdMs)`; coordinates are CSS pixels relative to the first canvas.

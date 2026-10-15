@@ -123,14 +123,17 @@
 
   KyoraTest.test('b03-t08', 'a ball past the player paddle scores for the AI', async function () {
     var s = fresh(1);
+    G().debug.setBall(s.width / 2, s.height / 2, 0, 0);
     G().input.press('up');
     G().step(300);
     G().input.release('up');
+    var before = S();
+    expect(before.phase).toBe('play');
     G().debug.setBall(s.width * 0.3, s.height - 25, -6, 0);
     G().step(80);
     var a = S();
-    expect(a.aiScore).toBe(1);
-    expect(a.score).toBe(0);
+    expect(a.aiScore).toBe(before.aiScore + 1);
+    expect(a.score).toBe(before.score);
   });
 
   KyoraTest.test('b03-t09', 'first to 5 points wins', async function () {
