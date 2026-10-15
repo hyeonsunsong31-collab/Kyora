@@ -63,7 +63,9 @@ SUMMARY_LEN = 200
 
 _WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]?")
 _UNC_RE = re.compile(r"^[\\/]{2}[^\\/]")
-_SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||;|\||\n")
+# "&&", "||", ";", "|", newline and a lone "&" (background job) separate commands; the "&" of
+# redirections such as "2>&1", "&>" and "|&" is not a separator.
+_SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||;|\|&?|(?<![<>&])&(?![>&])|\n")
 _REDIRECT_NOISE_RE = re.compile(r"\s(2>&1|2>\s*/dev/null|>\s*/dev/null|&>\s*/dev/null)")
 _RM_RE = re.compile(r"(?:^|[\s;&|(])rm\s+(?P<args>[^;&|]*)")
 _DENY_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
@@ -79,6 +81,10 @@ _DENY_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r">\s*/dev/(?:sd|nvme|hd|disk|mmcblk)"), "writing to block devices is not allowed"),
     (re.compile(r"(?:^|[\s;&|(])(?:shutdown|reboot|halt|poweroff)(?:\s|$)"), "power commands are not allowed"),
     (re.compile(r"\bkill\s+-9\s+-1\b|\bkillall\b|\bpkill\s+-9\s+\S*(?:python|node|claude)"), "killing host processes is not allowed"),
+    (re.compile(r"\bgit\s+(?:-C\s+\S+\s+)?(?:tag\s+(?:\S+\s+)*?(?:-d|--delete|-f|--force)(?:\s|$)"
+                r"|branch\s+(?:\S+\s+)*?(?:-d|-D|--delete|-m|-M|--move|-f|--force)(?:\s|$)"
+                r"|update-ref\s+(?:\S+\s+)*?-d(?:\s|$)|reflog\s+(?:expire|delete)\b|filter-branch\b|filter-repo\b)"),
+     "deleting, moving or rewriting git refs would corrupt Kyora's slide history"),
 )
 _EXTERNAL_DEP_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"(?:^|[\s;&|(`$])(?:curl|wget|aria2c)(?:\s|$)"), "network downloads (curl/wget)"),
@@ -91,8 +97,14 @@ _EXTERNAL_DEP_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"\b(?:apt(?:-get)?|apk|brew|pkg|choco|winget|scoop|dnf|yum|pacman)\s+(?:-\S+\s+)*(?:install|add)\b"), "system package install"),
     (re.compile(r"\bcargo\s+(?:install|add)\b|\bgo\s+(?:get|install)\b|\bgem\s+install\b"), "language package install"),
 )
+_GIT = r"^git\s+(?:-C\s+\S+\s+)?"
 _READ_ONLY_CMD_RES: tuple[re.Pattern, ...] = (
-    re.compile(r"^(?:ls|dir|cat|head|tail|wc|pwd|printf|echo|stat|file|du|df|tree|which|type|whoami|uname|date|env|printenv|true|false|:|nl|sort|uniq|cut|tr|od|xxd|hexdump|md5sum|sha1sum|sha256sum|basename|dirname|realpath|readlink|less|more)(?:\s|$)"),
+    # commands that only print; anything that can run another program or write a file is excluded
+    re.compile(r"^(?:ls|dir|cat|head|tail|wc|pwd|printf|echo|stat|file|du|df|which|type|whoami|uname|date|true|false|:|nl|cut|tr|od|hexdump|md5sum|sha1sum|sha256sum|basename|dirname|realpath|readlink|less|more)(?:\s|$)"),
+    re.compile(r"^env\s*$|^printenv(?:\s+[A-Za-z_][A-Za-z0-9_]*)*\s*$"),  # "env CMD" runs CMD
+    re.compile(r"^sort(?!.*\s-(?:-output|[A-Za-z]*o))(?:\s|$)"),  # sort -o FILE writes
+    re.compile(r"^(?:uniq|xxd)(?:\s+-\S+)*(?:\s+[^\s-]\S*)?(?:\s+-\S+)*\s*$"),  # a 2nd operand is an output file
+    re.compile(r"^tree(?!.*\s-o(?:\s|$))(?:\s|$)"),  # tree -o FILE writes
     re.compile(r"^(?:grep|egrep|fgrep|rg|ag|ack)(?:\s|$)"),
     re.compile(r"^find(?:\s|$)(?!.*(?:-delete|-exec|-execdir|-ok|-fprint|-fls))"),
     re.compile(r"^node\s+(?:--check|-c)\s+\S+"),
@@ -100,7 +112,10 @@ _READ_ONLY_CMD_RES: tuple[re.Pattern, ...] = (
     re.compile(r"^(?:python3?|py)\s+-m\s+py_compile\s+\S+"),
     re.compile(r"^(?:python3?|py)\s+(?:--version|-V)\s*$"),
     re.compile(r"^npm\s+(?:--version|-v|ls|list)\s*"),
-    re.compile(r"^git\s+(?:-C\s+\S+\s+)?(?:status|diff|log|show|branch|rev-parse|ls-files|describe|tag|blame|shortlog|remote\s*(?:-v)?)(?:\s|$)"),
+    re.compile(_GIT + r"(?:status|diff|log|show|rev-parse|ls-files|describe|blame|shortlog)(?:\s|$)(?!.*--output)"),
+    re.compile(_GIT + r"branch(?:\s+(?:-a|-r|-l|-v|-vv|--list|--all|--remotes|--verbose|--show-current|--no-color|--contains|--merged|--no-merged))*\s*$"),
+    re.compile(_GIT + r"tag(?:\s+(?:-l|--list)(?:\s+\S+)?)?\s*$"),
+    re.compile(_GIT + r"remote(?:\s+-v)?\s*$"),
     re.compile(r"^(?:test|\[)\s"),
     re.compile(r"^sleep\s+\d+(?:\.\d+)?\s*$"),
     re.compile(r"^(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*=\S*\s*$"),
@@ -164,12 +179,49 @@ def _casefold_for(ws: str, other: str) -> bool:
     return bool(_WIN_DRIVE_RE.match(ws) or _WIN_DRIVE_RE.match(other) or ws.startswith("//") or other.startswith("//"))
 
 
+def _relative_to(path: str, root: str) -> str | None:
+    """``path`` relative to ``root`` (both normalised posix-ish), ``None`` when outside."""
+    a, b = (root.casefold(), path.casefold()) if _casefold_for(root, path) else (root, path)
+    a = a.rstrip("/") or "/"
+    if b == a:
+        return ""
+    if a == "/":
+        return path.lstrip("/") if b.startswith("/") else None
+    if b.startswith(a + "/"):
+        return path[len(a):].lstrip("/")
+    return None
+
+
+def _real_posix(candidate: str) -> str:
+    """Resolve symlinks of the deepest existing ancestor of ``candidate`` and re-append the rest.
+
+    ``lexists`` is used so a dangling symlink still counts: writing through it
+    creates its target, which may lie outside the workspace.
+    """
+    probe = candidate
+    tail: list[str] = []
+    while probe and not os.path.lexists(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        tail.append(os.path.basename(probe))
+        probe = parent
+    real = os.path.realpath(probe) if probe else probe
+    for seg in reversed(tail):
+        real = os.path.join(real, seg)
+    return _norm_abs(real)
+
+
 def resolve_in_workspace(raw: str, workspace: str, cwd: str | None = None) -> str | None:
     """Return the workspace-relative posix path of ``raw`` or ``None`` when it escapes.
 
-    Pure string logic (works for Windows paths on POSIX and vice versa) plus a
-    best-effort symlink check when the workspace exists on this machine. The
-    workspace root itself resolves to ``""``.
+    String logic first (works for Windows paths on POSIX and vice versa). When
+    the workspace exists on this machine the real paths are compared as well:
+    a symlink (also a dangling one) that leads outside is an escape, and a path
+    spelled through a symlinked prefix of the workspace (macOS
+    ``/private/var`` vs ``/var``) is accepted. Relative paths are resolved
+    against ``cwd`` when it is absolute (even if it already left the
+    workspace), else against the workspace. The workspace root is ``""``.
     """
     if not isinstance(raw, str) or not workspace:
         return None
@@ -182,37 +234,25 @@ def resolve_in_workspace(raw: str, workspace: str, cwd: str | None = None) -> st
     if _is_abs(raw):
         candidate = _norm_abs(raw)
     else:
-        base = ws
-        if cwd and _is_abs(cwd):
-            cwd_norm = _norm_abs(cwd)
-            if cwd_norm == ws or cwd_norm.startswith(ws.rstrip("/") + "/"):
-                base = cwd_norm
+        base = _norm_abs(cwd) if (cwd and _is_abs(cwd) and not cwd.startswith("~")) else ws
         candidate = _norm_abs(base.rstrip("/") + "/" + _posix(raw))
-    a, b = (ws.casefold(), candidate.casefold()) if _casefold_for(ws, candidate) else (ws, candidate)
-    a = a.rstrip("/") or "/"
-    if b == a:
-        rel = ""
-    elif b.startswith(a + "/") or (a == "/" and b.startswith("/")):
-        rel = candidate[len(a):].lstrip("/") if a != "/" else candidate.lstrip("/")
-    else:
-        return None
-    # symlink escape (only meaningful when the workspace is a real local directory)
+    rel = _relative_to(candidate, ws)
     try:
-        if os.path.isabs(workspace) and os.path.isdir(workspace) and os.path.isabs(candidate):
-            ws_real = os.path.realpath(workspace)
-            probe = candidate
-            while probe and not os.path.exists(probe):
-                parent = os.path.dirname(probe)
-                if parent == probe:
-                    break
-                probe = parent
-            if probe and os.path.exists(probe):
-                real = os.path.realpath(probe)
-                if not (real == ws_real or real.startswith(ws_real.rstrip(os.sep) + os.sep)):
-                    return None
-    except OSError:
-        pass
-    return rel
+        local = os.path.isabs(workspace) and os.path.isdir(workspace) and os.path.isabs(candidate)
+    except (OSError, ValueError):
+        local = False
+    if not local:
+        return rel
+    try:
+        ws_real = _real_posix(workspace)
+        real_rel = _relative_to(_real_posix(candidate), ws_real)
+    except (OSError, ValueError) as exc:
+        log.warning("symlink check failed for %s: %s", raw, exc)
+        return rel
+    if real_rel is None:
+        return None  # escapes once symlinks are resolved
+    # the resolved path is authoritative: "ws/gitlink/config" with gitlink -> .git is ".git/config"
+    return real_rel
 
 
 def _normalized_input(tool_name: str, tool_input: Any, workspace: str, cwd: str | None) -> Any:
@@ -247,8 +287,20 @@ def _plan_files(ctx: dict) -> list[str]:
     for item in files or []:
         path = item.get("path") if isinstance(item, dict) else item
         if isinstance(path, str) and path:
-            out.append(_posix(path).lstrip("./"))
+            out.append(_strip_dot_prefix(_posix(path)))
     return out
+
+
+def _strip_dot_prefix(path: str) -> str:
+    """Drop leading ``./`` segments and slashes; keep dot-files such as ``.kyora/manifest.json``."""
+    path = path.strip()
+    while True:
+        if path.startswith("./"):
+            path = path[2:]
+        elif path.startswith("/"):
+            path = path[1:]
+        else:
+            return path
 
 
 def _constraints(ctx: dict) -> dict:
@@ -342,7 +394,18 @@ def _bash_rule(ctx: dict, command: str, workspace: str, cwd: str | None) -> dict
 
 
 def _segments(cmd: str) -> list[str]:
-    return [s.strip() for s in _SEGMENT_SPLIT_RE.split(cmd) if s and s.strip()]
+    """Split a shell command into simple commands; subshell/group braces are stripped."""
+    out: list[str] = []
+    for part in _SEGMENT_SPLIT_RE.split(cmd):
+        part = (part or "").strip()
+        # "( cd .. && rm -rf x )" -> "cd ..", "rm -rf x"; "$(" keeps its "$" so it stays detectable
+        while part and part[0] in "({":
+            part = part[1:].strip()
+        while part and part[-1] in ")}" and "$(" not in part:
+            part = part[:-1].strip()
+        if part:
+            out.append(part)
+    return out
 
 
 def _virtual_cwds(cmd: str, workspace: str, cwd: str | None) -> list[tuple[str, str | None]]:
@@ -400,7 +463,7 @@ def _is_read_only_command(cmd: str, workspace: str, cwd: str | None) -> bool:
         return False
     for seg, _vcwd in segs:
         clean = _REDIRECT_NOISE_RE.sub(" ", " " + seg).strip()
-        if ">" in clean or "<<" in clean:
+        if ">" in clean or "<<" in clean or "<(" in clean:
             return False
         if "`" in clean or "$(" in clean:
             return False
@@ -474,7 +537,9 @@ class JudgeService:
         token = payload.get("hook_token")
         with self._lock:
             expected = self._tokens.get(run_id)
-        if not run_id or not expected or not isinstance(token, str) or not hmac.compare_digest(expected, token):
+        # compare bytes: hmac.compare_digest raises TypeError for non-ASCII str arguments
+        if not run_id or not expected or not isinstance(token, str) \
+                or not hmac.compare_digest(expected.encode("utf-8"), token.encode("utf-8", "replace")):
             return 403, {"error": "invalid or unknown hook token", "decision": "deny"}
         tool_name = payload.get("tool_name")
         if not isinstance(tool_name, str) or not tool_name:

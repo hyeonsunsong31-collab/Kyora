@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","cwd":"/WORKSPACE","session_id":"0b0c9a5e-3333-4a2b-9c3d-000000000003","tools":["Bash"],"model":"claude-fable-5-1","permissionMode":"acceptEdits"}
+{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error: Repeated 529 Overloaded errors"}]},"session_id":"0b0c9a5e-3333-4a2b-9c3d-000000000003"}
+{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"Working on it."}]},"session_id":"0b0c9a5e-3333-4a2b-9c3d-000000000003"}
+{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"Still the same model."}]},"session_id":"0b0c9a5e-3333-4a2b-9c3d-000000000003"}
+{"type":"assistant","message":{"model":"claude-fable-5-1","content":[{"type":"text","text":"Primary model is back."}]},"session_id":"0b0c9a5e-3333-4a2b-9c3d-000000000003"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":900,"num_turns":1,"result":"done","session_id":"0b0c9a5e-3333-4a2b-9c3d-000000000003","total_cost_usd":0.002,"permission_denials":[]}

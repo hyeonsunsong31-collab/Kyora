@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","cwd":"/WORKSPACE","session_id":"0b0c9a5e-2222-4a2b-9c3d-000000000002","tools":["Bash","Read","Write"],"model":"claude-sonnet-5-5","permissionMode":"acceptEdits","uuid":"u-1"}
+{"type":"assistant","message":{"model":"claude-sonnet-5-5","content":[{"type":"tool_use","id":"toolu_11","name":"Read","input":{"file_path":"/WORKSPACE/src/game.js"}}],"usage":{"input_tokens":1,"output_tokens":1}},"session_id":"0b0c9a5e-2222-4a2b-9c3d-000000000002"}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_11","content":"     1\tconst x = 1;"}]},"session_id":"0b0c9a5e-2222-4a2b-9c3d-000000000002"}
+{"type":"result","subtype":"error_max_turns","is_error":true,"duration_ms":4000,"duration_api_ms":3500,"num_turns":2,"session_id":"0b0c9a5e-2222-4a2b-9c3d-000000000002","total_cost_usd":0.01,"permission_denials":[],"modelUsage":{"claude-sonnet-5-5":{"inputTokens":2,"outputTokens":2}}}

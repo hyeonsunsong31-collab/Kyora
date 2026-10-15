@@ -11,7 +11,10 @@ Compatibility: ``--max-turns`` and ``--append-system-prompt-file`` are hidden
 flags on current CLIs; when a CLI rejects them (``unknown option``) the run is
 retried once without ``--max-turns`` and with ``--append-system-prompt <text>``
 (``engine.compat_retry``). A model that is restricted or unknown before the
-``init`` line triggers a retry with the next model of ``[model] + fallbacks``.
+``init`` line, or that the API refuses on the first request after ``init``
+before any work (e.g. HTTP 429 ``credits_required`` "Switch to another model to
+continue", which the CLI's own ``--fallback-model`` does not cover), triggers a
+retry with the next model of ``[model] + fallbacks``.
 ``--bare`` is never used (it disables OAuth).
 """
 from __future__ import annotations
@@ -51,8 +54,21 @@ UNKNOWN_OPTION_RE = re.compile(r"unknown option '?(--[A-Za-z0-9-]+)", re.IGNOREC
 MODEL_ERROR_RE = re.compile(
     r"not found|restricted|not available|invalid model|unknown model|does not exist|unsupported model|"
     r"no access to|not permitted|model .{0,40}(?:unavailable|disabled)", re.IGNORECASE)
+MODEL_WORD_RE = re.compile(r"\bmodel", re.IGNORECASE)
+# An API error on the first request that says *this model* cannot be used by this account (observed on CLI
+# 2.1.300: HTTP 429 api_error_code "credits_required", api_error "model_requires_usage_credits", result text
+# "You're out of usage credits. Switch to another model to continue."). The CLI's own --fallback-model only
+# covers overloaded/unavailable models, so Kyora switches to the next model itself.
+POST_INIT_MODEL_ERROR_RE = re.compile(
+    r"switch to another model|credits_required|requires_usage_credits|out of usage credits|usage limit|"
+    r"model_not_found|not_found_error|permission_error|"
+    r"model.{0,60}(?:not found|not available|restricted|does not exist|unsupported|not supported|disabled|unavailable)|"
+    r"(?:not found|not available|restricted|no access|not permitted).{0,60}model", re.IGNORECASE)
+NO_MODEL_SWITCH_STATUSES = (401,)  # authentication problems affect every model
 DEFAULT_COMPAT: dict[str, bool] = {"max_turns": True, "append_system_prompt_file": True, "permission_prompts": True}
 FILE_PATH_KEYS = ("file_path", "notebook_path", "path")
+_MODEL_SUFFIX_RE = re.compile(r"(?:\[[^\]]*\])+$")  # context-window suffix such as "[1m]"
+_MODEL_DATE_RE = re.compile(r"-\d{8}$")  # dated snapshot suffix such as "-20261001"
 
 
 # --------------------------------------------------------------------------- helpers
@@ -65,16 +81,59 @@ def _tail(text: str, n: int = 1500) -> str:
     return text if len(text) <= n else text[-n:]
 
 
+def _canonical_model(name: str) -> str:
+    """Lower-case model id without a ``[1m]``-style suffix or a ``-YYYYMMDD`` snapshot date."""
+    out = _MODEL_SUFFIX_RE.sub("", name.strip().lower())
+    return _MODEL_DATE_RE.sub("", out)
+
+
+def is_real_model_name(name: Any) -> bool:
+    """False for placeholders such as ``<synthetic>`` that the CLI uses for locally generated messages."""
+    return isinstance(name, str) and bool(name.strip()) and not name.strip().startswith("<")
+
+
 def same_model(requested: str | None, active: str | None) -> bool:
-    """True when ``active`` is the model the user asked for (aliases like ``opus`` count)."""
+    """True when ``active`` is the model the user asked for.
+
+    Aliases (``opus`` -> ``claude-opus-5-5``), context-window suffixes (``[1m]``)
+    and dated snapshot ids (``claude-opus-5-5-20261001``) count as the same model.
+    """
     if not requested or not active:
         return False
-    r, a = requested.strip().lower(), active.strip().lower()
+    r, a = _canonical_model(requested), _canonical_model(active)
     if r == a:
         return True
-    if not any(ch.isdigit() for ch in r) and r in a:
+    if r and not any(ch.isdigit() for ch in r) and r in a:
         return True  # alias such as "opus" -> "claude-opus-5-5"
     return False
+
+
+def primary_model_from_usage(usage: Any, candidates: list[str] | None = None) -> str | None:
+    """Pick the model that did the work from a result's ``modelUsage`` map.
+
+    The CLI may also list helper models used for background tasks, so a key that
+    matches one of ``candidates`` (requested model + fallbacks) wins; otherwise
+    the entry with the most output tokens.
+    """
+    if not isinstance(usage, dict) or not usage:
+        return None
+    names = [k for k in usage.keys() if is_real_model_name(k)]
+    if not names:
+        return None
+    for cand in candidates or []:
+        for name in names:
+            if same_model(cand, name):
+                return name
+
+    def _out_tokens(name: str) -> float:
+        entry = usage.get(name)
+        if isinstance(entry, dict):
+            val = entry.get("outputTokens", entry.get("output_tokens", 0))
+            if isinstance(val, (int, float)):
+                return float(val)
+        return 0.0
+
+    return max(names, key=_out_tokens)
 
 
 def summarize_tool_input(name: str, tool_input: Any) -> str:
@@ -404,21 +463,54 @@ class ClaudeCodeEngine(CodeEngine):
 
     @staticmethod
     def model_retry_decision(text: str, saw_init: bool, model_index: int, models: list[str]) -> int | None:
-        """Index of the next model to try when the CLI failed before ``init`` with a model error, else ``None``."""
+        """Index of the next model to try when the CLI failed before ``init`` with a model error, else ``None``.
+
+        The text must both look like an availability error and mention a model, so
+        an unrelated pre-init failure (``file not found``) is not misreported as a
+        model problem.
+        """
         if saw_init:
             return None
-        if not MODEL_ERROR_RE.search(text or ""):
+        text = text or ""
+        if not MODEL_ERROR_RE.search(text) or not MODEL_WORD_RE.search(text):
             return None
         if model_index + 1 >= len(models):
             return None
         return model_index + 1
+
+    @staticmethod
+    def model_unavailable_after_init(state: dict) -> str | None:
+        """Reason to switch to the next model when the CLI started but the model refused before doing any work.
+
+        True only when the session ended with an error result, no tool was used and
+        no message came from a real model (only ``<synthetic>`` API-error text), and
+        the error says the model cannot be used (credits / usage limit / not found /
+        restricted). Authentication errors (HTTP 401) never switch models.
+        """
+        res = state.get("result")
+        if not state.get("saw_init") or not isinstance(res, dict) or not res.get("is_error"):
+            return None
+        if state.get("tool_uses") or state.get("model_messages"):
+            return None  # a model already worked in this session
+        status = res.get("api_error_status")
+        if status in NO_MODEL_SWITCH_STATUSES:
+            return None
+        codes = [str(res.get(k)) for k in ("api_error", "api_error_code") if res.get(k)]
+        text = str(res.get("result") or "").strip()
+        if not (POST_INIT_MODEL_ERROR_RE.search(" ".join(codes + [text]))
+                or (status in (403, 404) and MODEL_WORD_RE.search(text))):
+            return None
+        detail = text[:300] or "API error"
+        extra = ", ".join(([f"HTTP {status}"] if status else []) + codes)
+        return f"{detail} ({extra})" if extra else detail
 
     # ------------------------------------------------------------------ stream-json parsing (pure)
     @staticmethod
     def new_parse_state(requested_model: str, max_turns: int, stage: str = "build") -> dict:
         return {"requested_model": requested_model, "active_model": None, "session_id": None, "saw_init": False,
                 "tool_uses": 0, "max_turns": max(1, int(max_turns or 1)), "stage": stage or "build",
-                "tool_names": {}, "result": None, "malformed": 0, "lines": 0, "model_changes": 0}
+                "tool_names": {}, "result": None, "malformed": 0, "lines": 0, "model_changes": 0,
+                "model_messages": 0, "rate_limits": []}
 
     @staticmethod
     def parse_stream_line(line: str, state: dict) -> list[EngineEvent]:
@@ -452,6 +544,8 @@ class ClaudeCodeEngine(CodeEngine):
         if kind == "assistant":
             msg = obj.get("message") if isinstance(obj.get("message"), dict) else {}
             model = msg.get("model")
+            if is_real_model_name(model):
+                state["model_messages"] = state.get("model_messages", 0) + 1
             if isinstance(model, str) and model:
                 events.extend(ClaudeCodeEngine._resolve_model(state, model))
             for block in msg.get("content") or []:
@@ -486,6 +580,13 @@ class ClaudeCodeEngine(CodeEngine):
                         "tool_use_id": tid, "name": state["tool_names"].get(tid), "is_error": bool(block.get("is_error")),
                         "excerpt": _content_excerpt(block.get("content"))}))
             return events
+        if kind == "rate_limit_event":
+            info = obj.get("rate_limit_info") if isinstance(obj.get("rate_limit_info"), dict) else {}
+            limits = state.setdefault("rate_limits", [])
+            if len(limits) < 20:
+                limits.append({k: info.get(k) for k in ("status", "resetsAt", "errorCode", "overageDisabledReason",
+                                                        "rateLimitType") if k in info})
+            return []
         if kind == "result":
             state["result"] = obj
             if obj.get("session_id"):
@@ -501,6 +602,8 @@ class ClaudeCodeEngine(CodeEngine):
 
     @staticmethod
     def _resolve_model(state: dict, model: str) -> list[EngineEvent]:
+        if not is_real_model_name(model):
+            return []  # "<synthetic>" messages (API errors, local notices) were not served by a model
         if model == state.get("active_model"):
             return []
         if state.get("active_model") is not None:
@@ -585,6 +688,9 @@ class ClaudeCodeEngine(CodeEngine):
         retries: list[dict] = []
         try:
             while attempts < max_attempts:
+                if cancel.is_set() and attempts:
+                    attempt.cancelled = True  # cancelled between attempts: do not start another CLI
+                    break
                 attempts += 1
                 model = models[model_index] if models else job.model
                 argv = self.build_argv(job, run_dir, {**compat, "model": model, "fallbacks": models[model_index + 1:]})
@@ -594,7 +700,16 @@ class ClaudeCodeEngine(CodeEngine):
                 if attempt.cancelled or attempt.timeout_reason:
                     break
                 if state["saw_init"]:
-                    break
+                    refusal = self.model_unavailable_after_init(state)
+                    if refusal is None or model_index + 1 >= len(models):
+                        break
+                    nxt = model_index + 1
+                    info = {"reason": f"model {model} refused before any work: {refusal}",
+                            "argv_change": f"--model {models[nxt]}", "model": models[nxt]}
+                    retries.append(info)
+                    self._emit(sink, EngineEvent(ENGINE_COMPAT_RETRY, info))
+                    model_index = nxt
+                    continue
                 text = attempt.stderr_text
                 if attempt.spawn_error:
                     text += "\n" + attempt.spawn_error
@@ -711,6 +826,13 @@ class ClaudeCodeEngine(CodeEngine):
             attempt.rc = proc.wait(timeout=15)
         except Exception:  # noqa: BLE001 - already killed; keep whatever rc we have
             pass
+        for stream in (proc.stdout, proc.stderr, proc.stdin):
+            if stream is None or (stream is proc.stdout and t_out.is_alive()) or (stream is proc.stderr and t_err.is_alive()):
+                continue  # a reader still blocked on a pipe held open by a grandchild keeps its stream
+            try:
+                stream.close()
+            except (OSError, ValueError) as exc:
+                log.debug("closing child pipe failed: %s", exc)
         if throttle.suppressed:
             self._emit(sink, EngineEvent(ENGINE_STDERR, {"line": f"... {throttle.suppressed} more stderr lines in engine/stderr.log"}))
         if attempt.timeout_reason:
@@ -750,7 +872,10 @@ class ClaudeCodeEngine(CodeEngine):
             elif attempt.spawn_error:
                 error = attempt.spawn_error
             elif is_error and isinstance(res.get("result"), str) and res["result"].strip():
-                error = f"{subtype or 'error'}: {res['result'].strip()[:1500]}"
+                # the CLI reports API errors as subtype "success" + is_error; name the real terminal reason
+                label = subtype if subtype and subtype != "success" else str(res.get("terminal_reason") or "error")
+                status = res.get("api_error_status")
+                error = f"{label}{f' (HTTP {status})' if status else ''}: {res['result'].strip()[:1500]}"
             elif _tail(attempt.stderr_text).strip():
                 error = f"{subtype or f'exit code {attempt.rc}'}: {_tail(attempt.stderr_text, 1500).strip()}"
             elif subtype:
@@ -758,6 +883,8 @@ class ClaudeCodeEngine(CodeEngine):
             else:
                 error = f"claude exited with code {attempt.rc} without a result line"
         active = state.get("active_model")
+        if not active:
+            active = primary_model_from_usage(res.get("modelUsage"), [job.model] + list(job.fallback_models or []))
         duration_ms = int(res.get("duration_ms") or 0) or int((time.monotonic() - started) * 1000)
         denials = res.get("permission_denials") or []
         return EngineResult(
@@ -771,27 +898,41 @@ class ClaudeCodeEngine(CodeEngine):
                  "run_dir": _posix(run_dir), "stream": _posix(run_dir / "engine" / "stream.jsonl"),
                  "stderr": _posix(run_dir / "engine" / "stderr.log"), "tool_uses": state.get("tool_uses", 0),
                  "malformed_lines": state.get("malformed", 0), "model_usage": res.get("modelUsage"),
-                 "duration_api_ms": res.get("duration_api_ms"), "stderr_tail": _tail(attempt.stderr_text, 1500)})
+                 "duration_api_ms": res.get("duration_api_ms"), "stderr_tail": _tail(attempt.stderr_text, 1500),
+                 "api_error": {k: res.get(k) for k in ("api_error_status", "api_error_code", "api_error", "terminal_reason")
+                               if res.get(k) is not None} or None,
+                 "rate_limits": list(state.get("rate_limits") or [])})
 
     # ------------------------------------------------------------------ probe (selfcheck)
     def probe_model(self, model: str, fallbacks: list[str] | None = None, timeout_s: float = 120) -> dict:
-        """One-turn ``claude -p`` probe reporting which model actually answered (used by selfcheck)."""
+        """One-turn ``claude -p`` probe reporting which model actually answered (used by selfcheck).
+
+        Follows the same model chain as :meth:`run`: a model the API refuses before
+        any work (credits, usage limit, not found) is recorded in ``refused`` and the
+        next model of ``[model] + fallbacks`` is probed.
+        """
         base = self._resolve_command()
         requested = model or self.cfg.model
         out_info: dict[str, Any] = {"ok": False, "requested": requested, "active": None, "fallback_used": False,
-                                    "error": None, "output_tail": "", "duration_ms": 0}
+                                    "error": None, "output_tail": "", "duration_ms": 0, "refused": []}
         if base is None:
             out_info["error"] = f"'{(self.cfg.command or ['claude'])[0]}' not found on PATH"
             return out_info
-        fallbacks = [m for m in (fallbacks if fallbacks is not None else self.cfg.fallback_models) if m and m != requested]
+        chain: list[str] = [requested]
+        for m in (fallbacks if fallbacks is not None else self.cfg.fallback_models):
+            if m and m not in chain:
+                chain.append(m)
         compat = dict(DEFAULT_COMPAT)
         env = self._base_env()
         started = time.monotonic()
         rc, out, err = -1, "", ""
-        for _ in range(3):
-            argv = base + ["-p", PROBE_PROMPT, "--model", requested]
-            if fallbacks:
-                argv += ["--fallback-model", ",".join(fallbacks)]
+        parsed: Any = None
+        idx = 0
+        for _ in range(len(chain) + len(DEFAULT_COMPAT)):
+            current, rest = chain[idx], chain[idx + 1:]
+            argv = base + ["-p", PROBE_PROMPT, "--model", current]
+            if rest:
+                argv += ["--fallback-model", ",".join(rest)]
             if compat["max_turns"]:
                 argv += ["--max-turns", "1"]
             argv += ["--output-format", "json", "--permission-mode", "acceptEdits"]
@@ -806,14 +947,24 @@ class ClaudeCodeEngine(CodeEngine):
             if dec:
                 compat.update(dec["compat"])
                 continue
+            parsed = self._parse_json_blob(out)
+            if rest:
+                if isinstance(parsed, dict):
+                    refusal = self.model_unavailable_after_init(
+                        {"saw_init": True, "result": parsed, "tool_uses": 0, "model_messages": 0})
+                elif rc != 0 and self.model_retry_decision(err or out, False, idx, chain) is not None:
+                    refusal = _tail(err or out, 300).strip()
+                else:
+                    refusal = None
+                if refusal:
+                    out_info["refused"].append({"model": current, "reason": refusal})
+                    idx += 1
+                    continue
             break
         out_info["duration_ms"] = int((time.monotonic() - started) * 1000)
-        parsed = self._parse_json_blob(out)
         active = None
         if isinstance(parsed, dict):
-            usage = parsed.get("modelUsage")
-            if isinstance(usage, dict) and usage:
-                active = next(iter(usage.keys()))
+            active = primary_model_from_usage(parsed.get("modelUsage"), chain)
             ok = rc == 0 and parsed.get("subtype") == "success" and not parsed.get("is_error")
             out_info.update({"ok": bool(ok), "active": active, "result": str(parsed.get("result") or "")[:200],
                              "num_turns": parsed.get("num_turns"), "cost_usd": parsed.get("total_cost_usd")})
