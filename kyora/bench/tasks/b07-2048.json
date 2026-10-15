@@ -1,0 +1,46 @@
+{
+  "id": "b07-2048",
+  "title": "2048",
+  "category": "puzzle",
+  "kind": "generate",
+  "prompt": "Build 2048 on a 4x4 board drawn on the canvas. start() places two tiles (2 with 90% chance, else 4) on random empty cells. A move slides every tile as far as possible; two equal tiles that meet merge into their sum, each tile merges at most once per move, and merging starts from the side the tiles move toward ([2,2,2,0] left gives [4,2,0,0]). Each merge adds the new value to the score. A move that changes the board increments moves and spawns one tile; a move that changes nothing returns false and spawns nothing. Creating 2048 sets won true and play continues. A full board without possible merges ends the game. Keyboard: arrows/WASD. Touch: swipes of at least 30 px.\n\nContract (window.Game; implement exactly):\n- Game.start(): new game from any phase; phase becomes 'play'\n- Game.getState(): {phase:'menu'|'play'|'over', score, won, moves, grid (4 rows of 4 numbers, grid[row][col], row 0 at the top, 0 = empty)}\n- Game.setSeed(n): seed the PRNG behind all randomness (applies at the next start())\n- Game.step(n): advance exactly n fixed 1/60 s ticks synchronously\n- Game.input.move(dir): 'up'|'down'|'left'|'right'; returns true when the board changed\n- Game.debug.setGrid(grid): replace the board exactly (no spawn), then check for game over\n\nAcceptance (checked by Kyora Bench browser tests): merge rules in all directions, no-op moves, game over, 2048, seeded spawns, keyboard and swipes.",
+  "engine": "vanilla",
+  "timeout_min": 40,
+  "constraints": {
+    "no_external_deps": true,
+    "max_files": 8,
+    "touch_controls": true,
+    "max_total_mb": 5
+  },
+  "contract": {
+    "globals": [
+      "window.Game"
+    ],
+    "api": {
+      "Game.start()": "new game from any phase; phase becomes 'play'",
+      "Game.getState()": "{phase:'menu'|'play'|'over', score, won, moves, grid (4 rows of 4 numbers, grid[row][col], row 0 at the top, 0 = empty)}",
+      "Game.setSeed(n)": "seed the PRNG behind all randomness (applies at the next start())",
+      "Game.step(n)": "advance exactly n fixed 1/60 s ticks synchronously",
+      "Game.input.move(dir)": "'up'|'down'|'left'|'right'; returns true when the board changed",
+      "Game.debug.setGrid(grid)": "replace the board exactly (no spawn), then check for game over"
+    }
+  },
+  "checks": {
+    "static": [
+      "file_exists:index.html",
+      "file_exists:.kyora/manifest.json",
+      "file_exists:tests/browser-tests.js",
+      "manifest_valid",
+      "html_wellformed:index.html",
+      "js_syntax",
+      "external_deps",
+      "size_limit",
+      "no_path_escape"
+    ],
+    "browser_tests_file": "b07-2048.browser-tests.js",
+    "min_browser_tests": 13
+  },
+  "pass_rule": {
+    "min_pass_rate": 0.94
+  }
+}

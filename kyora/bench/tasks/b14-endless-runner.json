@@ -1,0 +1,50 @@
+{
+  "id": "b14-endless-runner",
+  "title": "Endless Runner",
+  "category": "action",
+  "kind": "generate",
+  "prompt": "Build an endless runner. The runner keeps a fixed x on the ground (groundY) while the world scrolls left at speed units per tick: at most 8 at start, rising at least 10% within 1800 ticks. score = floor(distance / 10). Obstacles move with the world: 'low' ones (at most 40 tall) stand on the ground and must be jumped; 'high' ones float so that a ducking runner passes under them but a standing one is hit. Obstacles spawn at seeded intervals that always leave time to react. A jump (from the ground only) rises at least 100 units; ducking halves the runner's height while held. Any box overlap with an obstacle ends the run. Keyboard: Space/ArrowUp jump, ArrowDown ducks. Touch: tap the upper half to jump, hold the lower half to duck.\n\nContract (window.Game; implement exactly):\n- Game.start(): new game from any phase; phase becomes 'play'\n- Game.getState(): {phase:'menu'|'play'|'over', score, speed, groundY, player:{x, y, w, h (top-left box), vy, onGround, ducking}, obstacles:[{x, y, w, h, type:'low'|'high'}]}\n- Game.setSeed(n): seed the PRNG behind all randomness (applies at the next start())\n- Game.step(n): advance exactly n fixed 1/60 s ticks synchronously\n- Game.input.jump(): jump if on the ground\n- Game.input.press(name): hold 'duck'\n- Game.input.release(name): release it\n- Game.debug.setSpawning(on): turn automatic obstacles off or on\n- Game.debug.clearObstacles(): remove all obstacles\n- Game.debug.spawnObstacle(type, x): add a 'low' or 'high' obstacle with its left edge at x\n\nAcceptance (checked by Kyora Bench browser tests): distance score, speed-up, jumps, ducking, collisions, spawning, seeded courses, keyboard and tap.",
+  "engine": "vanilla",
+  "timeout_min": 45,
+  "constraints": {
+    "no_external_deps": true,
+    "max_files": 10,
+    "touch_controls": true,
+    "max_total_mb": 5
+  },
+  "contract": {
+    "globals": [
+      "window.Game"
+    ],
+    "api": {
+      "Game.start()": "new game from any phase; phase becomes 'play'",
+      "Game.getState()": "{phase:'menu'|'play'|'over', score, speed, groundY, player:{x, y, w, h (top-left box), vy, onGround, ducking}, obstacles:[{x, y, w, h, type:'low'|'high'}]}",
+      "Game.setSeed(n)": "seed the PRNG behind all randomness (applies at the next start())",
+      "Game.step(n)": "advance exactly n fixed 1/60 s ticks synchronously",
+      "Game.input.jump()": "jump if on the ground",
+      "Game.input.press(name)": "hold 'duck'",
+      "Game.input.release(name)": "release it",
+      "Game.debug.setSpawning(on)": "turn automatic obstacles off or on",
+      "Game.debug.clearObstacles()": "remove all obstacles",
+      "Game.debug.spawnObstacle(type, x)": "add a 'low' or 'high' obstacle with its left edge at x"
+    }
+  },
+  "checks": {
+    "static": [
+      "file_exists:index.html",
+      "file_exists:.kyora/manifest.json",
+      "file_exists:tests/browser-tests.js",
+      "manifest_valid",
+      "html_wellformed:index.html",
+      "js_syntax",
+      "external_deps",
+      "size_limit",
+      "no_path_escape"
+    ],
+    "browser_tests_file": "b14-endless-runner.browser-tests.js",
+    "min_browser_tests": 14
+  },
+  "pass_rule": {
+    "min_pass_rate": 0.94
+  }
+}

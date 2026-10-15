@@ -1,0 +1,49 @@
+{
+  "id": "b20-visual-novel",
+  "title": "Visual Novel",
+  "category": "narrative",
+  "kind": "generate",
+  "prompt": "Build a short visual novel with an original story: characters and backgrounds drawn on the canvas, a text box with the speaker's name and 2-3 choice boxes at decisions. Text types out at 1-2 characters per tick from 0; advance() first completes the line, then shows the next. Every path passes at least 2 choices and reaches one of at least 3 endings: always taking the first option, always the last, and alternating last/first (starting with last) must reach three different endings. An ending ends the game. score counts affection points from choices. save(slot) and load(slot) use localStorage key 'kyora-vn-<slot>'. Keyboard: Space/Enter advance, Digit1-Digit3 choose. Touch/mouse: tap advances, tapping a choice box chooses.\n\nContract (window.Game; implement exactly):\n- Game.start(): new game from any phase; phase becomes 'play'\n- Game.getState(): {phase:'menu'|'play'|'over', score, scene, line, speaker, text, visibleChars, choices:[{text}], ending:null|string, history (lines shown)}\n- Game.setSeed(n): seed the PRNG behind all randomness (applies at the next start())\n- Game.step(n): advance exactly n fixed 1/60 s ticks synchronously\n- Game.input.advance(): ignored while choices are shown\n- Game.input.choose(i): returns false for an invalid index\n- Game.save(slot): returns true\n- Game.load(slot): returns false when the slot is empty\n- Game.choiceCenter(i): canvas point of choice i\n\nAcceptance (checked by Kyora Bench browser tests): typewriter, choices, three endings, save/load, history, determinism, keyboard and tap.",
+  "engine": "vanilla",
+  "timeout_min": 50,
+  "constraints": {
+    "no_external_deps": true,
+    "max_files": 10,
+    "touch_controls": true,
+    "max_total_mb": 5
+  },
+  "contract": {
+    "globals": [
+      "window.Game"
+    ],
+    "api": {
+      "Game.start()": "new game from any phase; phase becomes 'play'",
+      "Game.getState()": "{phase:'menu'|'play'|'over', score, scene, line, speaker, text, visibleChars, choices:[{text}], ending:null|string, history (lines shown)}",
+      "Game.setSeed(n)": "seed the PRNG behind all randomness (applies at the next start())",
+      "Game.step(n)": "advance exactly n fixed 1/60 s ticks synchronously",
+      "Game.input.advance()": "ignored while choices are shown",
+      "Game.input.choose(i)": "returns false for an invalid index",
+      "Game.save(slot)": "returns true",
+      "Game.load(slot)": "returns false when the slot is empty",
+      "Game.choiceCenter(i)": "canvas point of choice i"
+    }
+  },
+  "checks": {
+    "static": [
+      "file_exists:index.html",
+      "file_exists:.kyora/manifest.json",
+      "file_exists:tests/browser-tests.js",
+      "manifest_valid",
+      "html_wellformed:index.html",
+      "js_syntax",
+      "external_deps",
+      "size_limit",
+      "no_path_escape"
+    ],
+    "browser_tests_file": "b20-visual-novel.browser-tests.js",
+    "min_browser_tests": 13
+  },
+  "pass_rule": {
+    "min_pass_rate": 0.94
+  }
+}

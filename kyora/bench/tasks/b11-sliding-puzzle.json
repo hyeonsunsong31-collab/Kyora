@@ -1,0 +1,48 @@
+{
+  "id": "b11-sliding-puzzle",
+  "title": "Sliding Puzzle",
+  "category": "puzzle",
+  "kind": "generate",
+  "prompt": "Build the 15-puzzle on a 4x4 board. start() shuffles the solved board with 200 seeded random legal moves and never deals an already solved board. Sliding a tile into the blank is a move; the order 1..15 followed by the blank is solved: solved true, score = max(100, 1000 - moves), phase 'over', and further moves are ignored. Keyboard: arrows slide (ArrowLeft = slide('left')). Touch/mouse: tap or click a tile next to the blank.\n\nContract (window.Game; implement exactly):\n- Game.start(): new game from any phase; phase becomes 'play'\n- Game.getState(): {phase:'menu'|'play'|'over', score, size:4, moves, solved, tiles (16 numbers, row-major, 0 = blank)}\n- Game.setSeed(n): seed the PRNG behind all randomness (applies at the next start())\n- Game.step(n): advance exactly n fixed 1/60 s ticks synchronously\n- Game.input.slide(dir): move the tile next to the blank in that direction into it: 'left' moves the tile right of the blank left, 'up' moves the tile below the blank up; returns false when there is none\n- Game.input.tap(col, row): slide that tile if it is next to the blank, else return false\n- Game.cellCenter(col, row): canvas point of a cell\n- Game.debug.setTiles(tiles): set the 16 tiles exactly\n\nAcceptance (checked by Kyora Bench browser tests): solvable shuffles, slide directions, invalid slides, taps, solving, seeded deals, keyboard, touch and click.",
+  "engine": "vanilla",
+  "timeout_min": 35,
+  "constraints": {
+    "no_external_deps": true,
+    "max_files": 8,
+    "touch_controls": true,
+    "max_total_mb": 5
+  },
+  "contract": {
+    "globals": [
+      "window.Game"
+    ],
+    "api": {
+      "Game.start()": "new game from any phase; phase becomes 'play'",
+      "Game.getState()": "{phase:'menu'|'play'|'over', score, size:4, moves, solved, tiles (16 numbers, row-major, 0 = blank)}",
+      "Game.setSeed(n)": "seed the PRNG behind all randomness (applies at the next start())",
+      "Game.step(n)": "advance exactly n fixed 1/60 s ticks synchronously",
+      "Game.input.slide(dir)": "move the tile next to the blank in that direction into it: 'left' moves the tile right of the blank left, 'up' moves the tile below the blank up; returns false when there is none",
+      "Game.input.tap(col, row)": "slide that tile if it is next to the blank, else return false",
+      "Game.cellCenter(col, row)": "canvas point of a cell",
+      "Game.debug.setTiles(tiles)": "set the 16 tiles exactly"
+    }
+  },
+  "checks": {
+    "static": [
+      "file_exists:index.html",
+      "file_exists:.kyora/manifest.json",
+      "file_exists:tests/browser-tests.js",
+      "manifest_valid",
+      "html_wellformed:index.html",
+      "js_syntax",
+      "external_deps",
+      "size_limit",
+      "no_path_escape"
+    ],
+    "browser_tests_file": "b11-sliding-puzzle.browser-tests.js",
+    "min_browser_tests": 13
+  },
+  "pass_rule": {
+    "min_pass_rate": 0.94
+  }
+}

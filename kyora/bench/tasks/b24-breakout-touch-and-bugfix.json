@@ -1,0 +1,50 @@
+{
+  "id": "b24-breakout-touch-and-bugfix",
+  "title": "Breakout: touch + bug fix",
+  "category": "modify",
+  "kind": "modify",
+  "prompt": "The attached ZIP is an existing keyboard-only Breakout (index.html, src/game.js, README.md) imported as the starting point. Two jobs. (1) Bug report: 'the ball falls straight through the right half of the paddle and I lose a life' - reproduce it with Game.debug.setBall above the right half moving down, find the root cause in the paddle collision code and fix it; the left half, both ends (which deflect the ball outward) and balls passing beside the paddle must keep behaving correctly. (2) Touch controls: while a finger is down the paddle centre follows its x (clamped); a tap (released within 250 ms, moved less than 10 px) launches the ball; the canvas gets CSS touch-action: none and the handlers call preventDefault. Keep keyboard controls, bricks, scoring and the API unchanged.\n\nContract (window.Game; implement exactly):\n- Game.start(): new game from any phase; phase becomes 'play'\n- Game.getState(): {phase:'menu'|'play'|'over', score, lives, won, width:480, height:640, paddleX, paddleW, ballX, ballY, ballVX, ballVY, ballAttached, bricks, brickRects}\n- Game.setSeed(n): seed the PRNG behind all randomness (applies at the next start())\n- Game.step(n): advance exactly n fixed 1/60 s ticks synchronously\n- Game.input.press(name): unchanged\n- Game.input.release(name): unchanged\n- Game.input.action(): unchanged\n- Game.debug.setBall(x, y, vx, vy): unchanged\n- Game.debug.keepBricks(n): unchanged\n\nAcceptance (checked by Kyora Bench browser tests): paddle collision fixed across the whole paddle with no regressions; drag and tap controls; no page scrolling.",
+  "engine": "vanilla",
+  "timeout_min": 35,
+  "constraints": {
+    "no_external_deps": true,
+    "max_files": 8,
+    "touch_controls": true,
+    "max_total_mb": 5
+  },
+  "contract": {
+    "globals": [
+      "window.Game"
+    ],
+    "api": {
+      "Game.start()": "new game from any phase; phase becomes 'play'",
+      "Game.getState()": "{phase:'menu'|'play'|'over', score, lives, won, width:480, height:640, paddleX, paddleW, ballX, ballY, ballVX, ballVY, ballAttached, bricks, brickRects}",
+      "Game.setSeed(n)": "seed the PRNG behind all randomness (applies at the next start())",
+      "Game.step(n)": "advance exactly n fixed 1/60 s ticks synchronously",
+      "Game.input.press(name)": "unchanged",
+      "Game.input.release(name)": "unchanged",
+      "Game.input.action()": "unchanged",
+      "Game.debug.setBall(x, y, vx, vy)": "unchanged",
+      "Game.debug.keepBricks(n)": "unchanged"
+    }
+  },
+  "checks": {
+    "static": [
+      "file_exists:index.html",
+      "file_exists:.kyora/manifest.json",
+      "file_exists:tests/browser-tests.js",
+      "manifest_valid",
+      "html_wellformed:index.html",
+      "js_syntax",
+      "external_deps",
+      "size_limit",
+      "no_path_escape"
+    ],
+    "browser_tests_file": "b24-breakout-touch-and-bugfix.browser-tests.js",
+    "min_browser_tests": 13
+  },
+  "pass_rule": {
+    "min_pass_rate": 0.94
+  },
+  "fixture": "breakout-keyboard"
+}

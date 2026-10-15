@@ -556,6 +556,14 @@ class ArgvAndSettingsTests(TempHomeMixin, unittest.TestCase):
         argv = self.engine.build_argv(make_job(self.ws, max_turns=0), self.run_dir)
         self.assertNotIn("--max-turns", argv)
 
+    def test_tool_set_is_restricted_to_judged_builtins(self):
+        argv = self.engine.build_argv(make_job(self.ws), self.run_dir)
+        self.assertEqual(argv[argv.index("--tools") + 1], ",".join(ALLOWED_TOOLS))
+        self.assertIn("--strict-mcp-config", argv)
+        argv = self.engine.build_argv(make_job(self.ws), self.run_dir, {"tools": False, "strict_mcp_config": False})
+        self.assertNotIn("--tools", argv)
+        self.assertNotIn("--strict-mcp-config", argv)
+
     def test_describe_argv_hides_prompt_text(self):
         job = make_job(self.ws, prompt="SECRET PROMPT TEXT", system_prompt="SECRET SYSTEM")
         argv = self.engine.build_argv(job, self.run_dir, {"append_system_prompt_file": False})
@@ -636,6 +644,10 @@ class RetryDecisionTests(unittest.TestCase):
         d = ClaudeCodeEngine.compat_retry_decision(
             "unknown option '--max-turns'\nunknown option '--append-system-prompt-file'", {"max_turns": False})
         self.assertEqual(d["compat"], {"append_system_prompt_file": False})
+        d = ClaudeCodeEngine.compat_retry_decision("error: unknown option '--tools'", None)
+        self.assertEqual(d["compat"], {"tools": False})
+        d = ClaudeCodeEngine.compat_retry_decision("error: unknown option '--strict-mcp-config'", None)
+        self.assertEqual(d["compat"], {"strict_mcp_config": False})
         self.assertIsNone(ClaudeCodeEngine.compat_retry_decision("error: unknown option '--frobnicate'", None))
         self.assertIsNone(ClaudeCodeEngine.compat_retry_decision("", None))
         self.assertIsNone(ClaudeCodeEngine.compat_retry_decision(None, None))  # type: ignore[arg-type]

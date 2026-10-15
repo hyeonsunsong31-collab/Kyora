@@ -1,0 +1,50 @@
+{
+  "id": "b04-space-shooter",
+  "title": "Space Shooter",
+  "category": "arcade",
+  "kind": "generate",
+  "prompt": "Build a vertical space shooter on a 480x640 field. The ship sits near the bottom, moves sideways (clamped) and fires bullets that fly up 6-12 units per tick and vanish off the top; firing has a cooldown of at most 15 ticks. Enemies arrive in seeded waves from the top and descend at least 1 unit per tick; while spawning is on, an empty field gets a new wave within 120 ticks. A bullet destroys an enemy (+10 or more). An enemy touching the ship is destroyed and costs a life; an enemy reaching the bottom also costs a life. 3 lives; 0 ends the game. After a hit the ship may be invulnerable for at most 120 ticks. Keyboard: arrows/A/D move, Space fires (hold to auto-fire). Touch: the ship follows the finger's x and auto-fires while touching.\n\nContract (window.Game; implement exactly):\n- Game.start(): new game from any phase; phase becomes 'play'\n- Game.getState(): {phase:'menu'|'play'|'over', score, lives, wave, width:480, height:640, shipX, shipY, bullets:[{x,y}], enemies:[{x,y}]}\n- Game.setSeed(n): seed the PRNG behind all randomness (applies at the next start())\n- Game.step(n): advance exactly n fixed 1/60 s ticks synchronously\n- Game.input.press(name): hold 'left' or 'right'\n- Game.input.release(name): release it\n- Game.input.fire(): fire one bullet immediately unless cooling down\n- Game.debug.setSpawning(on): turn automatic waves off or on\n- Game.debug.clearEnemies(): remove all enemies\n- Game.debug.spawnEnemy(x, y): add a basic enemy that moves straight down\n\nAcceptance (checked by Kyora Bench browser tests): movement, bullets and cooldown, kills, lives, game over, waves, seeded formations, keyboard and touch.",
+  "engine": "vanilla",
+  "timeout_min": 45,
+  "constraints": {
+    "no_external_deps": true,
+    "max_files": 10,
+    "touch_controls": true,
+    "max_total_mb": 5
+  },
+  "contract": {
+    "globals": [
+      "window.Game"
+    ],
+    "api": {
+      "Game.start()": "new game from any phase; phase becomes 'play'",
+      "Game.getState()": "{phase:'menu'|'play'|'over', score, lives, wave, width:480, height:640, shipX, shipY, bullets:[{x,y}], enemies:[{x,y}]}",
+      "Game.setSeed(n)": "seed the PRNG behind all randomness (applies at the next start())",
+      "Game.step(n)": "advance exactly n fixed 1/60 s ticks synchronously",
+      "Game.input.press(name)": "hold 'left' or 'right'",
+      "Game.input.release(name)": "release it",
+      "Game.input.fire()": "fire one bullet immediately unless cooling down",
+      "Game.debug.setSpawning(on)": "turn automatic waves off or on",
+      "Game.debug.clearEnemies()": "remove all enemies",
+      "Game.debug.spawnEnemy(x, y)": "add a basic enemy that moves straight down"
+    }
+  },
+  "checks": {
+    "static": [
+      "file_exists:index.html",
+      "file_exists:.kyora/manifest.json",
+      "file_exists:tests/browser-tests.js",
+      "manifest_valid",
+      "html_wellformed:index.html",
+      "js_syntax",
+      "external_deps",
+      "size_limit",
+      "no_path_escape"
+    ],
+    "browser_tests_file": "b04-space-shooter.browser-tests.js",
+    "min_browser_tests": 13
+  },
+  "pass_rule": {
+    "min_pass_rate": 0.94
+  }
+}

@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Breakout</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0d1117; color: #e6edf3; font-family: system-ui, sans-serif; }
+    body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
+    #game { height: min(86vh, 160vw); aspect-ratio: 3 / 4; background: #161b22; border-radius: 6px; }
+    p { margin: 0; font-size: 14px; color: #8b949e; }
+  </style>
+</head>
+<body>
+  <canvas id="game" width="480" height="640"></canvas>
+  <p>Left / Right (or A / D) to move, Space to launch.</p>
+  <script src="src/game.js"></script>
+</body>
+</html>

@@ -1,0 +1,46 @@
+{
+  "id": "b02-snake",
+  "title": "Snake",
+  "category": "arcade",
+  "kind": "generate",
+  "prompt": "Build Snake on a grid of at least 15x15 cells (20x20 suggested). The snake starts 3 cells long on the centre cell (floor(cols/2), floor(rows/2)) heading right and moves one cell every ticksPerMove ticks (an integer, constant during a game, counted from start()). Eating food scores exactly 10, grows the snake by one and respawns the food on a random free cell. Leaving the grid or moving into the body ends the game. Keyboard: arrows and WASD. Touch: a swipe of at least 30 px on the canvas turns the snake.\n\nContract (window.Game; implement exactly):\n- Game.start(): new game from any phase; phase becomes 'play'\n- Game.getState(): {phase:'menu'|'play'|'over', score, length, head:{x,y}, dir:'up'|'down'|'left'|'right', food:{x,y}, cols, rows, ticksPerMove}\n- Game.setSeed(n): seed the PRNG behind all randomness (applies at the next start())\n- Game.step(n): advance exactly n fixed 1/60 s ticks synchronously\n- Game.input.turn(dir): queue a turn for the next move; turning onto the opposite of the current direction is ignored\n- Game.debug.setFood(x, y): move the food to cell (x, y)\n\nAcceptance (checked by Kyora Bench browser tests): exact movement timing, turning, growth, wall and self collisions, restart, seeded food, arrow keys and swipes.",
+  "engine": "vanilla",
+  "timeout_min": 40,
+  "constraints": {
+    "no_external_deps": true,
+    "max_files": 8,
+    "touch_controls": true,
+    "max_total_mb": 5
+  },
+  "contract": {
+    "globals": [
+      "window.Game"
+    ],
+    "api": {
+      "Game.start()": "new game from any phase; phase becomes 'play'",
+      "Game.getState()": "{phase:'menu'|'play'|'over', score, length, head:{x,y}, dir:'up'|'down'|'left'|'right', food:{x,y}, cols, rows, ticksPerMove}",
+      "Game.setSeed(n)": "seed the PRNG behind all randomness (applies at the next start())",
+      "Game.step(n)": "advance exactly n fixed 1/60 s ticks synchronously",
+      "Game.input.turn(dir)": "queue a turn for the next move; turning onto the opposite of the current direction is ignored",
+      "Game.debug.setFood(x, y)": "move the food to cell (x, y)"
+    }
+  },
+  "checks": {
+    "static": [
+      "file_exists:index.html",
+      "file_exists:.kyora/manifest.json",
+      "file_exists:tests/browser-tests.js",
+      "manifest_valid",
+      "html_wellformed:index.html",
+      "js_syntax",
+      "external_deps",
+      "size_limit",
+      "no_path_escape"
+    ],
+    "browser_tests_file": "b02-snake.browser-tests.js",
+    "min_browser_tests": 13
+  },
+  "pass_rule": {
+    "min_pass_rate": 0.94
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "id": "b19-text-adventure",
+  "title": "Text Adventure",
+  "category": "narrative",
+  "kind": "generate",
+  "prompt": "Build a parser text adventure: a canvas scene with an N/E/S/W compass above a transcript and a text input #cmd that runs on keydown Enter. World: cabin (start, holds the lamp) north to forest; forest south cabin, east river, north cave; river (holds the key) west forest; cave south forest. The cave is dark until 'use lamp' lights the lamp: in the dark, look says it is too dark and nothing there can be opened or taken. 'open chest' in the lit cave with the key reveals the gem. Entering the cabin holding the gem wins (+50); taking lamp, key or gem the first time scores 10 each. Commands: look, go <dir>, north/south/east/west, n/s/e/w, take, drop, use, open, inventory/i, help. Unknown commands and blocked exits only print a message; moves counts every command.\n\nContract (window.Game; implement exactly):\n- Game.start(): new game from any phase; phase becomes 'play'\n- Game.getState(): {phase:'menu'|'play'|'over', score, won, room, inventory:[item ids], lampLit, moves, visited:[room ids], output (last response)}\n- Game.setSeed(n): seed the PRNG behind all randomness (applies at the next start())\n- Game.step(n): advance exactly n fixed 1/60 s ticks synchronously\n- Game.command(text): run one command and return the response\n- Game.compassCenter(dir): canvas point of the 'n', 'e', 's' or 'w' arm; tapping it moves\n\nAcceptance (checked by Kyora Bench browser tests): parser, movement, items, darkness, the chest, the full walkthrough, #cmd and compass.",
+  "engine": "vanilla",
+  "timeout_min": 40,
+  "constraints": {
+    "no_external_deps": true,
+    "max_files": 8,
+    "touch_controls": true,
+    "max_total_mb": 5
+  },
+  "contract": {
+    "globals": [
+      "window.Game"
+    ],
+    "api": {
+      "Game.start()": "new game from any phase; phase becomes 'play'",
+      "Game.getState()": "{phase:'menu'|'play'|'over', score, won, room, inventory:[item ids], lampLit, moves, visited:[room ids], output (last response)}",
+      "Game.setSeed(n)": "seed the PRNG behind all randomness (applies at the next start())",
+      "Game.step(n)": "advance exactly n fixed 1/60 s ticks synchronously",
+      "Game.command(text)": "run one command and return the response",
+      "Game.compassCenter(dir)": "canvas point of the 'n', 'e', 's' or 'w' arm; tapping it moves"
+    }
+  },
+  "checks": {
+    "static": [
+      "file_exists:index.html",
+      "file_exists:.kyora/manifest.json",
+      "file_exists:tests/browser-tests.js",
+      "manifest_valid",
+      "html_wellformed:index.html",
+      "js_syntax",
+      "external_deps",
+      "size_limit",
+      "no_path_escape"
+    ],
+    "browser_tests_file": "b19-text-adventure.browser-tests.js",
+    "min_browser_tests": 13
+  },
+  "pass_rule": {
+    "min_pass_rate": 0.94
+  }
+}

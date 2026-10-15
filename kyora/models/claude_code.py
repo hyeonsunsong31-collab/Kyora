@@ -75,7 +75,8 @@ POST_INIT_MODEL_ERROR_RE = re.compile(
     r"model.{0,60}(?:not found|not available|restricted|does not exist|unsupported|not supported|disabled|unavailable)|"
     r"(?:not found|not available|restricted|no access|not permitted).{0,60}model", re.IGNORECASE)
 NO_MODEL_SWITCH_STATUSES = (401,)  # authentication problems affect every model
-DEFAULT_COMPAT: dict[str, bool] = {"max_turns": True, "append_system_prompt_file": True, "permission_prompts": True}
+DEFAULT_COMPAT: dict[str, bool] = {"max_turns": True, "append_system_prompt_file": True, "permission_prompts": True,
+                                   "tools": True, "strict_mcp_config": True}
 FILE_PATH_KEYS = ("file_path", "notebook_path", "path")
 _MODEL_SUFFIX_RE = re.compile(r"(?:\[[^\]]*\])+$")  # context-window suffix such as "[1m]"
 _MODEL_DATE_RE = re.compile(r"-\d{8}$")  # dated snapshot suffix such as "-20261001"
@@ -427,6 +428,12 @@ class ClaudeCodeEngine(CodeEngine):
         if compat.get("permission_prompts", True):
             argv += ["--permission-prompts", "none"]
         argv += ["--allowedTools", ",".join(ALLOWED_TOOLS)]
+        # Only the built-in tools Kyora judges are available: without --tools the session would
+        # also get every MCP server and agent tool configured on this machine, unjudged.
+        if compat.get("tools", True):
+            argv += ["--tools", ",".join(ALLOWED_TOOLS)]
+        if compat.get("strict_mcp_config", True):
+            argv.append("--strict-mcp-config")
         if job.system_prompt:
             if compat.get("append_system_prompt_file", True):
                 argv += ["--append-system-prompt-file", _posix(run_dir / "system_prompt.md")]
@@ -466,6 +473,12 @@ class ClaudeCodeEngine(CodeEngine):
             if opt == "--append-system-prompt-file" and compat.get("append_system_prompt_file"):
                 return {"compat": {"append_system_prompt_file": False}, "reason": f"CLI rejected {opt}",
                         "argv_change": "replaced --append-system-prompt-file <file> with --append-system-prompt <text>"}
+            if opt == "--tools" and compat.get("tools"):
+                return {"compat": {"tools": False}, "reason": f"CLI rejected {opt}",
+                        "argv_change": "dropped --tools (older CLI; --strict-mcp-config still keeps MCP tools out)"}
+            if opt == "--strict-mcp-config" and compat.get("strict_mcp_config"):
+                return {"compat": {"strict_mcp_config": False}, "reason": f"CLI rejected {opt}",
+                        "argv_change": "dropped --strict-mcp-config (older CLI)"}
             if opt == "--permission-prompts" and compat.get("permission_prompts"):
                 return {"compat": {"permission_prompts": False}, "reason": f"CLI rejected {opt}",
                         "argv_change": "dropped --permission-prompts none (older CLI denies prompts in -p mode anyway)"}

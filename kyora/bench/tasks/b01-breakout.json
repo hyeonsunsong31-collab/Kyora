@@ -1,0 +1,49 @@
+{
+  "id": "b01-breakout",
+  "title": "Breakout",
+  "category": "arcade",
+  "kind": "generate",
+  "prompt": "Build Breakout on a 480x640 field: a paddle near the bottom, one ball and at least 5 rows of 8 bricks. The ball rests on the paddle until launched and bounces off the side and top walls, the paddle (the hit position sets the angle: right of centre deflects right) and bricks, which break and score at least 10. A ball below the bottom costs one of 3 lives and returns to the paddle; no lives left ends the game with won false, breaking every brick ends it with won true. The paddle stays inside the field. Keyboard: ArrowLeft/ArrowRight (A/D) move, Space launches. Touch/mouse: the paddle follows the finger's x; a tap launches.\n\nContract (window.Game; implement exactly):\n- Game.start(): new game from any phase; phase becomes 'play'\n- Game.getState(): {phase:'menu'|'play'|'over', score, lives, won, width:480, height:640, paddleX (centre), paddleW, ballX, ballY (centre), ballVX, ballVY (units per tick), ballAttached, bricks (count left), brickRects:[{x,y,w,h}]}\n- Game.setSeed(n): seed the PRNG behind all randomness (applies at the next start())\n- Game.step(n): advance exactly n fixed 1/60 s ticks synchronously\n- Game.input.press(name): hold 'left' or 'right'\n- Game.input.release(name): release it\n- Game.input.action(): launch the resting ball upward at a seeded angle\n- Game.debug.setBall(x, y, vx, vy): detach the ball and place it with that velocity per tick\n- Game.debug.keepBricks(n): remove all bricks except the first n of brickRects, without scoring\n\nAcceptance (checked by Kyora Bench browser tests): paddle moves and clamps; walls, paddle and bricks reflect the ball; misses cost lives; both endings; same seed and inputs give the same game; keyboard and touch work.",
+  "engine": "vanilla",
+  "timeout_min": 45,
+  "constraints": {
+    "no_external_deps": true,
+    "max_files": 10,
+    "touch_controls": true,
+    "max_total_mb": 5
+  },
+  "contract": {
+    "globals": [
+      "window.Game"
+    ],
+    "api": {
+      "Game.start()": "new game from any phase; phase becomes 'play'",
+      "Game.getState()": "{phase:'menu'|'play'|'over', score, lives, won, width:480, height:640, paddleX (centre), paddleW, ballX, ballY (centre), ballVX, ballVY (units per tick), ballAttached, bricks (count left), brickRects:[{x,y,w,h}]}",
+      "Game.setSeed(n)": "seed the PRNG behind all randomness (applies at the next start())",
+      "Game.step(n)": "advance exactly n fixed 1/60 s ticks synchronously",
+      "Game.input.press(name)": "hold 'left' or 'right'",
+      "Game.input.release(name)": "release it",
+      "Game.input.action()": "launch the resting ball upward at a seeded angle",
+      "Game.debug.setBall(x, y, vx, vy)": "detach the ball and place it with that velocity per tick",
+      "Game.debug.keepBricks(n)": "remove all bricks except the first n of brickRects, without scoring"
+    }
+  },
+  "checks": {
+    "static": [
+      "file_exists:index.html",
+      "file_exists:.kyora/manifest.json",
+      "file_exists:tests/browser-tests.js",
+      "manifest_valid",
+      "html_wellformed:index.html",
+      "js_syntax",
+      "external_deps",
+      "size_limit",
+      "no_path_escape"
+    ],
+    "browser_tests_file": "b01-breakout.browser-tests.js",
+    "min_browser_tests": 14
+  },
+  "pass_rule": {
+    "min_pass_rate": 0.94
+  }
+}

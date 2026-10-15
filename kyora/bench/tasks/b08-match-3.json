@@ -1,0 +1,49 @@
+{
+  "id": "b08-match-3",
+  "title": "Match-3",
+  "category": "puzzle",
+  "kind": "generate",
+  "prompt": "Build a match-3 game on an 8x8 board of 6 gem types (0-5). start() deals a seeded board with no line of 3 and at least one valid swap. Swapping two orthogonally adjacent gems is valid only if it creates a horizontal or vertical line of 3 or more; otherwise the swap is undone and returns false. Matched gems are removed (10 points per gem, cascades included), gems above fall, new seeded gems drop in, and cascades repeat until stable; after swap() returns and step(60) the board is settled. Each valid swap costs one of 30 moves; 0 moves left ends the game. Click or tap a gem, then an adjacent gem, to swap.\n\nContract (window.Game; implement exactly):\n- Game.start(): new game from any phase; phase becomes 'play'\n- Game.getState(): {phase:'menu'|'play'|'over', score, movesLeft, cols:8, rows:8, grid (grid[y][x]), selected:{x,y}|null, busy}\n- Game.setSeed(n): seed the PRNG behind all randomness (applies at the next start())\n- Game.step(n): advance exactly n fixed 1/60 s ticks synchronously\n- Game.input.swap(x1, y1, x2, y2): returns true for a valid swap\n- Game.input.select(x, y): select a gem; selecting an adjacent gem next swaps them and clears the selection\n- Game.cellCenter(x, y): canvas point of a cell\n- Game.debug.setGrid(grid): replace the board exactly, without resolving\n- Game.debug.setMovesLeft(n): set the remaining moves\n\nAcceptance (checked by Kyora Bench browser tests): clean deals, valid and invalid swaps, scoring, settling, move limit, seeded refills, click and tap.",
+  "engine": "vanilla",
+  "timeout_min": 50,
+  "constraints": {
+    "no_external_deps": true,
+    "max_files": 10,
+    "touch_controls": true,
+    "max_total_mb": 5
+  },
+  "contract": {
+    "globals": [
+      "window.Game"
+    ],
+    "api": {
+      "Game.start()": "new game from any phase; phase becomes 'play'",
+      "Game.getState()": "{phase:'menu'|'play'|'over', score, movesLeft, cols:8, rows:8, grid (grid[y][x]), selected:{x,y}|null, busy}",
+      "Game.setSeed(n)": "seed the PRNG behind all randomness (applies at the next start())",
+      "Game.step(n)": "advance exactly n fixed 1/60 s ticks synchronously",
+      "Game.input.swap(x1, y1, x2, y2)": "returns true for a valid swap",
+      "Game.input.select(x, y)": "select a gem; selecting an adjacent gem next swaps them and clears the selection",
+      "Game.cellCenter(x, y)": "canvas point of a cell",
+      "Game.debug.setGrid(grid)": "replace the board exactly, without resolving",
+      "Game.debug.setMovesLeft(n)": "set the remaining moves"
+    }
+  },
+  "checks": {
+    "static": [
+      "file_exists:index.html",
+      "file_exists:.kyora/manifest.json",
+      "file_exists:tests/browser-tests.js",
+      "manifest_valid",
+      "html_wellformed:index.html",
+      "js_syntax",
+      "external_deps",
+      "size_limit",
+      "no_path_escape"
+    ],
+    "browser_tests_file": "b08-match-3.browser-tests.js",
+    "min_browser_tests": 13
+  },
+  "pass_rule": {
+    "min_pass_rate": 0.94
+  }
+}

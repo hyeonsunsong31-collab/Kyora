@@ -1,0 +1,48 @@
+{
+  "id": "b03-pong",
+  "title": "Pong",
+  "category": "arcade",
+  "kind": "generate",
+  "prompt": "Build Pong on a 640x480 field: the player's paddle on the left, an AI paddle on the right and one ball. After start() and after every point the ball returns to the centre and is served within 60 ticks. It bounces off the top and bottom walls and off paddles (horizontal direction reverses, slight speed-up). A ball leaving the right edge scores for the player (score), the left edge for the AI (aiScore); first to 5 ends the game with winner set. The AI follows the ball at a capped speed so it can be beaten. Paddles stay inside the field. Keyboard: ArrowUp/ArrowDown and W/S. Touch/mouse: the player paddle moves toward the finger's y.\n\nContract (window.Game; implement exactly):\n- Game.start(): new game from any phase; phase becomes 'play'\n- Game.getState(): {phase:'menu'|'play'|'over', score, aiScore, winner:null|'player'|'ai', width:640, height:480, playerX, playerY, aiX, aiY (paddle centres), paddleH, ballX, ballY, ballVX, ballVY}\n- Game.setSeed(n): seed the PRNG behind all randomness (applies at the next start())\n- Game.step(n): advance exactly n fixed 1/60 s ticks synchronously\n- Game.input.press(name): hold 'up' or 'down'\n- Game.input.release(name): release it\n- Game.debug.setBall(x, y, vx, vy): place the ball with that velocity per tick\n- Game.debug.setAI(on): false freezes the AI paddle, true resumes it\n\nAcceptance (checked by Kyora Bench browser tests): serve, wall and paddle bounces, scoring on both sides, win at 5, seeded rallies, keyboard and touch.",
+  "engine": "vanilla",
+  "timeout_min": 40,
+  "constraints": {
+    "no_external_deps": true,
+    "max_files": 8,
+    "touch_controls": true,
+    "max_total_mb": 5
+  },
+  "contract": {
+    "globals": [
+      "window.Game"
+    ],
+    "api": {
+      "Game.start()": "new game from any phase; phase becomes 'play'",
+      "Game.getState()": "{phase:'menu'|'play'|'over', score, aiScore, winner:null|'player'|'ai', width:640, height:480, playerX, playerY, aiX, aiY (paddle centres), paddleH, ballX, ballY, ballVX, ballVY}",
+      "Game.setSeed(n)": "seed the PRNG behind all randomness (applies at the next start())",
+      "Game.step(n)": "advance exactly n fixed 1/60 s ticks synchronously",
+      "Game.input.press(name)": "hold 'up' or 'down'",
+      "Game.input.release(name)": "release it",
+      "Game.debug.setBall(x, y, vx, vy)": "place the ball with that velocity per tick",
+      "Game.debug.setAI(on)": "false freezes the AI paddle, true resumes it"
+    }
+  },
+  "checks": {
+    "static": [
+      "file_exists:index.html",
+      "file_exists:.kyora/manifest.json",
+      "file_exists:tests/browser-tests.js",
+      "manifest_valid",
+      "html_wellformed:index.html",
+      "js_syntax",
+      "external_deps",
+      "size_limit",
+      "no_path_escape"
+    ],
+    "browser_tests_file": "b03-pong.browser-tests.js",
+    "min_browser_tests": 13
+  },
+  "pass_rule": {
+    "min_pass_rate": 0.94
+  }
+}

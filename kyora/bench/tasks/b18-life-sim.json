@@ -1,0 +1,49 @@
+{
+  "id": "b18-life-sim",
+  "title": "Tiny Life",
+  "category": "strategy/sim",
+  "kind": "generate",
+  "prompt": "Build a tiny life sim about keeping a creature well. One in-game hour lasts 60 ticks; the game starts on day 1 at 08:00 with hunger, energy and fun at 80 (clamped to 0-100) and 20 coins. Every hour hunger -3, fun -2, and energy -2 while awake or +8 while asleep. Actions: feed (5 coins, hunger +25), play (fun +20, energy -10), work (+10 coins, energy -15, fun -10; needs energy 15+), sleep (toggle; play and work refuse while asleep). At midnight day increases, score = days completed, and a seeded event either gives 5 coins or costs 5 fun. Any need reaching 0 ends the game. Keyboard: F feed, P play, W work, S sleep. Touch/mouse: four buttons on the canvas.\n\nContract (window.Game; implement exactly):\n- Game.start(): new game from any phase; phase becomes 'play'\n- Game.getState(): {phase:'menu'|'play'|'over', score, day, hour (0-23), hunger, energy, fun, coins, asleep}\n- Game.setSeed(n): seed the PRNG behind all randomness (applies at the next start())\n- Game.step(n): advance exactly n fixed 1/60 s ticks synchronously\n- Game.input.feed(): returns false when refused\n- Game.input.play(): returns false when refused\n- Game.input.work(): returns false when refused\n- Game.input.sleep(): toggle sleep\n- Game.buttonCenter(name): canvas point of 'feed', 'play', 'work' or 'sleep'\n\nAcceptance (checked by Kyora Bench browser tests): hourly decay, each action, sleep, day rollover, neglect, seeded days, keyboard, click and tap.",
+  "engine": "vanilla",
+  "timeout_min": 40,
+  "constraints": {
+    "no_external_deps": true,
+    "max_files": 8,
+    "touch_controls": true,
+    "max_total_mb": 5
+  },
+  "contract": {
+    "globals": [
+      "window.Game"
+    ],
+    "api": {
+      "Game.start()": "new game from any phase; phase becomes 'play'",
+      "Game.getState()": "{phase:'menu'|'play'|'over', score, day, hour (0-23), hunger, energy, fun, coins, asleep}",
+      "Game.setSeed(n)": "seed the PRNG behind all randomness (applies at the next start())",
+      "Game.step(n)": "advance exactly n fixed 1/60 s ticks synchronously",
+      "Game.input.feed()": "returns false when refused",
+      "Game.input.play()": "returns false when refused",
+      "Game.input.work()": "returns false when refused",
+      "Game.input.sleep()": "toggle sleep",
+      "Game.buttonCenter(name)": "canvas point of 'feed', 'play', 'work' or 'sleep'"
+    }
+  },
+  "checks": {
+    "static": [
+      "file_exists:index.html",
+      "file_exists:.kyora/manifest.json",
+      "file_exists:tests/browser-tests.js",
+      "manifest_valid",
+      "html_wellformed:index.html",
+      "js_syntax",
+      "external_deps",
+      "size_limit",
+      "no_path_escape"
+    ],
+    "browser_tests_file": "b18-life-sim.browser-tests.js",
+    "min_browser_tests": 14
+  },
+  "pass_rule": {
+    "min_pass_rate": 0.94
+  }
+}

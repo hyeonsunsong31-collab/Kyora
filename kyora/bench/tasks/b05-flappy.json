@@ -1,0 +1,46 @@
+{
+  "id": "b05-flappy",
+  "title": "Flappy",
+  "category": "arcade",
+  "kind": "generate",
+  "prompt": "Build a Flappy-style game on a 400x640 field. The bird keeps a fixed x; gravity increases birdVY every tick and a flap immediately sets birdVY to a fixed upward (negative) value. The top edge clamps the bird without harm. Pipe pairs enter from the right every 90 ticks (the first within 90 ticks of start) and scroll left at a constant 2-4 units per tick; each gap centre is seeded within 25%-75% of the height and each gap is 140-200 units tall. Passing a pipe scores 1. Touching a pipe or the ground (groundY) ends the game. Keyboard: Space/ArrowUp flap. Touch/mouse: a tap flaps.\n\nContract (window.Game; implement exactly):\n- Game.start(): new game from any phase; phase becomes 'play'\n- Game.getState(): {phase:'menu'|'play'|'over', score, width:400, height:640, groundY, birdX, birdY (centre), birdVY, pipes:[{x (left edge), w, gapY (gap centre), gapH}]}\n- Game.setSeed(n): seed the PRNG behind all randomness (applies at the next start())\n- Game.step(n): advance exactly n fixed 1/60 s ticks synchronously\n- Game.input.flap(): flap now\n- Game.debug.setInvincible(on): while on, pipes and the ground never end the game (the bird rests on the ground) and scoring continues\n\nAcceptance (checked by Kyora Bench browser tests): gravity, flap, ground and pipe deaths, pipe rules, scoring, seeded pipes, Space and tap.",
+  "engine": "vanilla",
+  "timeout_min": 40,
+  "constraints": {
+    "no_external_deps": true,
+    "max_files": 8,
+    "touch_controls": true,
+    "max_total_mb": 5
+  },
+  "contract": {
+    "globals": [
+      "window.Game"
+    ],
+    "api": {
+      "Game.start()": "new game from any phase; phase becomes 'play'",
+      "Game.getState()": "{phase:'menu'|'play'|'over', score, width:400, height:640, groundY, birdX, birdY (centre), birdVY, pipes:[{x (left edge), w, gapY (gap centre), gapH}]}",
+      "Game.setSeed(n)": "seed the PRNG behind all randomness (applies at the next start())",
+      "Game.step(n)": "advance exactly n fixed 1/60 s ticks synchronously",
+      "Game.input.flap()": "flap now",
+      "Game.debug.setInvincible(on)": "while on, pipes and the ground never end the game (the bird rests on the ground) and scoring continues"
+    }
+  },
+  "checks": {
+    "static": [
+      "file_exists:index.html",
+      "file_exists:.kyora/manifest.json",
+      "file_exists:tests/browser-tests.js",
+      "manifest_valid",
+      "html_wellformed:index.html",
+      "js_syntax",
+      "external_deps",
+      "size_limit",
+      "no_path_escape"
+    ],
+    "browser_tests_file": "b05-flappy.browser-tests.js",
+    "min_browser_tests": 13
+  },
+  "pass_rule": {
+    "min_pass_rate": 0.94
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "id": "b22-particle-sandbox",
+  "title": "Particle Sandbox",
+  "category": "systems",
+  "kind": "generate",
+  "prompt": "Build a falling-sand sandbox on a grid of at least 80x60 cells with sand, water and wall. Each tick, bottom row first: sand moves down into an empty or water cell (swapping with water), else diagonally down (seeded left/right choice); water moves down, else diagonally down, else one cell sideways; walls never move; the grid edges are solid. The simulation never creates or destroys particles. Mouse or finger painting applies immediately in the event handler with radius 2 and the selected material ('empty' erases); sand and water only fill empty cells. Keyboard: Digit1 sand, Digit2 water, Digit3 wall, Digit4 eraser, Space pause.\n\nContract (window.Game; implement exactly):\n- Game.start(): new game from any phase; phase becomes 'play'\n- Game.getState(): {phase:'menu'|'play'|'over', score (particles), cols, rows, material:'sand'|'water'|'wall'|'empty', paused, counts:{sand, water, wall}}\n- Game.setSeed(n): seed the PRNG behind all randomness (applies at the next start())\n- Game.step(n): advance exactly n fixed 1/60 s ticks synchronously\n- Game.input.selectMaterial(name): choose the paint material\n- Game.input.paint(x, y, radius): fill the cells within radius (0 = one cell)\n- Game.input.togglePause(): while paused step() changes nothing\n- Game.getCell(x, y): 'empty', 'sand', 'water' or 'wall'\n- Game.clear(): empty the grid\n- Game.cellCenter(x, y): canvas point of a cell\n\nAcceptance (checked by Kyora Bench browser tests): falling, piling, walls, water levelling, sinking, conservation, pause, clear, seeded runs, painting, keys.",
+  "engine": "vanilla",
+  "timeout_min": 45,
+  "constraints": {
+    "no_external_deps": true,
+    "max_files": 8,
+    "touch_controls": true,
+    "max_total_mb": 5
+  },
+  "contract": {
+    "globals": [
+      "window.Game"
+    ],
+    "api": {
+      "Game.start()": "new game from any phase; phase becomes 'play'",
+      "Game.getState()": "{phase:'menu'|'play'|'over', score (particles), cols, rows, material:'sand'|'water'|'wall'|'empty', paused, counts:{sand, water, wall}}",
+      "Game.setSeed(n)": "seed the PRNG behind all randomness (applies at the next start())",
+      "Game.step(n)": "advance exactly n fixed 1/60 s ticks synchronously",
+      "Game.input.selectMaterial(name)": "choose the paint material",
+      "Game.input.paint(x, y, radius)": "fill the cells within radius (0 = one cell)",
+      "Game.input.togglePause()": "while paused step() changes nothing",
+      "Game.getCell(x, y)": "'empty', 'sand', 'water' or 'wall'",
+      "Game.clear()": "empty the grid",
+      "Game.cellCenter(x, y)": "canvas point of a cell"
+    }
+  },
+  "checks": {
+    "static": [
+      "file_exists:index.html",
+      "file_exists:.kyora/manifest.json",
+      "file_exists:tests/browser-tests.js",
+      "manifest_valid",
+      "html_wellformed:index.html",
+      "js_syntax",
+      "external_deps",
+      "size_limit",
+      "no_path_escape"
+    ],
+    "browser_tests_file": "b22-particle-sandbox.browser-tests.js",
+    "min_browser_tests": 14
+  },
+  "pass_rule": {
+    "min_pass_rate": 0.94
+  }
+}

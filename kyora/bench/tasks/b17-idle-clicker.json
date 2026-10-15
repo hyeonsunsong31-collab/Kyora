@@ -1,0 +1,48 @@
+{
+  "id": "b17-idle-clicker",
+  "title": "Idle Clicker",
+  "category": "strategy/sim",
+  "kind": "generate",
+  "prompt": "Build an idle clicker. Tapping the big coin earns perClick coins. There are exactly three upgrades: 'power' (+1 per click, base price 10), 'worker' (+1 coin per second, base 15) and 'factory' (+8 per second, base 100). After a purchase the price is ceil(base * 1.15^owned). Income accrues every tick as perSecond / 60, so coins and totalEarned may be fractional (display them floored). score = floor(totalEarned). Reaching 1,000,000 earned ends the game as a win. Keyboard: Space clicks, Digit1/Digit2/Digit3 buy power/worker/factory. Touch/mouse: tap the coin and the upgrade buttons drawn on the canvas, which show prices and disable when unaffordable.\n\nContract (window.Game; implement exactly):\n- Game.start(): new game from any phase; phase becomes 'play'\n- Game.getState(): {phase:'menu'|'play'|'over', score, coins, totalEarned, perClick, perSecond, upgrades:[{id, cost, owned}]}\n- Game.setSeed(n): seed the PRNG behind all randomness (applies at the next start())\n- Game.step(n): advance exactly n fixed 1/60 s ticks synchronously\n- Game.input.click(): click the coin\n- Game.input.buy(id): returns false when unaffordable\n- Game.buttonCenter(name): canvas point of 'coin' or an upgrade id\n- Game.debug.addCoins(n): add n to coins and totalEarned\n\nAcceptance (checked by Kyora Bench browser tests): clicking, prices and scaling, passive income, win, canvas buttons, keyboard.",
+  "engine": "vanilla",
+  "timeout_min": 35,
+  "constraints": {
+    "no_external_deps": true,
+    "max_files": 8,
+    "touch_controls": true,
+    "max_total_mb": 5
+  },
+  "contract": {
+    "globals": [
+      "window.Game"
+    ],
+    "api": {
+      "Game.start()": "new game from any phase; phase becomes 'play'",
+      "Game.getState()": "{phase:'menu'|'play'|'over', score, coins, totalEarned, perClick, perSecond, upgrades:[{id, cost, owned}]}",
+      "Game.setSeed(n)": "seed the PRNG behind all randomness (applies at the next start())",
+      "Game.step(n)": "advance exactly n fixed 1/60 s ticks synchronously",
+      "Game.input.click()": "click the coin",
+      "Game.input.buy(id)": "returns false when unaffordable",
+      "Game.buttonCenter(name)": "canvas point of 'coin' or an upgrade id",
+      "Game.debug.addCoins(n)": "add n to coins and totalEarned"
+    }
+  },
+  "checks": {
+    "static": [
+      "file_exists:index.html",
+      "file_exists:.kyora/manifest.json",
+      "file_exists:tests/browser-tests.js",
+      "manifest_valid",
+      "html_wellformed:index.html",
+      "js_syntax",
+      "external_deps",
+      "size_limit",
+      "no_path_escape"
+    ],
+    "browser_tests_file": "b17-idle-clicker.browser-tests.js",
+    "min_browser_tests": 14
+  },
+  "pass_rule": {
+    "min_pass_rate": 0.94
+  }
+}

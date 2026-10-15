@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>Snake</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #10151c; color: #e8eef5; font-family: system-ui, sans-serif; }
+    body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
+    #game { width: min(92vw, 70vh); height: min(92vw, 70vh); background: #18202b; border-radius: 8px; touch-action: none; }
+    p { margin: 0; font-size: 14px; color: #8a98a8; }
+  </style>
+</head>
+<body>
+  <canvas id="game" width="400" height="400"></canvas>
+  <p>Arrows / WASD or swipe to steer. Space or tap to start.</p>
+  <script src="src/game.js"></script>
+</body>
+</html>
