@@ -529,9 +529,9 @@ class ProjectStore:
         """Store an uploaded file under ``attachments/<aid>_<name>`` and record it (64 MB cap)."""
         if isinstance(data, str):
             data = data.encode("utf-8")
-        data = bytes(data)
         if len(data) > MAX_ATTACHMENT_BYTES:
             raise ValueError(f"attachment {filename!r} is {len(data)} bytes; the limit is 64 MB")
+        data = bytes(data)
         role = (role or "reference").strip().lower()
         if not _ROLE_RE.match(role):
             raise ValueError(f"invalid attachment role {role!r}")

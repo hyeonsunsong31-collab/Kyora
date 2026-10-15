@@ -1248,16 +1248,29 @@ class BrowserResultsCollector:
 
 
 # ============================================================================ merge + gate
+# Ids produced by StaticChecker that a game's own test results must never replace.
+_STATIC_ONLY_PREFIXES = ("file_exists:", "manifest_valid", "html_wellformed:", "json_valid:", "external_deps",
+                         "size_limit", "tests_present:", "no_path_escape")
+
+
 def merge_checks(static: Iterable[Check], node: Iterable[Check] = (), browser: Iterable[Check] = ()) -> list[Check]:
     """Merge check lists by id, keeping first-seen order.
 
     Node checks override static checks with the same id and browser checks override
     both - so a ``deferred`` ``js_syntax:<file>`` is replaced by the browser's
-    ``js_syntax:<file>`` when the harness verified that file.
+    ``js_syntax:<file>`` when the harness verified that file. A runner result whose id
+    collides with one of the static checker's own checks (``manifest_valid``,
+    ``file_exists:...`` ...) cannot mask it: it is kept as ``<group>:<id>`` instead.
     """
     merged: "OrderedDict[str, Check]" = OrderedDict()
     for group in (static, node, browser):
         for c in group or ():
+            prev = merged.get(c.id)
+            if (prev is not None and prev.group == "static" and c.group != "static"
+                    and c.id.startswith(_STATIC_ONLY_PREFIXES)):
+                alias = f"{c.group}:{c.id}"
+                merged[alias] = Check(alias, c.group, c.name, c.status, c.required, c.detail, c.runner)
+                continue
             merged[c.id] = c
     return list(merged.values())
 

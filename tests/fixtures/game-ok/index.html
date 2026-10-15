@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Block Catcher</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #10131a; color: #e9edf5; font: 14px/1.4 system-ui, sans-serif; }
+    #wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px; }
+    #hud { display: flex; gap: 16px; }
+    canvas { background: #1b2030; border-radius: 8px; touch-action: none; max-width: 100%; height: auto; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="hud">
+      <span>Score: <b id="score">0</b></span>
+      <span>Lives: <b id="lives">3</b></span>
+      <span id="phase">menu</span>
+    </div>
+    <canvas id="game" width="320" height="480"></canvas>
+    <p>Arrow keys or tap left/right to move. Space or tap the paddle to start.</p>
+  </div>
+  <script src="src/game.js"></script>
+</body>
+</html>

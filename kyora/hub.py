@@ -427,6 +427,7 @@ class HubJob:
     result: dict | None = None
     events_since: int = 0
     workspace_of: str | None = None
+    seq: int = 0
 
     @property
     def run_id(self) -> str:
@@ -452,9 +453,9 @@ class HubJob:
         return self.state in TERMINAL_STATES
 
     def meta(self) -> dict:
-        return {"id": self.id, "state": self.state, "created_at": self.created_at, "updated_at": self.updated_at,
-                "updated_ts": self.updated_ts, "error": self.error, "events_since": self.events_since,
-                "workspace_of": self.workspace_of}
+        return {"id": self.id, "seq": self.seq, "state": self.state, "created_at": self.created_at,
+                "updated_at": self.updated_at, "updated_ts": self.updated_ts, "error": self.error,
+                "events_since": self.events_since, "workspace_of": self.workspace_of}
 
     def to_dict(self) -> dict:
         return {"job_id": self.id, "state": self.state, "kind": self.kind, "run_id": self.run_id,
@@ -475,6 +476,7 @@ class HubJobStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self._jobs: dict[str, HubJob] = {}
         self._lock = threading.RLock()
+        self._seq = 0
         self._load()
 
     # ------------------------------------------------------------------ persistence
@@ -498,7 +500,9 @@ class HubJobStore:
             hj = HubJob(id=d.name, dir=d, job=job, state=str(meta.get("state") or "failed"),
                         created_at=str(meta.get("created_at") or ""), updated_at=str(meta.get("updated_at") or ""),
                         updated_ts=float(meta.get("updated_ts") or 0.0), error=meta.get("error"), result=result,
-                        events_since=int(meta.get("events_since") or 0), workspace_of=meta.get("workspace_of"))
+                        events_since=int(meta.get("events_since") or 0), workspace_of=meta.get("workspace_of"),
+                        seq=int(meta.get("seq") or 0))
+            self._seq = max(self._seq, hj.seq)
             if not hj.terminal:
                 hj.state = "failed"
                 hj.error = "hub restarted before the job finished"
@@ -525,6 +529,8 @@ class HubJobStore:
             if prev is None or not prev.terminal or not prev.workspace.parent.is_dir():
                 workspace_of = None
         with self._lock:
+            self._seq += 1
+            seq = self._seq
             while True:
                 job_id = new_id("hj")
                 d = self.root / job_id
@@ -535,7 +541,7 @@ class HubJobStore:
                     continue
         now = now_iso()
         hj = HubJob(id=job_id, dir=d, job=job, state="queued", created_at=now, updated_at=now, updated_ts=time.time(),
-                    events_since=int(events_since), workspace_of=workspace_of)
+                    events_since=int(events_since), workspace_of=workspace_of, seq=seq)
         try:
             atomic_write_json(d / "job.json", job)
             ws = hj.workspace
@@ -561,7 +567,7 @@ class HubJobStore:
         """All known jobs, oldest first."""
         with self._lock:
             jobs = list(self._jobs.values())
-        return sorted(jobs, key=lambda j: (j.created_at, j.id))
+        return sorted(jobs, key=lambda j: (j.seq, j.created_at, j.id))
 
     def find_by_session(self, session_id: str) -> HubJob | None:
         """Most recent finished job whose engine result carries ``session_id``."""
@@ -1040,17 +1046,17 @@ class _HubHTTPError(Exception):
         self.message = message
 
 
-def _force_close(resp) -> None:
-    """Close an HTTP response from another thread, waking a blocked ``readline``."""
+def _wake_reader(resp) -> None:
+    """Shut down the socket under an HTTP response so a ``readline`` blocked in another thread returns.
+
+    Only the socket is shut down; the owning thread closes the response itself
+    (closing it from here races ``http.client`` internals).
+    """
     try:
         sock = resp.fp.raw._sock  # type: ignore[attr-defined]
         sock.shutdown(socket.SHUT_RDWR)
-    except Exception:  # noqa: BLE001 - best effort; layout differs between Python versions
-        pass
-    try:
-        resp.close()
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001 - best effort; the read timeout still ends the read
+        log.debug("hub client: could not shut down the relay socket: %s", exc)
 
 
 class _EventRelay(threading.Thread):
@@ -1098,7 +1104,8 @@ class _EventRelay(threading.Thread):
                 self.q.put(("eof", None))
             except urllib.error.HTTPError as exc:
                 self.q.put(("error", f"HTTP {exc.code}"))
-            except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as exc:
+            except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError, AttributeError) as exc:
+                # AttributeError: http.client after the socket was shut down by close()
                 if not self.stop_ev.is_set():
                     self.q.put(("error", f"{type(exc).__name__}: {exc}"))
             if got:
@@ -1113,7 +1120,7 @@ class _EventRelay(threading.Thread):
         with self._lock:
             resp = self._resp
         if resp is not None:
-            _force_close(resp)
+            _wake_reader(resp)
 
 
 class HubClientEngine(CodeEngine):
