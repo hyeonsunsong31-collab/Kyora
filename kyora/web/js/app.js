@@ -901,6 +901,17 @@
     checks.forEach((x) => { const s = x && (x.status || (x.ok === true ? 'pass' : x.ok === false ? 'fail' : '')); if (c[s] != null) c[s] += 1; else c.other += 1; });
     return c.pass + ' pass, ' + c.fail + ' fail' + (c.skip ? ', ' + c.skip + ' skipped' : '') + (c.other ? ', ' + c.other + ' other' : '');
   }
+  /* test.static/test.node carry either a checks array or counts ({passed, failed, deferred, total} / {checks: n, failed}). */
+  function checkSummary(d) {
+    if (Array.isArray(d.checks)) return countChecks(d.checks) || 'done';
+    const parts = [];
+    if (d.passed != null) parts.push(d.passed + ' pass');
+    if (d.failed != null) parts.push(d.failed + ' fail');
+    if (d.deferred) parts.push(d.deferred + ' deferred to the browser');
+    if (d.total != null) parts.push(d.total + ' total');
+    else if (typeof d.checks === 'number') parts.push(d.checks + ' total');
+    return parts.join(', ') || 'done';
+  }
   function sysName(role, model, backend) {
     const key = K.metrics.systemFor(role, model, backend);
     const s = K.metrics.SYSTEMS.find((x) => x.key === key);
@@ -948,12 +959,17 @@
         applyTerminal(ctx, 'awaiting_approval', d);
         out.push(line(ev, 'system', 'gate', 'plan', 'plan ready - waiting for approval'));
         break;
-      case 'run.completed':
-        ctx.state = 'complete';
+      case 'run.completed': {
+        // published for both outcomes: {slide, state: complete|failed_gate, gate_ok, pass_rate, threshold}
+        const st = d.state === 'failed_gate' || d.gate_ok === false ? 'failed_gate' : 'complete';
+        ctx.state = st;
         if (d.slide != null) ctx.slide = (typeof d.slide === 'object' && d.slide) ? d.slide.number : d.slide;
-        applyTerminal(ctx, 'complete', d);
-        out.push(line(ev, 'system', 'gate', 'done', 'run complete' + (ctx.slide != null ? ' - slide v' + ctx.slide : '')));
+        applyTerminal(ctx, st, d);
+        out.push(st === 'complete'
+          ? line(ev, 'system', 'gate', 'done', 'run complete' + (ctx.slide != null ? ' - slide v' + ctx.slide : ''))
+          : line(ev, 'error', 'errors', 'below', 'below the gate' + (typeof d.pass_rate === 'number' ? ' (' + pctText(d.pass_rate) + ')' : '') + (ctx.slide != null ? ' - slide v' + ctx.slide + ' committed, run not complete' : '')));
         break;
+      }
       case 'run.failed':
         ctx.state = 'failed';
         ctx.error = d.error || 'failed';
@@ -968,6 +984,8 @@
       case 'stage.started':
         settleRunning(ctx, 'done', '', d.stage);
         setStage(ctx, d.stage, { status: 'running', pct: 0, message: d.message || '', ms: null });
+        // the stage being executed is the run's state, even when no run.state accompanies it
+        if (STAGE_IDS.indexOf(d.stage) >= 0 && (!ctx.state || ACTIVE_STATES.indexOf(ctx.state) >= 0)) ctx.state = d.stage;
         out.push(line(ev, 'system', 'gate', 'stage', (d.stage || '?') + ' started'));
         break;
       case 'stage.progress': {
@@ -1053,10 +1071,10 @@
         out.push(line(ev, 'judge', 'judge', 'judge', 'judge unavailable: ' + (d.reason || 'no reason given') + ' (tool call allowed, fail-open)', 'warn'));
         break;
       case 'test.static':
-        out.push(line(ev, 'test', 'gate', 'static', 'static checks: ' + (countChecks(d.checks) || 'done')));
+        out.push(line(ev, 'test', 'gate', 'static', 'static checks: ' + checkSummary(d)));
         break;
       case 'test.node':
-        out.push(line(ev, 'test', 'gate', 'node', 'node checks: ' + (countChecks(d.checks) || 'done')));
+        out.push(line(ev, 'test', 'gate', 'node', d.available === false ? 'node checks skipped: Node.js not available on this device' : 'node checks: ' + checkSummary(d)));
         break;
       case 'test.await_browser':
         ctx.awaitBrowser = { runner_url: d.runner_url, iteration: d.iteration, ts: ev.ts, done: false };
@@ -1619,7 +1637,8 @@
     }
     let st = null;
     if (ev.type === 'run.state') st = d.state;
-    else if (ev.type === 'run.completed') st = 'complete';
+    else if (ev.type === 'stage.started' && ACTIVE_STATES.indexOf(known.state || 'created') >= 0 && STAGE_IDS.indexOf(d.stage) >= 0) st = d.stage;
+    else if (ev.type === 'run.completed') st = (d.state === 'failed_gate' || d.gate_ok === false) ? 'failed_gate' : 'complete';
     else if (ev.type === 'run.failed') st = 'failed';
     else if (ev.type === 'run.cancelled') st = 'cancelled';
     else if (ev.type === 'run.blocked') st = 'blocked';

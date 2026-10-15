@@ -286,7 +286,7 @@ class KyoraProcessor(FrameProcessor):
         super().__init__(**kw)
         self._base_url = kyora_base_url(events_url)
         self._token = token or ""
-        self._narrate = bool(narrate)
+        self._narrate_enabled = bool(narrate)  # not self._narrate: that name is the coroutine method below
         self._show_views = bool(show_views)
         self._reconnect_s = max(0.5, float(reconnect_s or 3.0))
         self._task: "PipelineTask | None" = None
@@ -509,7 +509,7 @@ class KyoraProcessor(FrameProcessor):
 
     async def _narrate(self, text: str) -> None:
         text = (text or "").strip()
-        if not text or not self._narrate:
+        if not text or not self._narrate_enabled:
             return
         if self._task is None:
             if not self._warned_no_task:

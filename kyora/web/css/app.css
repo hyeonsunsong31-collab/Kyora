@@ -475,6 +475,10 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; font-
 .engine-banner[data-tone="danger"] .eb-icon { color: var(--danger); }
 .engine-banner[data-tone="danger"] .eb-title { color: var(--danger); letter-spacing: 0.01em; }
 .nav a .nav-badge[data-tone="accent"] { background: var(--accent); }
+/* Chips carry .sr-only detail text; keep that absolutely positioned text inside the chip so it
+   cannot escape the horizontally scrolling strip and widen the phone layout viewport. */
+.chip { position: relative; }
+.card > h2 .hint, .card > h3 .hint { text-transform: none; letter-spacing: 0; font-weight: var(--fw-regular); color: var(--fg-subtle); }
 /* Auto-run browser tests render off-screen (not display:none) so games get real frames and rAF. */
 .hidden-frames { position: fixed; left: -12000px; top: 0; width: 420px; height: 800px; overflow: hidden; pointer-events: none; }
 .hidden-frames iframe { width: 390px; height: 760px; border: 0; display: block; background: #fff; }

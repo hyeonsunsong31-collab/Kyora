@@ -112,14 +112,14 @@
     } else if (f.type === 'secret') {
       const masked = v ? String(v) : '';
       control = '<input type="password" autocomplete="new-password" spellcheck="false" autocapitalize="off" data-masked="true"' + attrs +
-        ' value="" placeholder="' + U().esc(masked ? masked + '  (stored; type to replace)' : 'not set') + '" aria-describedby="' + id + '-help">';
+        ' value="" placeholder="' + U().esc(masked || 'not set') + '" aria-describedby="' + id + '-help">';
     } else {
       const type = f.type === 'int' || f.type === 'float' ? 'number' : (f.type === 'url' ? 'url' : 'text');
       const num = type === 'number' ? (' inputmode="' + (f.type === 'int' ? 'numeric' : 'decimal') + '" step="' + (f.step || 1) + '"' + (f.min != null ? ' min="' + f.min + '"' : '') + (f.max != null ? ' max="' + f.max + '"' : '')) : '';
       control = '<input type="' + type + '" spellcheck="false" autocapitalize="off"' + num + attrs + ' value="' + U().esc(toRaw(f, v)) + '"' + (f.type === 'json' || f.type === 'csv' ? ' class="mono"' : '') + '>';
     }
     return '<div class="field" data-field="' + U().esc(f.s + '.' + f.p) + '"><label for="' + id + '">' + U().esc(f.label) + '</label>' + control +
-      '<div class="help" id="' + id + '-help">' + U().esc(help || (f.type === 'secret' ? 'Masked. Never sent back unless you type a new value.' : '')) + '</div><div class="error" role="alert" hidden></div></div>';
+      '<div class="help" id="' + id + '-help">' + U().esc(help ? help + (f.type === 'secret' ? ' ' : '') : '') + U().esc(f.type === 'secret' ? (v ? 'Stored and masked; type a new value to replace it.' : 'Not set; type a value to store it.') : '') + '</div><div class="error" role="alert" hidden></div></div>';
   }
 
   function render() {
