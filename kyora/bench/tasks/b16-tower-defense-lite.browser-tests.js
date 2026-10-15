@@ -55,7 +55,7 @@
     return pred(S());
   }
 
-  T.test('b16-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b16-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.placeTower', 'input.startWave',
@@ -63,7 +63,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b16-t02', 'start() sets up gold, lives and a continuous edge-to-edge path', async function () {
+  KyoraTest.test('b16-t02', 'start() sets up gold, lives and a continuous edge-to-edge path', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.gold).toBe(100);
@@ -85,7 +85,7 @@
     expect(edge(s.path[s.path.length - 1])).toBe(true);
   });
 
-  T.test('b16-t03', 'towers cost 50 gold and only go on free cells', async function () {
+  KyoraTest.test('b16-t03', 'towers cost 50 gold and only go on free cells', async function () {
     var s = fresh(1);
     expect(G().input.placeTower(s.path[3].x, s.path[3].y)).toBe(false);
     var free = freeCells(s);
@@ -98,7 +98,7 @@
     expect(S().towers.length).toBe(2);
   });
 
-  T.test('b16-t04', 'startWave() sends enemies and cannot overlap a running wave', async function () {
+  KyoraTest.test('b16-t04', 'startWave() sends enemies and cannot overlap a running wave', async function () {
     fresh(1);
     expect(G().input.startWave()).toBe(true);
     var s = S();
@@ -110,7 +110,7 @@
     expect(S().wave).toBe(1);
   });
 
-  T.test('b16-t05', 'enemies walk along the path', async function () {
+  KyoraTest.test('b16-t05', 'enemies walk along the path', async function () {
     fresh(1);
     G().input.startWave();
     for (var k = 0; k < 6; k++) {
@@ -124,7 +124,7 @@
     }
   });
 
-  T.test('b16-t06', 'enemies that reach the exit cost lives', async function () {
+  KyoraTest.test('b16-t06', 'enemies that reach the exit cost lives', async function () {
     fresh(1);
     G().input.startWave();
     var done = stepUntil(function (x) { return !x.waveActive; }, 6000);
@@ -134,7 +134,7 @@
     expect(s.enemies.length).toBe(0);
   });
 
-  T.test('b16-t07', 'towers next to the path kill enemies for score and gold', async function () {
+  KyoraTest.test('b16-t07', 'towers next to the path kill enemies for score and gold', async function () {
     var s = fresh(2);
     var spots = cellsNearEntry(s, 2);
     expect(spots.length).toBe(2);
@@ -146,7 +146,7 @@
     expect(a.gold).toBeGreaterThan(0);
   });
 
-  T.test('b16-t08', 'losing all lives ends the game', async function () {
+  KyoraTest.test('b16-t08', 'losing all lives ends the game', async function () {
     fresh(3);
     for (var w = 0; w < 10 && S().phase === 'play'; w++) {
       G().input.startWave();
@@ -158,7 +158,7 @@
     expect(s.won).toBe(false);
   });
 
-  T.test('b16-t09', 'clicking a free cell places a tower', async function () {
+  KyoraTest.test('b16-t09', 'clicking a free cell places a tower', async function () {
     var s = fresh(4);
     var c = freeCells(s)[5];
     var p = G().cellCenter(c.x, c.y);
@@ -170,7 +170,7 @@
     expect(a.gold).toBe(50);
   });
 
-  T.test('b16-t10', 'tapping a free cell places a tower', async function () {
+  KyoraTest.test('b16-t10', 'tapping a free cell places a tower', async function () {
     var s = fresh(5);
     var c = freeCells(s)[7];
     var p = G().cellCenter(c.x, c.y);
@@ -179,14 +179,14 @@
     expect(S().towers.length).toBe(1);
   });
 
-  T.test('b16-t11', 'Space starts the next wave', async function () {
+  KyoraTest.test('b16-t11', 'Space starts the next wave', async function () {
     fresh(6);
     await T.input.key('Space', 60);
     expect(S().wave).toBe(1);
     expect(S().waveActive).toBe(true);
   });
 
-  T.test('b16-t12', 'same seed and same towers give the same battle', async function () {
+  KyoraTest.test('b16-t12', 'same seed and same towers give the same battle', async function () {
     function run() {
       var s = fresh(7);
       var spots = cellsNearEntry(s, 1);
@@ -202,7 +202,7 @@
     expect(run()).toEqual(run());
   });
 
-  T.test('b16-t13', 'screenshot of the running game', async function () {
+  KyoraTest.test('b16-t13', 'screenshot of the running game', async function () {
     var s = fresh(8);
     var spots = cellsNearEntry(s, 1);
     G().input.placeTower(spots[0].x, spots[0].y);

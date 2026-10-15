@@ -31,7 +31,7 @@
   }
   var CORRIDOR = ['#######', '#@ $ .#', '#######'];
 
-  T.test('b09-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b09-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.move', 'input.undo', 'input.restart',
@@ -39,7 +39,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b09-t02', 'start() loads built-in level 1', async function () {
+  KyoraTest.test('b09-t02', 'start() loads built-in level 1', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.level).toBe(1);
@@ -53,7 +53,7 @@
     expect(s.player.y).toBeLessThan(s.rows);
   });
 
-  T.test('b09-t03', 'loadLevel() parses standard Sokoban text', async function () {
+  KyoraTest.test('b09-t03', 'loadLevel() parses standard Sokoban text', async function () {
     var s = level(CORRIDOR);
     expect(s.cols).toBe(7);
     expect(s.rows).toBe(3);
@@ -64,7 +64,7 @@
     expect(s.phase).toBe('play');
   });
 
-  T.test('b09-t04', 'walking and pushing update moves and pushes', async function () {
+  KyoraTest.test('b09-t04', 'walking and pushing update moves and pushes', async function () {
     level(CORRIDOR);
     expect(G().input.move('right')).toBe(true);
     var s = S();
@@ -78,7 +78,7 @@
     expect(s.pushes).toBe(1);
   });
 
-  T.test('b09-t05', 'pushing the last box onto its goal solves the level', async function () {
+  KyoraTest.test('b09-t05', 'pushing the last box onto its goal solves the level', async function () {
     level(CORRIDOR);
     G().input.move('right');
     G().input.move('right');
@@ -90,7 +90,7 @@
     expect(s.phase).toBe('over');
   });
 
-  T.test('b09-t06', 'walls block the player', async function () {
+  KyoraTest.test('b09-t06', 'walls block the player', async function () {
     level(['######', '#@#$.#', '######']);
     expect(G().input.move('right')).toBe(false);
     expect(G().input.move('up')).toBe(false);
@@ -99,7 +99,7 @@
     expect(s.moves).toBe(0);
   });
 
-  T.test('b09-t07', 'a box cannot be pushed into a wall or another box', async function () {
+  KyoraTest.test('b09-t07', 'a box cannot be pushed into a wall or another box', async function () {
     level(['########', '#@$$ ..#', '########']);
     expect(G().input.move('right')).toBe(false);
     expect(S().player).toEqual({ x: 1, y: 1 });
@@ -110,7 +110,7 @@
     expect(s.boxes).toEqual([{ x: 3, y: 1 }]);
   });
 
-  T.test('b09-t08', 'undo reverts the last move including the box', async function () {
+  KyoraTest.test('b09-t08', 'undo reverts the last move including the box', async function () {
     level(CORRIDOR);
     G().input.move('right');
     G().input.move('right');
@@ -122,7 +122,7 @@
     expect(s.pushes).toBe(0);
   });
 
-  T.test('b09-t09', 'restart puts the level back to its initial layout', async function () {
+  KyoraTest.test('b09-t09', 'restart puts the level back to its initial layout', async function () {
     level(CORRIDOR);
     G().input.move('right');
     G().input.move('right');
@@ -133,7 +133,7 @@
     expect(s.moves).toBe(0);
   });
 
-  T.test('b09-t10', 'y grows downward: pushing down along a column', async function () {
+  KyoraTest.test('b09-t10', 'y grows downward: pushing down along a column', async function () {
     level(['###', '#@#', '# #', '#$#', '#.#', '###']);
     G().input.move('down');
     expect(S().player).toEqual({ x: 1, y: 2 });
@@ -143,21 +143,21 @@
     expect(s.solved).toBe(true);
   });
 
-  T.test('b09-t11', 'arrow keys move the player', async function () {
+  KyoraTest.test('b09-t11', 'arrow keys move the player', async function () {
     level(CORRIDOR);
     await T.input.key('ArrowRight', 60);
     expect(S().player.x).toBeGreaterThan(1);
     expect(S().moves).toBeGreaterThanOrEqual(1);
   });
 
-  T.test('b09-t12', 'a swipe on the canvas moves the player', async function () {
+  KyoraTest.test('b09-t12', 'a swipe on the canvas moves the player', async function () {
     level(CORRIDOR);
     var b = box();
     await T.input.touch(b.w * 0.3, b.h / 2, b.w * 0.7, b.h / 2, 150);
     expect(S().player.x).toBeGreaterThan(1);
   });
 
-  T.test('b09-t13', 'start() after a solved level begins level 1 again; screenshot', async function () {
+  KyoraTest.test('b09-t13', 'start() after a solved level begins level 1 again; screenshot', async function () {
     level(CORRIDOR);
     G().input.move('right');
     G().input.move('right');

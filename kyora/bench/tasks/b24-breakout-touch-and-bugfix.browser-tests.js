@@ -52,14 +52,14 @@
     return { bounced: bounced && S().ballVY < 0, lives: S().lives };
   }
 
-  T.test('b24-t01', 'the existing contract is intact', async function () {
+  KyoraTest.test('b24-t01', 'the existing contract is intact', async function () {
     expect(canvas()).toBeTruthy();
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.press', 'input.release',
       'input.action', 'debug.setBall', 'debug.keepBricks'])).toEqual([]);
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b24-t02', 'start() still deals the same game', async function () {
+  KyoraTest.test('b24-t02', 'start() still deals the same game', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.lives).toBe(3);
@@ -69,7 +69,7 @@
     expect(s.height).toBe(640);
   });
 
-  T.test('b24-t03', 'the left half of the paddle still returns the ball', async function () {
+  KyoraTest.test('b24-t03', 'the left half of the paddle still returns the ball', async function () {
     var r = dropAt(-0.5);
     expect(r.bounced).toBe(true);
     expect(r.lives).toBe(3);
@@ -77,13 +77,13 @@
     expect(r.bounced).toBe(true);
   });
 
-  T.test('b24-t04', 'bug fixed: the right half of the paddle returns the ball', async function () {
+  KyoraTest.test('b24-t04', 'bug fixed: the right half of the paddle returns the ball', async function () {
     var r = dropAt(0.5);
     expect(r.bounced).toBe(true);
     expect(r.lives).toBe(3);
   });
 
-  T.test('b24-t05', 'bug fixed: both paddle ends return the ball and deflect it outward', async function () {
+  KyoraTest.test('b24-t05', 'bug fixed: both paddle ends return the ball and deflect it outward', async function () {
     var right = dropAt(0.95);
     expect(right.bounced).toBe(true);
     expect(S().ballVX).toBeGreaterThan(0);
@@ -92,14 +92,14 @@
     expect(S().ballVX).toBeLessThan(0);
   });
 
-  T.test('b24-t06', 'a ball beside the paddle is still lost', async function () {
+  KyoraTest.test('b24-t06', 'a ball beside the paddle is still lost', async function () {
     var s = fresh(1);
     G().debug.setBall(s.paddleX + s.paddleW / 2 + 40, s.height - 150, 0, 5);
     G().step(150);
     expect(S().lives).toBe(2);
   });
 
-  T.test('b24-t07', 'keyboard controls still work', async function () {
+  KyoraTest.test('b24-t07', 'keyboard controls still work', async function () {
     var s = fresh(2);
     await holdKey('ArrowLeft', 20);
     expect(S().paddleX).toBeLessThan(s.paddleX);
@@ -107,21 +107,21 @@
     expect(S().ballAttached).toBe(false);
   });
 
-  T.test('b24-t08', 'dragging on the canvas moves the paddle toward the finger (left)', async function () {
+  KyoraTest.test('b24-t08', 'dragging on the canvas moves the paddle toward the finger (left)', async function () {
     var s = fresh(3);
     var b = box();
     await holdTouch(b.w * 0.5, b.h * 0.85, b.w * 0.1, b.h * 0.85, 40);
     expect(S().paddleX).toBeLessThan(s.paddleX - 20);
   });
 
-  T.test('b24-t09', 'dragging on the canvas moves the paddle toward the finger (right)', async function () {
+  KyoraTest.test('b24-t09', 'dragging on the canvas moves the paddle toward the finger (right)', async function () {
     var s = fresh(4);
     var b = box();
     await holdTouch(b.w * 0.5, b.h * 0.85, b.w * 0.9, b.h * 0.85, 40);
     expect(S().paddleX).toBeGreaterThan(s.paddleX + 20);
   });
 
-  T.test('b24-t10', 'a tap launches the ball', async function () {
+  KyoraTest.test('b24-t10', 'a tap launches the ball', async function () {
     fresh(5);
     var b = box();
     await T.input.touch(b.w * 0.5, b.h * 0.5);
@@ -130,11 +130,11 @@
     expect(S().ballAttached).toBe(false);
   });
 
-  T.test('b24-t11', 'the canvas does not scroll the page on touch', async function () {
+  KyoraTest.test('b24-t11', 'the canvas does not scroll the page on touch', async function () {
     expect(getComputedStyle(canvas()).touchAction).toBe('none');
   });
 
-  T.test('b24-t12', 'bricks still break and the last brick still wins', async function () {
+  KyoraTest.test('b24-t12', 'bricks still break and the last brick still wins', async function () {
     var s = fresh(6);
     var low = s.brickRects.reduce(function (a, r) { return (r.y + r.h > a.y + a.h) ? r : a; }, s.brickRects[0]);
     G().debug.setBall(low.x + low.w / 2, low.y + low.h + 40, 0, -4);
@@ -147,7 +147,7 @@
     expect(S().won).toBe(true);
   });
 
-  T.test('b24-t13', 'screenshot of the running game', async function () {
+  KyoraTest.test('b24-t13', 'screenshot of the running game', async function () {
     fresh(7);
     G().input.action();
     G().step(30);

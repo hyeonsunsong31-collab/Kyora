@@ -43,7 +43,7 @@
     return S();
   }
 
-  T.test('b11-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b11-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.slide', 'input.tap', 'cellCenter',
@@ -51,7 +51,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b11-t02', 'start() deals a shuffled, solvable, unsolved 4x4 puzzle', async function () {
+  KyoraTest.test('b11-t02', 'start() deals a shuffled, solvable, unsolved 4x4 puzzle', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.size).toBe(4);
@@ -61,7 +61,7 @@
     expect(solvable(s.tiles)).toBe(true);
   });
 
-  T.test('b11-t03', 'every seed gives a solvable shuffle that is not already solved', async function () {
+  KyoraTest.test('b11-t03', 'every seed gives a solvable shuffle that is not already solved', async function () {
     for (var seed = 2; seed <= 7; seed++) {
       var s = fresh(seed);
       expect(isPermutation(s.tiles)).toBe(true);
@@ -70,7 +70,7 @@
     }
   });
 
-  T.test('b11-t04', "slide('left') moves the tile right of the blank and can solve the puzzle", async function () {
+  KyoraTest.test('b11-t04', "slide('left') moves the tile right of the blank and can solve the puzzle", async function () {
     setup(ONE_LEFT);
     expect(G().input.slide('left')).toBe(true);
     var s = S();
@@ -81,14 +81,14 @@
     expect(s.score).toBeGreaterThan(0);
   });
 
-  T.test('b11-t05', "slide('up') moves the tile below the blank up", async function () {
+  KyoraTest.test('b11-t05', "slide('up') moves the tile below the blank up", async function () {
     setup(ONE_UP);
     expect(G().input.slide('up')).toBe(true);
     expect(S().tiles).toEqual(SOLVED);
     expect(S().solved).toBe(true);
   });
 
-  T.test('b11-t06', 'a slide with no tile to move returns false', async function () {
+  KyoraTest.test('b11-t06', 'a slide with no tile to move returns false', async function () {
     setup(ONE_LEFT);
     expect(G().input.slide('up')).toBe(false);
     var s = S();
@@ -96,7 +96,7 @@
     expect(s.moves).toBe(0);
   });
 
-  T.test('b11-t07', 'slides in both directions count as moves', async function () {
+  KyoraTest.test('b11-t07', 'slides in both directions count as moves', async function () {
     setup(ONE_LEFT);
     expect(G().input.slide('right')).toBe(true);
     var s = S();
@@ -108,7 +108,7 @@
     expect(S().moves).toBe(2);
   });
 
-  T.test('b11-t08', 'tap() moves a tile next to the blank only', async function () {
+  KyoraTest.test('b11-t08', 'tap() moves a tile next to the blank only', async function () {
     setup(ONE_LEFT);
     expect(G().input.tap(0, 0)).toBe(false);
     expect(S().moves).toBe(0);
@@ -116,11 +116,11 @@
     expect(S().solved).toBe(true);
   });
 
-  T.test('b11-t09', 'same seed gives the same shuffle', async function () {
+  KyoraTest.test('b11-t09', 'same seed gives the same shuffle', async function () {
     expect(fresh(33).tiles).toEqual(fresh(33).tiles);
   });
 
-  T.test('b11-t10', 'arrow keys slide tiles', async function () {
+  KyoraTest.test('b11-t10', 'arrow keys slide tiles', async function () {
     setup(ONE_LEFT);
     await T.input.key('ArrowLeft', 60);
     var s = S();
@@ -128,7 +128,7 @@
     expect(s.phase).toBe('over');
   });
 
-  T.test('b11-t11', 'tapping a tile on the canvas slides it', async function () {
+  KyoraTest.test('b11-t11', 'tapping a tile on the canvas slides it', async function () {
     setup(ONE_UP);
     var p = G().cellCenter(3, 3);
     await T.input.touch(p.x, p.y);
@@ -136,7 +136,7 @@
     expect(S().solved).toBe(true);
   });
 
-  T.test('b11-t12', 'clicking a tile slides it', async function () {
+  KyoraTest.test('b11-t12', 'clicking a tile slides it', async function () {
     setup(ONE_LEFT);
     var p = G().cellCenter(3, 3);
     await T.input.click(p.x, p.y);
@@ -144,7 +144,7 @@
     expect(S().solved).toBe(true);
   });
 
-  T.test('b11-t13', 'start() after solving deals a new puzzle; screenshot', async function () {
+  KyoraTest.test('b11-t13', 'start() after solving deals a new puzzle; screenshot', async function () {
     setup(ONE_LEFT);
     G().input.slide('left');
     expect(S().phase).toBe('over');

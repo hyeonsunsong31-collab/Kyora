@@ -39,7 +39,7 @@
   }
   function height(s) { return s.groundY - (s.player.y + s.player.h); }
 
-  T.test('b14-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b14-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.jump', 'input.press', 'input.release',
@@ -47,7 +47,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b14-t02', 'start() runs on the ground with nothing in the way', async function () {
+  KyoraTest.test('b14-t02', 'start() runs on the ground with nothing in the way', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.score).toBe(0);
@@ -58,7 +58,7 @@
     s.obstacles.forEach(function (o) { expect(o.x).toBeGreaterThan(s.player.x + s.player.w); });
   });
 
-  T.test('b14-t03', 'the score grows with distance', async function () {
+  KyoraTest.test('b14-t03', 'the score grows with distance', async function () {
     quiet(1);
     G().step(120);
     var a = S().score;
@@ -67,7 +67,7 @@
     expect(S().score).toBeGreaterThan(a);
   });
 
-  T.test('b14-t04', 'the speed rises at least 10% within 1800 ticks', async function () {
+  KyoraTest.test('b14-t04', 'the speed rises at least 10% within 1800 ticks', async function () {
     var s = quiet(1);
     G().step(1800);
     var a = S();
@@ -75,7 +75,7 @@
     expect(a.speed).toBeGreaterThanOrEqual(s.speed * 1.1 - 1e-9);
   });
 
-  T.test('b14-t05', 'jump() leaves the ground and the runner lands again', async function () {
+  KyoraTest.test('b14-t05', 'jump() leaves the ground and the runner lands again', async function () {
     quiet(1);
     G().input.jump();
     G().step(1);
@@ -85,14 +85,14 @@
     expect(stepUntil(function (x) { return x.player.onGround; }, 150)).toBe(true);
   });
 
-  T.test('b14-t06', 'running into a low obstacle ends the run', async function () {
+  KyoraTest.test('b14-t06', 'running into a low obstacle ends the run', async function () {
     var s = quiet(1);
     G().debug.spawnObstacle('low', s.player.x + s.player.w + 100);
     stepUntil(function (x) { return x.phase !== 'play'; }, 300);
     expect(S().phase).toBe('over');
   });
 
-  T.test('b14-t07', 'a well-timed jump clears a low obstacle', async function () {
+  KyoraTest.test('b14-t07', 'a well-timed jump clears a low obstacle', async function () {
     var s = quiet(2);
     // measure the obstacle and the jump arc on an empty track
     G().debug.spawnObstacle('low', s.player.x + 5000);
@@ -128,7 +128,7 @@
     expect(S().phase).toBe('play');
   });
 
-  T.test('b14-t08', 'ducking passes under a high obstacle', async function () {
+  KyoraTest.test('b14-t08', 'ducking passes under a high obstacle', async function () {
     var s = quiet(3);
     G().input.press('duck');
     G().step(2);
@@ -144,14 +144,14 @@
     expect(S().player.ducking).toBe(false);
   });
 
-  T.test('b14-t09', 'a high obstacle hits a runner who does not duck', async function () {
+  KyoraTest.test('b14-t09', 'a high obstacle hits a runner who does not duck', async function () {
     var s = quiet(4);
     G().debug.spawnObstacle('high', s.player.x + s.player.w + 60);
     stepUntil(function (x) { return x.phase !== 'play'; }, 400);
     expect(S().phase).toBe('over');
   });
 
-  T.test('b14-t10', 'obstacles spawn by themselves', async function () {
+  KyoraTest.test('b14-t10', 'obstacles spawn by themselves', async function () {
     fresh(5);
     var most = 0;
     for (var i = 0; i < 60 && S().phase === 'play'; i++) {
@@ -161,7 +161,7 @@
     expect(most).toBeGreaterThan(0);
   });
 
-  T.test('b14-t11', 'same seed gives the same course', async function () {
+  KyoraTest.test('b14-t11', 'same seed gives the same course', async function () {
     function run() {
       fresh(13);
       G().step(400);
@@ -174,7 +174,7 @@
     expect(run()).toEqual(run());
   });
 
-  T.test('b14-t12', 'Space jumps and ArrowDown ducks', async function () {
+  KyoraTest.test('b14-t12', 'Space jumps and ArrowDown ducks', async function () {
     quiet(6);
     var p = T.input.key('ArrowDown', 300);
     await T.wait(80);
@@ -187,7 +187,7 @@
     expect(S().player.onGround).toBe(false);
   });
 
-  T.test('b14-t13', 'tapping the upper half of the canvas jumps', async function () {
+  KyoraTest.test('b14-t13', 'tapping the upper half of the canvas jumps', async function () {
     quiet(7);
     var b = box();
     await T.input.touch(b.w / 2, b.h * 0.2);
@@ -195,7 +195,7 @@
     expect(S().player.onGround).toBe(false);
   });
 
-  T.test('b14-t14', 'screenshot of the running game', async function () {
+  KyoraTest.test('b14-t14', 'screenshot of the running game', async function () {
     fresh(8);
     G().step(120);
     await T.wait(50);

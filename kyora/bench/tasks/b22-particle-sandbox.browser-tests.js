@@ -42,7 +42,7 @@
     return out.join('\n');
   }
 
-  T.test('b22-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b22-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.selectMaterial', 'input.paint',
@@ -50,7 +50,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b22-t02', 'start() opens an empty sandbox of at least 80x60 cells', async function () {
+  KyoraTest.test('b22-t02', 'start() opens an empty sandbox of at least 80x60 cells', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.cols).toBeGreaterThanOrEqual(80);
@@ -62,7 +62,7 @@
     expect(G().getCell(0, 0)).toBe('empty');
   });
 
-  T.test('b22-t03', 'sand falls to the floor', async function () {
+  KyoraTest.test('b22-t03', 'sand falls to the floor', async function () {
     var s = fresh(1);
     put('sand', 10, 0);
     expect(G().getCell(10, 0)).toBe('sand');
@@ -73,7 +73,7 @@
     expect(S().score).toBe(1);
   });
 
-  T.test('b22-t04', 'sand piles up and spreads sideways', async function () {
+  KyoraTest.test('b22-t04', 'sand piles up and spreads sideways', async function () {
     var s = fresh(1);
     var cx = Math.floor(s.cols / 2);
     for (var i = 0; i < 40; i++) {
@@ -92,7 +92,7 @@
     expect(S().counts.sand).toBe(placed);
   });
 
-  T.test('b22-t05', 'walls stop falling sand', async function () {
+  KyoraTest.test('b22-t05', 'walls stop falling sand', async function () {
     var s = fresh(1);
     for (var x = 5; x <= 25; x++) put('wall', x, 30);
     put('sand', 15, 0);
@@ -102,7 +102,7 @@
     expect(S().counts.wall).toBe(21);
   });
 
-  T.test('b22-t06', 'water flows sideways into a flat layer', async function () {
+  KyoraTest.test('b22-t06', 'water flows sideways into a flat layer', async function () {
     var s = fresh(1);
     var cx = Math.floor(s.cols / 2);
     for (var i = 0; i < 30; i++) {
@@ -118,7 +118,7 @@
     expect(stacked).toBe(0);
   });
 
-  T.test('b22-t07', 'sand sinks below water', async function () {
+  KyoraTest.test('b22-t07', 'sand sinks below water', async function () {
     var s = fresh(1);
     var cx = Math.floor(s.cols / 2);
     for (var x = 0; x < s.cols; x++) put('water', x, s.rows - 1);
@@ -131,7 +131,7 @@
     expect(S().counts.sand).toBe(1);
   });
 
-  T.test('b22-t08', 'the simulation neither creates nor destroys particles', async function () {
+  KyoraTest.test('b22-t08', 'the simulation neither creates nor destroys particles', async function () {
     var s = fresh(2);
     put('sand', 20, 5, 3);
     put('water', 40, 5, 3);
@@ -143,7 +143,7 @@
     expect(S().score).toBe(c0.sand + c0.water + c0.wall);
   });
 
-  T.test('b22-t09', 'pause freezes the simulation', async function () {
+  KyoraTest.test('b22-t09', 'pause freezes the simulation', async function () {
     var s = fresh(1);
     G().input.togglePause();
     expect(S().paused).toBe(true);
@@ -156,7 +156,7 @@
     expect(G().getCell(12, 0)).toBe('empty');
   });
 
-  T.test('b22-t10', 'clear() empties the sandbox', async function () {
+  KyoraTest.test('b22-t10', 'clear() empties the sandbox', async function () {
     fresh(1);
     put('sand', 20, 20, 3);
     put('wall', 30, 30, 2);
@@ -167,7 +167,7 @@
     expect(G().getCell(20, 20)).toBe('empty');
   });
 
-  T.test('b22-t11', 'same seed and same strokes give the same sandbox', async function () {
+  KyoraTest.test('b22-t11', 'same seed and same strokes give the same sandbox', async function () {
     function run() {
       var s = fresh(9);
       put('sand', 30, 2, 4);
@@ -179,7 +179,7 @@
     expect(run()).toBe(run());
   });
 
-  T.test('b22-t12', 'clicking and dragging on the canvas paints immediately', async function () {
+  KyoraTest.test('b22-t12', 'clicking and dragging on the canvas paints immediately', async function () {
     fresh(3);
     var p = G().cellCenter(20, 20);
     await T.input.click(p.x, p.y);
@@ -192,7 +192,7 @@
     expect(G().getCell(30, 50)).toBe('wall');
   });
 
-  T.test('b22-t13', 'number keys pick materials and Space pauses', async function () {
+  KyoraTest.test('b22-t13', 'number keys pick materials and Space pauses', async function () {
     fresh(4);
     await T.input.key('Digit2', 60);
     expect(S().material).toBe('water');
@@ -202,7 +202,7 @@
     expect(S().paused).toBe(true);
   });
 
-  T.test('b22-t14', 'screenshot of the sandbox', async function () {
+  KyoraTest.test('b22-t14', 'screenshot of the sandbox', async function () {
     var s = fresh(5);
     put('wall', 40, 45, 2);
     put('sand', 40, 5, 4);

@@ -42,14 +42,14 @@
     } catch (e) { /* storage blocked: the assertions below will report it */ }
   }
 
-  T.test('b23-t01', 'the existing contract is intact and the new API exists', async function () {
+  KyoraTest.test('b23-t01', 'the existing contract is intact and the new API exists', async function () {
     expect(canvas()).toBeTruthy();
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.turn', 'debug.setFood',
       'input.togglePause', 'pauseButtonRect'])).toEqual([]);
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b23-t02', 'the snake still starts at the centre and moves one cell per ticksPerMove', async function () {
+  KyoraTest.test('b23-t02', 'the snake still starts at the centre and moves one cell per ticksPerMove', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.length).toBe(3);
@@ -61,7 +61,7 @@
     expect(S().head).toEqual({ x: s.head.x + 2, y: s.head.y + 1 });
   });
 
-  T.test('b23-t03', 'eating still scores 10 and grows; walls still end the game', async function () {
+  KyoraTest.test('b23-t03', 'eating still scores 10 and grows; walls still end the game', async function () {
     var s = fresh(1);
     G().debug.setFood(s.head.x + 1, s.head.y);
     moves(1);
@@ -73,7 +73,7 @@
     expect(S().phase).toBe('over');
   });
 
-  T.test('b23-t04', 'togglePause() freezes the snake and resumes it', async function () {
+  KyoraTest.test('b23-t04', 'togglePause() freezes the snake and resumes it', async function () {
     var s = fresh(1);
     G().input.togglePause();
     expect(S().paused).toBe(true);
@@ -86,7 +86,7 @@
     expect(S().head).toEqual({ x: s.head.x + 1, y: s.head.y });
   });
 
-  T.test('b23-t05', 'turns are ignored while paused', async function () {
+  KyoraTest.test('b23-t05', 'turns are ignored while paused', async function () {
     var s = fresh(1);
     G().input.togglePause();
     G().input.turn('up');
@@ -95,7 +95,7 @@
     expect(S().head).toEqual({ x: s.head.x + 1, y: s.head.y });
   });
 
-  T.test('b23-t06', 'P pauses and Escape resumes', async function () {
+  KyoraTest.test('b23-t06', 'P pauses and Escape resumes', async function () {
     fresh(2);
     await T.input.key('KeyP', 60);
     expect(S().paused).toBe(true);
@@ -103,7 +103,7 @@
     expect(S().paused).toBe(false);
   });
 
-  T.test('b23-t07', 'the on-canvas pause button works by touch', async function () {
+  KyoraTest.test('b23-t07', 'the on-canvas pause button works by touch', async function () {
     fresh(3);
     var r = G().pauseButtonRect();
     expect(r.w).toBeGreaterThanOrEqual(24);
@@ -116,7 +116,7 @@
     expect(S().paused).toBe(false);
   });
 
-  T.test('b23-t08', 'pause only applies while playing; start() unpauses', async function () {
+  KyoraTest.test('b23-t08', 'pause only applies while playing; start() unpauses', async function () {
     var s = fresh(4);
     G().input.togglePause();
     expect(S().paused).toBe(true);
@@ -128,7 +128,7 @@
     expect(S().paused).toBe(false);
   });
 
-  T.test('b23-t09', 'a new best score is saved to localStorage at game over', async function () {
+  KyoraTest.test('b23-t09', 'a new best score is saved to localStorage at game over', async function () {
     store(null);
     fresh(5);
     expect(S().highScore).toBe(0);
@@ -140,14 +140,14 @@
     expect(localStorage.getItem(KEY)).toBe('20');
   });
 
-  T.test('b23-t10', 'the stored best is loaded by start()', async function () {
+  KyoraTest.test('b23-t10', 'the stored best is loaded by start()', async function () {
     store('990');
     var s = fresh(6);
     expect(s.highScore).toBe(990);
     expect(s.score).toBe(0);
   });
 
-  T.test('b23-t11', 'a worse game never lowers the best', async function () {
+  KyoraTest.test('b23-t11', 'a worse game never lowers the best', async function () {
     store('990');
     fresh(7);
     eatTwiceThenCrash();
@@ -160,7 +160,7 @@
     store(null);
   });
 
-  T.test('b23-t12', 'screenshot of the paused game', async function () {
+  KyoraTest.test('b23-t12', 'screenshot of the paused game', async function () {
     fresh(8);
     moves(2);
     G().input.togglePause();

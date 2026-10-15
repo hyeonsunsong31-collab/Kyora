@@ -26,14 +26,14 @@
   }
   function moves(n) { G().step(S().ticksPerMove * n); }
 
-  T.test('b02-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b02-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.turn', 'debug.setFood'])).toEqual([]);
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b02-t02', 'start() places a 3-long snake heading right at the centre', async function () {
+  KyoraTest.test('b02-t02', 'start() places a 3-long snake heading right at the centre', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.score).toBe(0);
@@ -46,7 +46,7 @@
     expect(s.food.x === s.head.x && s.food.y === s.head.y).toBe(false);
   });
 
-  T.test('b02-t03', 'the snake advances exactly one cell every ticksPerMove ticks', async function () {
+  KyoraTest.test('b02-t03', 'the snake advances exactly one cell every ticksPerMove ticks', async function () {
     var s = fresh(1);
     var tpm = s.ticksPerMove;
     if (tpm > 1) {
@@ -61,7 +61,7 @@
     expect(S().head).toEqual({ x: s.head.x + 3, y: s.head.y });
   });
 
-  T.test('b02-t04', 'turning up moves the head to a smaller y', async function () {
+  KyoraTest.test('b02-t04', 'turning up moves the head to a smaller y', async function () {
     var s = fresh(1);
     G().input.turn('up');
     moves(1);
@@ -70,7 +70,7 @@
     expect(a.head).toEqual({ x: s.head.x, y: s.head.y - 1 });
   });
 
-  T.test('b02-t05', 'a turn onto the opposite direction is ignored', async function () {
+  KyoraTest.test('b02-t05', 'a turn onto the opposite direction is ignored', async function () {
     var s = fresh(1);
     G().input.turn('left');
     moves(1);
@@ -78,7 +78,7 @@
     expect(S().phase).toBe('play');
   });
 
-  T.test('b02-t06', 'eating food scores 10, grows the snake and respawns the food', async function () {
+  KyoraTest.test('b02-t06', 'eating food scores 10, grows the snake and respawns the food', async function () {
     var s = fresh(1);
     G().debug.setFood(s.head.x + 1, s.head.y);
     moves(1);
@@ -90,14 +90,14 @@
     expect(S().length).toBe(4);
   });
 
-  T.test('b02-t07', 'running into a wall ends the game', async function () {
+  KyoraTest.test('b02-t07', 'running into a wall ends the game', async function () {
     var s = fresh(1);
     G().debug.setFood(0, 0);
     moves(s.cols);
     expect(S().phase).toBe('over');
   });
 
-  T.test('b02-t08', 'running into its own body ends the game', async function () {
+  KyoraTest.test('b02-t08', 'running into its own body ends the game', async function () {
     var s = fresh(1);
     G().debug.setFood(s.head.x + 1, s.head.y);
     moves(1);
@@ -116,7 +116,7 @@
     expect(S().phase).toBe('over');
   });
 
-  T.test('b02-t09', 'start() after game over begins a fresh game', async function () {
+  KyoraTest.test('b02-t09', 'start() after game over begins a fresh game', async function () {
     var s = fresh(1);
     moves(s.cols);
     expect(S().phase).toBe('over');
@@ -128,7 +128,7 @@
     expect(a.dir).toBe('right');
   });
 
-  T.test('b02-t10', 'same seed gives the same food and the same game', async function () {
+  KyoraTest.test('b02-t10', 'same seed gives the same food and the same game', async function () {
     function run() {
       var s = fresh(42);
       var first = s.food;
@@ -140,7 +140,7 @@
     expect(run()).toEqual(run());
   });
 
-  T.test('b02-t11', 'arrow keys turn the snake', async function () {
+  KyoraTest.test('b02-t11', 'arrow keys turn the snake', async function () {
     var s = fresh(5);
     await T.input.key('ArrowUp', 80);
     moves(1);
@@ -150,7 +150,7 @@
     expect(S().head).toEqual({ x: s.head.x + 1, y: s.head.y - 1 });
   });
 
-  T.test('b02-t12', 'a swipe on the canvas turns the snake', async function () {
+  KyoraTest.test('b02-t12', 'a swipe on the canvas turns the snake', async function () {
     var s = fresh(6);
     var b = box();
     await T.input.touch(b.w / 2, b.h / 2, b.w / 2, b.h / 2 - Math.min(120, b.h / 3), 200);
@@ -158,7 +158,7 @@
     expect(S().head).toEqual({ x: s.head.x, y: s.head.y - 1 });
   });
 
-  T.test('b02-t13', 'screenshot of the running game', async function () {
+  KyoraTest.test('b02-t13', 'screenshot of the running game', async function () {
     fresh(7);
     moves(2);
     await T.wait(50);

@@ -32,7 +32,7 @@
     return n;
   }
 
-  T.test('b10-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b10-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.reveal', 'input.flag', 'cellCenter',
@@ -40,7 +40,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b10-t02', 'start() deals a hidden 9x9 board with 10 mines', async function () {
+  KyoraTest.test('b10-t02', 'start() deals a hidden 9x9 board with 10 mines', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.cols).toBe(9);
@@ -55,7 +55,7 @@
     expect(s.cells[0][0].adjacent).toBe(null);
   });
 
-  T.test('b10-t03', 'the first reveal is safe and opens an empty area', async function () {
+  KyoraTest.test('b10-t03', 'the first reveal is safe and opens an empty area', async function () {
     fresh(5);
     G().input.reveal(4, 4);
     var s = S();
@@ -67,7 +67,7 @@
     expect(s.score).toBe(s.revealed);
   });
 
-  T.test('b10-t04', 'revealing every safe cell wins', async function () {
+  KyoraTest.test('b10-t04', 'revealing every safe cell wins', async function () {
     fresh(1);
     G().debug.setMines([[0, 0]]);
     G().input.reveal(8, 8);
@@ -77,7 +77,7 @@
     expect(s.phase).toBe('over');
   });
 
-  T.test('b10-t05', 'revealing a mine loses', async function () {
+  KyoraTest.test('b10-t05', 'revealing a mine loses', async function () {
     fresh(1);
     G().debug.setMines([[3, 3], [7, 7]]);
     G().input.reveal(3, 3);
@@ -86,7 +86,7 @@
     expect(s.won).toBe(false);
   });
 
-  T.test('b10-t06', 'numbers count the adjacent mines', async function () {
+  KyoraTest.test('b10-t06', 'numbers count the adjacent mines', async function () {
     fresh(1);
     G().debug.setMines([[0, 0], [2, 0], [1, 2]]);
     G().input.reveal(1, 1);
@@ -99,7 +99,7 @@
     expect(s.revealed).toBe(3);
   });
 
-  T.test('b10-t07', 'flood fill stops at numbered cells', async function () {
+  KyoraTest.test('b10-t07', 'flood fill stops at numbered cells', async function () {
     fresh(1);
     var wall = [];
     for (var y = 0; y < 9; y++) wall.push([4, y]);
@@ -114,7 +114,7 @@
     expect(s.phase).toBe('play');
   });
 
-  T.test('b10-t08', 'flags toggle, are counted and protect the cell', async function () {
+  KyoraTest.test('b10-t08', 'flags toggle, are counted and protect the cell', async function () {
     fresh(1);
     G().input.flag(5, 5);
     var s = S();
@@ -128,7 +128,7 @@
     expect(s.flags).toBe(0);
   });
 
-  T.test('b10-t09', 'same seed and same first click give the same board', async function () {
+  KyoraTest.test('b10-t09', 'same seed and same first click give the same board', async function () {
     function run() {
       fresh(8);
       G().input.reveal(4, 4);
@@ -139,14 +139,14 @@
     expect(run()).toEqual(run());
   });
 
-  T.test('b10-t10', 'clicking a cell reveals it', async function () {
+  KyoraTest.test('b10-t10', 'clicking a cell reveals it', async function () {
     fresh(2);
     var p = G().cellCenter(4, 4);
     await T.input.click(p.x, p.y);
     expect(S().cells[4][4].revealed).toBe(true);
   });
 
-  T.test('b10-t11', 'a long press flags a cell', async function () {
+  KyoraTest.test('b10-t11', 'a long press flags a cell', async function () {
     fresh(3);
     var p = G().cellCenter(2, 2);
     await T.input.touch(p.x, p.y, undefined, undefined, 700);
@@ -156,7 +156,7 @@
     expect(c.revealed).toBe(false);
   });
 
-  T.test('b10-t12', 'a short tap reveals a cell', async function () {
+  KyoraTest.test('b10-t12', 'a short tap reveals a cell', async function () {
     fresh(4);
     var p = G().cellCenter(6, 6);
     await T.input.touch(p.x, p.y);
@@ -164,7 +164,7 @@
     expect(S().cells[6][6].revealed).toBe(true);
   });
 
-  T.test('b10-t13', 'screenshot of the running game', async function () {
+  KyoraTest.test('b10-t13', 'screenshot of the running game', async function () {
     fresh(6);
     G().input.reveal(4, 4);
     G().input.flag(0, 0);

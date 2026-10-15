@@ -50,7 +50,7 @@
     return pred(S());
   }
 
-  T.test('b04-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b04-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.press', 'input.release',
@@ -58,7 +58,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b04-t02', 'start() puts the ship at the bottom with 3 lives and enemies arrive', async function () {
+  KyoraTest.test('b04-t02', 'start() puts the ship at the bottom with 3 lives and enemies arrive', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.score).toBe(0);
@@ -70,7 +70,7 @@
     expect(S().enemies.length).toBeGreaterThan(0);
   });
 
-  T.test('b04-t03', 'the ship moves sideways and stays inside the field', async function () {
+  KyoraTest.test('b04-t03', 'the ship moves sideways and stays inside the field', async function () {
     var s = quiet(1);
     G().input.press('right');
     G().step(30);
@@ -84,7 +84,7 @@
     expect(a.shipX).toBeGreaterThanOrEqual(0);
   });
 
-  T.test('b04-t04', 'fire() launches a bullet that flies up and leaves the screen', async function () {
+  KyoraTest.test('b04-t04', 'fire() launches a bullet that flies up and leaves the screen', async function () {
     var s = quiet(1);
     G().input.fire();
     G().step(1);
@@ -95,7 +95,7 @@
     expect(S().bullets.length).toBe(0);
   });
 
-  T.test('b04-t05', 'firing respects a cooldown of at most 15 ticks', async function () {
+  KyoraTest.test('b04-t05', 'firing respects a cooldown of at most 15 ticks', async function () {
     quiet(1);
     G().input.fire();
     G().input.fire();
@@ -108,7 +108,7 @@
     expect(S().bullets.length).toBe(2);
   });
 
-  T.test('b04-t06', 'shooting an enemy destroys it and scores', async function () {
+  KyoraTest.test('b04-t06', 'shooting an enemy destroys it and scores', async function () {
     var s = quiet(1);
     G().debug.spawnEnemy(s.shipX, s.shipY - 250);
     expect(S().enemies.length).toBe(1);
@@ -120,7 +120,7 @@
     expect(a.lives).toBe(3);
   });
 
-  T.test('b04-t07', 'an enemy touching the ship costs a life', async function () {
+  KyoraTest.test('b04-t07', 'an enemy touching the ship costs a life', async function () {
     var s = quiet(1);
     G().debug.spawnEnemy(s.shipX, s.shipY - 30);
     G().step(40);
@@ -128,7 +128,7 @@
     expect(S().phase).toBe('play');
   });
 
-  T.test('b04-t08', 'losing all lives ends the game', async function () {
+  KyoraTest.test('b04-t08', 'losing all lives ends the game', async function () {
     quiet(1);
     for (var i = 0; i < 10 && S().phase === 'play'; i++) {
       var s = S();
@@ -140,7 +140,7 @@
     expect(a.lives).toBe(0);
   });
 
-  T.test('b04-t09', 'a new wave arrives when the field is empty', async function () {
+  KyoraTest.test('b04-t09', 'a new wave arrives when the field is empty', async function () {
     fresh(2);
     G().debug.clearEnemies();
     expect(S().enemies.length).toBe(0);
@@ -148,7 +148,7 @@
     expect(S().enemies.length).toBeGreaterThan(0);
   });
 
-  T.test('b04-t10', 'same seed gives the same enemy formation', async function () {
+  KyoraTest.test('b04-t10', 'same seed gives the same enemy formation', async function () {
     function run() {
       fresh(11);
       G().step(300);
@@ -161,7 +161,7 @@
     expect(run()).toEqual(run());
   });
 
-  T.test('b04-t11', 'Space fires and arrow keys move the ship', async function () {
+  KyoraTest.test('b04-t11', 'Space fires and arrow keys move the ship', async function () {
     var s = quiet(3);
     await holdKey('Space', 3);
     expect(S().bullets.length).toBeGreaterThanOrEqual(1);
@@ -169,14 +169,14 @@
     expect(S().shipX).toBeLessThan(s.shipX);
   });
 
-  T.test('b04-t12', 'touching the canvas steers the ship toward the finger', async function () {
+  KyoraTest.test('b04-t12', 'touching the canvas steers the ship toward the finger', async function () {
     var s = quiet(4);
     var b = box();
     await holdTouch(b.w * 0.08, b.h * 0.8, undefined, undefined, 40);
     expect(S().shipX).toBeLessThan(s.shipX);
   });
 
-  T.test('b04-t13', 'screenshot of the running game', async function () {
+  KyoraTest.test('b04-t13', 'screenshot of the running game', async function () {
     fresh(5);
     G().input.fire();
     G().step(90);

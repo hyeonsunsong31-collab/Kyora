@@ -50,7 +50,7 @@
     G().step(80);
   }
 
-  T.test('b03-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b03-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.press', 'input.release',
@@ -58,7 +58,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b03-t02', 'start() resets scores and centres the ball', async function () {
+  KyoraTest.test('b03-t02', 'start() resets scores and centres the ball', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.score).toBe(0);
@@ -71,7 +71,7 @@
     expect(s.aiX).toBeGreaterThan(s.width / 2);
   });
 
-  T.test('b03-t03', 'the ball is served within 60 ticks', async function () {
+  KyoraTest.test('b03-t03', 'the ball is served within 60 ticks', async function () {
     var s = fresh(1);
     G().step(90);
     var a = S();
@@ -79,7 +79,7 @@
     expect(Math.abs(a.ballX - s.width / 2)).toBeGreaterThan(1);
   });
 
-  T.test('b03-t04', 'the player paddle moves and stays inside the field', async function () {
+  KyoraTest.test('b03-t04', 'the player paddle moves and stays inside the field', async function () {
     var s = fresh(1);
     G().input.press('down');
     G().step(30);
@@ -93,7 +93,7 @@
     expect(a.playerY - a.paddleH / 2).toBeGreaterThanOrEqual(-1);
   });
 
-  T.test('b03-t05', 'the ball bounces off the top and bottom walls', async function () {
+  KyoraTest.test('b03-t05', 'the ball bounces off the top and bottom walls', async function () {
     var s = fresh(1);
     G().debug.setBall(s.width / 2, 20, 3, -5);
     G().step(15);
@@ -104,7 +104,7 @@
     expect(S().ballY).toBeLessThanOrEqual(s.height);
   });
 
-  T.test('b03-t06', 'the player paddle returns the ball', async function () {
+  KyoraTest.test('b03-t06', 'the player paddle returns the ball', async function () {
     var s = fresh(1);
     G().debug.setBall(s.playerX + 60, s.playerY, -5, 0);
     var back = stepUntil(function (x) { return x.ballVX > 0; }, 60);
@@ -112,7 +112,7 @@
     expect(S().aiScore).toBe(0);
   });
 
-  T.test('b03-t07', 'a ball past the AI paddle scores for the player', async function () {
+  KyoraTest.test('b03-t07', 'a ball past the AI paddle scores for the player', async function () {
     fresh(1);
     G().debug.setAI(false);
     shootPastAI();
@@ -121,7 +121,7 @@
     expect(a.aiScore).toBe(0);
   });
 
-  T.test('b03-t08', 'a ball past the player paddle scores for the AI', async function () {
+  KyoraTest.test('b03-t08', 'a ball past the player paddle scores for the AI', async function () {
     var s = fresh(1);
     G().input.press('up');
     G().step(300);
@@ -133,7 +133,7 @@
     expect(a.score).toBe(0);
   });
 
-  T.test('b03-t09', 'first to 5 points wins', async function () {
+  KyoraTest.test('b03-t09', 'first to 5 points wins', async function () {
     fresh(1);
     G().debug.setAI(false);
     for (var i = 0; i < 5; i++) shootPastAI();
@@ -143,7 +143,7 @@
     expect(a.winner).toBe('player');
   });
 
-  T.test('b03-t10', 'same seed gives the same rally', async function () {
+  KyoraTest.test('b03-t10', 'same seed gives the same rally', async function () {
     function run() {
       fresh(9);
       G().step(300);
@@ -153,7 +153,7 @@
     expect(run()).toEqual(run());
   });
 
-  T.test('b03-t11', 'arrow keys move the player paddle', async function () {
+  KyoraTest.test('b03-t11', 'arrow keys move the player paddle', async function () {
     var s = fresh(2);
     await holdKey('ArrowDown', 30);
     expect(S().playerY).toBeGreaterThan(s.playerY);
@@ -162,14 +162,14 @@
     expect(S().playerY).toBeLessThan(a.playerY);
   });
 
-  T.test('b03-t12', 'touching the canvas moves the paddle toward the finger', async function () {
+  KyoraTest.test('b03-t12', 'touching the canvas moves the paddle toward the finger', async function () {
     var s = fresh(3);
     var b = box();
     await holdTouch(b.w * 0.1, b.h * 0.08, undefined, undefined, 40);
     expect(S().playerY).toBeLessThan(s.playerY);
   });
 
-  T.test('b03-t13', 'screenshot of the running game', async function () {
+  KyoraTest.test('b03-t13', 'screenshot of the running game', async function () {
     fresh(4);
     G().step(120);
     await T.wait(50);

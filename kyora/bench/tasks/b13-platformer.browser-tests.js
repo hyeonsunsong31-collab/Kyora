@@ -63,7 +63,7 @@
     return ok;
   }
 
-  T.test('b13-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b13-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.press', 'input.release', 'input.jump',
@@ -71,7 +71,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b13-t02', 'start() loads the built-in level and the hero lands on solid ground', async function () {
+  KyoraTest.test('b13-t02', 'start() loads the built-in level and the hero lands on solid ground', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.lives).toBe(3);
@@ -85,7 +85,7 @@
     expect(S().lives).toBe(3);
   });
 
-  T.test('b13-t03', 'gravity drops the hero onto a platform', async function () {
+  KyoraTest.test('b13-t03', 'gravity drops the hero onto a platform', async function () {
     var s = level();
     expect(s.player.onGround).toBe(true);
     expect(Math.abs(s.player.y + s.player.h - FLOOR_Y)).toBeLessThanOrEqual(1);
@@ -99,7 +99,7 @@
     expect(Math.abs(a.player.y + a.player.h - FLOOR_Y)).toBeLessThanOrEqual(1);
   });
 
-  T.test('b13-t04', 'left and right walk', async function () {
+  KyoraTest.test('b13-t04', 'left and right walk', async function () {
     var s = level();
     G().input.press('right');
     G().step(30);
@@ -113,7 +113,7 @@
     expect(S().player.x).toBeLessThan(a.player.x);
   });
 
-  T.test('b13-t05', 'a jump rises at least 64 units and lands again', async function () {
+  KyoraTest.test('b13-t05', 'a jump rises at least 64 units and lands again', async function () {
     var s = level();
     G().input.jump();
     G().step(1);
@@ -129,7 +129,7 @@
     expect(stepUntil(function (x) { return x.player.onGround; }, 120)).toBe(true);
   });
 
-  T.test('b13-t06', 'there is no double jump', async function () {
+  KyoraTest.test('b13-t06', 'there is no double jump', async function () {
     level();
     G().input.jump();
     G().step(10);
@@ -139,7 +139,7 @@
     expect(S().player.vy).toBeGreaterThanOrEqual(vy1);
   });
 
-  T.test('b13-t07', 'platforms are solid from the side', async function () {
+  KyoraTest.test('b13-t07', 'platforms are solid from the side', async function () {
     level({ platforms: [{ x: 0, y: FLOOR_Y, w: 800, h: 40 }, { x: 300, y: 200, w: 40, h: 160 }] });
     G().input.press('right');
     G().step(240);
@@ -149,7 +149,7 @@
     expect(p.onGround).toBe(true);
   });
 
-  T.test('b13-t08', 'walking through a coin collects it', async function () {
+  KyoraTest.test('b13-t08', 'walking through a coin collects it', async function () {
     var s = level({ coins: [{ x: 200, y: 345 }] });
     expect(s.coins).toBe(1);
     var got = walkRightUntil(function (x) { return x.coins === 0; }, 300);
@@ -157,7 +157,7 @@
     expect(S().score).toBeGreaterThanOrEqual(10);
   });
 
-  T.test('b13-t09', 'spikes cost a life and send the hero back to the start; the last life ends the game', async function () {
+  KyoraTest.test('b13-t09', 'spikes cost a life and send the hero back to the start; the last life ends the game', async function () {
     level({ spikes: [{ x: 150, y: 350, w: 60, h: 10 }] });
     var hurt = walkRightUntil(function (x) { return x.lives < 3; }, 400);
     expect(hurt).toBe(true);
@@ -172,14 +172,14 @@
     expect(b.won).toBe(false);
   });
 
-  T.test('b13-t10', 'falling below the level costs a life', async function () {
+  KyoraTest.test('b13-t10', 'falling below the level costs a life', async function () {
     level({ platforms: [{ x: 0, y: FLOOR_Y, w: 200, h: 40 }, { x: 400, y: FLOOR_Y, w: 400, h: 40 }] });
     var fell = walkRightUntil(function (x) { return x.lives < 3; }, 600);
     expect(fell).toBe(true);
     expect(S().lives).toBe(2);
   });
 
-  T.test('b13-t11', 'touching the goal wins', async function () {
+  KyoraTest.test('b13-t11', 'touching the goal wins', async function () {
     level({ goal: { x: 220, y: 300, w: 20, h: 60 } });
     var won = walkRightUntil(function (x) { return x.phase !== 'play'; }, 400);
     expect(won).toBe(true);
@@ -188,7 +188,7 @@
     expect(s.won).toBe(true);
   });
 
-  T.test('b13-t12', 'arrow keys walk and Space jumps', async function () {
+  KyoraTest.test('b13-t12', 'arrow keys walk and Space jumps', async function () {
     var s = level();
     await holdKey('ArrowRight', 20);
     expect(S().player.x).toBeGreaterThan(s.player.x);
@@ -197,14 +197,14 @@
     expect(S().player.onGround).toBe(false);
   });
 
-  T.test('b13-t13', 'holding the right third of the canvas walks right', async function () {
+  KyoraTest.test('b13-t13', 'holding the right third of the canvas walks right', async function () {
     var s = level();
     var b = box();
     await holdTouch(b.w * 0.9, b.h * 0.6, undefined, undefined, 20);
     expect(S().player.x).toBeGreaterThan(s.player.x);
   });
 
-  T.test('b13-t14', 'screenshot of the running game', async function () {
+  KyoraTest.test('b13-t14', 'screenshot of the running game', async function () {
     fresh(2);
     G().input.press('right');
     G().step(40);

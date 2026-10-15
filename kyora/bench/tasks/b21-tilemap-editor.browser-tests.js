@@ -34,7 +34,7 @@
     cells.forEach(function (c) { G().input.apply(c[0], c[1]); });
   }
 
-  T.test('b21-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b21-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.setTool', 'input.selectTile', 'input.apply',
@@ -42,7 +42,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b21-t02', 'start() opens an empty 20x15 map with the paint tool', async function () {
+  KyoraTest.test('b21-t02', 'start() opens an empty 20x15 map with the paint tool', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.cols).toBe(20);
@@ -56,7 +56,7 @@
     expect(s.tileCount).toBeGreaterThanOrEqual(5);
   });
 
-  T.test('b21-t03', 'paint and erase change single cells and the score counts painted tiles', async function () {
+  KyoraTest.test('b21-t03', 'paint and erase change single cells and the score counts painted tiles', async function () {
     fresh(1);
     paint(2, [[3, 4]]);
     var s = S();
@@ -69,7 +69,7 @@
     expect(s.score).toBe(0);
   });
 
-  T.test('b21-t04', 'fill floods the 4-connected region of the clicked value', async function () {
+  KyoraTest.test('b21-t04', 'fill floods the 4-connected region of the clicked value', async function () {
     fresh(1);
     var wall = [];
     for (var y = 0; y < 15; y++) wall.push([5, y]);
@@ -84,7 +84,7 @@
     expect(s.score).toBe(90);
   });
 
-  T.test('b21-t05', 'undo and redo step through edits; a fill is one step', async function () {
+  KyoraTest.test('b21-t05', 'undo and redo step through edits; a fill is one step', async function () {
     fresh(1);
     paint(2, [[1, 1]]);
     expect(G().undo()).toBe(true);
@@ -101,7 +101,7 @@
     expect(s.tiles[1][1]).toBe(2);
   });
 
-  T.test('b21-t06', 'a new edit clears the redo history', async function () {
+  KyoraTest.test('b21-t06', 'a new edit clears the redo history', async function () {
     fresh(1);
     paint(2, [[1, 1]]);
     G().undo();
@@ -111,7 +111,7 @@
     expect(S().tiles[2][2]).toBe(3);
   });
 
-  T.test('b21-t07', 'exportMap() and importMap() round-trip; bad input is rejected', async function () {
+  KyoraTest.test('b21-t07', 'exportMap() and importMap() round-trip; bad input is rejected', async function () {
     fresh(1);
     paint(2, [[0, 0], [19, 14], [7, 3]]);
     var json = G().exportMap();
@@ -130,7 +130,7 @@
     expect(S().tiles).toEqual(saved);
   });
 
-  T.test('b21-t08', 'save() and load() use localStorage', async function () {
+  KyoraTest.test('b21-t08', 'save() and load() use localStorage', async function () {
     fresh(1);
     paint(3, [[4, 4], [5, 5]]);
     expect(G().save()).toBe(true);
@@ -143,7 +143,7 @@
     expect(s.tiles[5][5]).toBe(3);
   });
 
-  T.test('b21-t09', 'clicking a cell paints it', async function () {
+  KyoraTest.test('b21-t09', 'clicking a cell paints it', async function () {
     fresh(2);
     G().input.selectTile(2);
     var p = G().cellCenter(7, 7);
@@ -152,7 +152,7 @@
     expect(S().tiles[7][7]).toBe(2);
   });
 
-  T.test('b21-t10', 'dragging a finger paints along the stroke', async function () {
+  KyoraTest.test('b21-t10', 'dragging a finger paints along the stroke', async function () {
     fresh(3);
     var a = G().cellCenter(2, 10);
     var b = G().cellCenter(8, 10);
@@ -163,7 +163,7 @@
     expect(s.tiles[10][8]).toBe(1);
   });
 
-  T.test('b21-t11', 'keyboard shortcuts pick tiles and tools', async function () {
+  KyoraTest.test('b21-t11', 'keyboard shortcuts pick tiles and tools', async function () {
     fresh(4);
     await T.input.key('Digit3', 60);
     expect(S().tile).toBe(3);
@@ -175,7 +175,7 @@
     expect(S().tool).toBe('paint');
   });
 
-  T.test('b21-t12', 'screenshot of the editor', async function () {
+  KyoraTest.test('b21-t12', 'screenshot of the editor', async function () {
     fresh(5);
     paint(1, [[0, 0], [1, 0], [2, 0], [2, 1], [2, 2]]);
     paint(2, [[10, 10], [11, 10]]);

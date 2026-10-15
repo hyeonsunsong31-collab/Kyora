@@ -49,7 +49,7 @@
     return S();
   }
 
-  T.test('b15-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b15-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.press', 'input.release',
@@ -57,7 +57,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b15-t02', 'start() puts the player in the centre of a 600x600 arena', async function () {
+  KyoraTest.test('b15-t02', 'start() puts the player in the centre of a 600x600 arena', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.score).toBe(0);
@@ -69,7 +69,7 @@
     expect(s.player.r).toBeGreaterThan(0);
   });
 
-  T.test('b15-t03', 'surviving scores one point per second', async function () {
+  KyoraTest.test('b15-t03', 'surviving scores one point per second', async function () {
     quiet(1);
     G().step(600);
     var s = S();
@@ -78,7 +78,7 @@
     expect(s.score).toBe(10);
   });
 
-  T.test('b15-t04', 'the player moves in four directions (y grows downward)', async function () {
+  KyoraTest.test('b15-t04', 'the player moves in four directions (y grows downward)', async function () {
     var s = quiet(1);
     var a = hold(['right'], 20);
     expect(a.player.x).toBeGreaterThan(s.player.x);
@@ -90,7 +90,7 @@
     expect(d.player.y).toBeLessThan(c.player.y);
   });
 
-  T.test('b15-t05', 'the player stays inside the arena', async function () {
+  KyoraTest.test('b15-t05', 'the player stays inside the arena', async function () {
     quiet(1);
     var a = hold(['left', 'up'], 600);
     expect(a.player.x - a.player.r).toBeGreaterThanOrEqual(-0.5);
@@ -100,7 +100,7 @@
     expect(b.player.y + b.player.r).toBeLessThanOrEqual(b.height + 0.5);
   });
 
-  T.test('b15-t06', 'diagonal movement is not faster than straight movement', async function () {
+  KyoraTest.test('b15-t06', 'diagonal movement is not faster than straight movement', async function () {
     var s = quiet(1);
     var a = hold(['right'], 30);
     var straight = a.player.x - s.player.x;
@@ -111,14 +111,14 @@
     expect(Math.abs(diag - straight)).toBeLessThanOrEqual(straight * 0.15);
   });
 
-  T.test('b15-t07', 'a hazard hit ends the game', async function () {
+  KyoraTest.test('b15-t07', 'a hazard hit ends the game', async function () {
     var s = quiet(2);
     G().debug.spawnHazard(s.player.x + 60, s.player.y, -4, 0, 10);
     G().step(40);
     expect(S().phase).toBe('over');
   });
 
-  T.test('b15-t08', 'a near miss does not end the game and hazards leave the arena', async function () {
+  KyoraTest.test('b15-t08', 'a near miss does not end the game and hazards leave the arena', async function () {
     var s = quiet(3);
     G().debug.spawnHazard(s.player.x + 100, s.player.y + s.player.r + 40, -4, 0, 8);
     G().step(60);
@@ -129,7 +129,7 @@
     expect(S().hazards.length).toBe(0);
   });
 
-  T.test('b15-t09', 'hazards spawn by themselves', async function () {
+  KyoraTest.test('b15-t09', 'hazards spawn by themselves', async function () {
     fresh(4);
     var most = 0;
     for (var i = 0; i < 60 && S().phase === 'play'; i++) {
@@ -139,7 +139,7 @@
     expect(most).toBeGreaterThan(0);
   });
 
-  T.test('b15-t10', 'same seed gives the same hazards', async function () {
+  KyoraTest.test('b15-t10', 'same seed gives the same hazards', async function () {
     function run() {
       fresh(17);
       G().step(300);
@@ -152,7 +152,7 @@
     expect(run()).toEqual(run());
   });
 
-  T.test('b15-t11', 'arrow keys move the player', async function () {
+  KyoraTest.test('b15-t11', 'arrow keys move the player', async function () {
     var s = quiet(5);
     await holdKey('ArrowUp', 20);
     expect(S().player.y).toBeLessThan(s.player.y);
@@ -160,14 +160,14 @@
     expect(S().player.x).toBeGreaterThan(s.player.x);
   });
 
-  T.test('b15-t12', 'dragging on the canvas works as a virtual joystick', async function () {
+  KyoraTest.test('b15-t12', 'dragging on the canvas works as a virtual joystick', async function () {
     var s = quiet(6);
     var b = box();
     await holdTouch(b.w / 2, b.h / 2, b.w / 2 + Math.min(100, b.w / 4), b.h / 2, 20);
     expect(S().player.x).toBeGreaterThan(s.player.x);
   });
 
-  T.test('b15-t13', 'screenshot of the running game', async function () {
+  KyoraTest.test('b15-t13', 'screenshot of the running game', async function () {
     fresh(7);
     G().step(120);
     await T.wait(50);

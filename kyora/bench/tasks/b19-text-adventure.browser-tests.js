@@ -26,7 +26,7 @@
   function cmd(text) { return G().command(text); }
   function has(text, word) { return String(text).toLowerCase().indexOf(word) >= 0; }
 
-  T.test('b19-t01', 'canvas, command input and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b19-t01', 'canvas, command input and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(document.getElementById('cmd')).toBeTruthy();
@@ -34,7 +34,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b19-t02', 'start() begins in the cabin with an empty inventory', async function () {
+  KyoraTest.test('b19-t02', 'start() begins in the cabin with an empty inventory', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.room).toBe('cabin');
@@ -46,7 +46,7 @@
     expect(s.output.length).toBeGreaterThan(0);
   });
 
-  T.test('b19-t03', 'look describes the room and its items', async function () {
+  KyoraTest.test('b19-t03', 'look describes the room and its items', async function () {
     fresh(1);
     var out = cmd('look');
     expect(typeof out).toBe('string');
@@ -55,7 +55,7 @@
     expect(S().moves).toBe(1);
   });
 
-  T.test('b19-t04', 'take moves an item into the inventory once and scores', async function () {
+  KyoraTest.test('b19-t04', 'take moves an item into the inventory once and scores', async function () {
     fresh(1);
     cmd('take lamp');
     var s = S();
@@ -66,7 +66,7 @@
     expect(S().score).toBe(10);
   });
 
-  T.test('b19-t05', 'movement accepts go north, north and n', async function () {
+  KyoraTest.test('b19-t05', 'movement accepts go north, north and n', async function () {
     fresh(1);
     cmd('go north');
     expect(S().room).toBe('forest');
@@ -81,7 +81,7 @@
     expect(S().visited.indexOf('river')).toBeGreaterThanOrEqual(0);
   });
 
-  T.test('b19-t06', 'blocked exits and unknown commands leave the state unchanged', async function () {
+  KyoraTest.test('b19-t06', 'blocked exits and unknown commands leave the state unchanged', async function () {
     fresh(1);
     var out = cmd('go west');
     expect(S().room).toBe('cabin');
@@ -94,7 +94,7 @@
     expect(s.phase).toBe('play');
   });
 
-  T.test('b19-t07', 'the cave is too dark to open the chest without a lit lamp', async function () {
+  KyoraTest.test('b19-t07', 'the cave is too dark to open the chest without a lit lamp', async function () {
     fresh(1);
     cmd('take lamp');
     cmd('n');
@@ -106,7 +106,7 @@
     expect(S().inventory.indexOf('gem')).toBe(-1);
   });
 
-  T.test('b19-t08', 'the chest needs the key even with light', async function () {
+  KyoraTest.test('b19-t08', 'the chest needs the key even with light', async function () {
     fresh(1);
     cmd('take lamp');
     cmd('use lamp');
@@ -118,7 +118,7 @@
     expect(S().inventory.indexOf('gem')).toBe(-1);
   });
 
-  T.test('b19-t09', 'the full walkthrough wins', async function () {
+  KyoraTest.test('b19-t09', 'the full walkthrough wins', async function () {
     fresh(1);
     ['take lamp', 'n', 'e', 'take key', 'w', 'n', 'use lamp', 'open chest', 'take gem', 's', 's'].forEach(cmd);
     var s = S();
@@ -128,7 +128,7 @@
     expect(s.score).toBe(80);
   });
 
-  T.test('b19-t10', 'inventory, i and drop', async function () {
+  KyoraTest.test('b19-t10', 'inventory, i and drop', async function () {
     fresh(1);
     cmd('take lamp');
     expect(has(cmd('inventory'), 'lamp')).toBe(true);
@@ -138,7 +138,7 @@
     expect(has(cmd('look'), 'lamp')).toBe(true);
   });
 
-  T.test('b19-t11', 'typing into #cmd and pressing Enter runs the command', async function () {
+  KyoraTest.test('b19-t11', 'typing into #cmd and pressing Enter runs the command', async function () {
     fresh(2);
     var input = document.getElementById('cmd');
     input.value = 'go north';
@@ -148,7 +148,7 @@
     expect(S().room).toBe('forest');
   });
 
-  T.test('b19-t12', 'tapping the compass on the canvas moves', async function () {
+  KyoraTest.test('b19-t12', 'tapping the compass on the canvas moves', async function () {
     fresh(3);
     var p = G().compassCenter('n');
     await T.input.touch(p.x, p.y);
@@ -160,7 +160,7 @@
     expect(S().room).toBe('cabin');
   });
 
-  T.test('b19-t13', 'start() after winning begins again; screenshot', async function () {
+  KyoraTest.test('b19-t13', 'start() after winning begins again; screenshot', async function () {
     fresh(4);
     ['take lamp', 'n', 'e', 'take key', 'w', 'n', 'use lamp', 'open chest', 'take gem', 's', 's'].forEach(cmd);
     expect(S().phase).toBe('over');

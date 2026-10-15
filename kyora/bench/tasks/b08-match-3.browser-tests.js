@@ -94,7 +94,7 @@
     return S();
   }
 
-  T.test('b08-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b08-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.swap', 'input.select', 'cellCenter',
@@ -102,7 +102,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b08-t02', 'start() deals an 8x8 board of 6 gem types with no matches and a valid move', async function () {
+  KyoraTest.test('b08-t02', 'start() deals an 8x8 board of 6 gem types with no matches and a valid move', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.score).toBe(0);
@@ -118,7 +118,7 @@
     expect(findSwap(s.grid, true)).toBeTruthy();
   });
 
-  T.test('b08-t03', 'a matching swap scores, costs a move and leaves a settled board', async function () {
+  KyoraTest.test('b08-t03', 'a matching swap scores, costs a move and leaves a settled board', async function () {
     useBoard(horizontalBoard());
     expect(G().input.swap(2, 0, 2, 1)).toBe(true);
     G().step(60);
@@ -128,7 +128,7 @@
     expect(settled(s)).toBe(true);
   });
 
-  T.test('b08-t04', 'a swap that makes no line is undone and costs nothing', async function () {
+  KyoraTest.test('b08-t04', 'a swap that makes no line is undone and costs nothing', async function () {
     var g = base();
     var before = useBoard(g);
     var sw = findSwap(g, false);
@@ -141,7 +141,7 @@
     expect(s.score).toBe(0);
   });
 
-  T.test('b08-t05', 'only orthogonally adjacent gems can be swapped', async function () {
+  KyoraTest.test('b08-t05', 'only orthogonally adjacent gems can be swapped', async function () {
     var before = useBoard(horizontalBoard());
     expect(G().input.swap(2, 0, 4, 0)).toBe(false);
     expect(G().input.swap(1, 0, 2, 1)).toBe(false);
@@ -150,7 +150,7 @@
     expect(S().movesLeft).toBe(30);
   });
 
-  T.test('b08-t06', 'vertical lines count too', async function () {
+  KyoraTest.test('b08-t06', 'vertical lines count too', async function () {
     useBoard(verticalBoard());
     expect(G().input.swap(0, 5, 1, 5)).toBe(true);
     G().step(60);
@@ -159,7 +159,7 @@
     expect(settled(s)).toBe(true);
   });
 
-  T.test('b08-t07', 'a line of four scores at least 40', async function () {
+  KyoraTest.test('b08-t07', 'a line of four scores at least 40', async function () {
     useBoard(fourBoard());
     expect(G().input.swap(2, 3, 2, 2)).toBe(true);
     G().step(60);
@@ -168,7 +168,7 @@
     expect(settled(s)).toBe(true);
   });
 
-  T.test('b08-t08', 'running out of moves ends the game', async function () {
+  KyoraTest.test('b08-t08', 'running out of moves ends the game', async function () {
     useBoard(horizontalBoard());
     G().debug.setMovesLeft(1);
     expect(G().input.swap(2, 0, 2, 1)).toBe(true);
@@ -178,7 +178,7 @@
     expect(s.phase).toBe('over');
   });
 
-  T.test('b08-t09', 'same seed gives the same board and the same refills', async function () {
+  KyoraTest.test('b08-t09', 'same seed gives the same board and the same refills', async function () {
     function run() {
       var s = fresh(4);
       var sw = findSwap(s.grid, true);
@@ -189,7 +189,7 @@
     expect(run()).toEqual(run());
   });
 
-  T.test('b08-t10', 'select() marks a gem and selecting a neighbour swaps', async function () {
+  KyoraTest.test('b08-t10', 'select() marks a gem and selecting a neighbour swaps', async function () {
     useBoard(horizontalBoard());
     G().input.select(2, 0);
     expect(S().selected).toEqual({ x: 2, y: 0 });
@@ -200,7 +200,7 @@
     expect(s.selected).toBe(null);
   });
 
-  T.test('b08-t11', 'clicking two adjacent gems swaps them', async function () {
+  KyoraTest.test('b08-t11', 'clicking two adjacent gems swaps them', async function () {
     useBoard(horizontalBoard());
     var a = G().cellCenter(2, 0);
     var b = G().cellCenter(2, 1);
@@ -211,7 +211,7 @@
     expect(S().score).toBeGreaterThanOrEqual(30);
   });
 
-  T.test('b08-t12', 'tapping two adjacent gems swaps them', async function () {
+  KyoraTest.test('b08-t12', 'tapping two adjacent gems swaps them', async function () {
     useBoard(verticalBoard());
     var a = G().cellCenter(0, 5);
     var b = G().cellCenter(1, 5);
@@ -222,7 +222,7 @@
     expect(S().score).toBeGreaterThanOrEqual(30);
   });
 
-  T.test('b08-t13', 'screenshot of the running game', async function () {
+  KyoraTest.test('b08-t13', 'screenshot of the running game', async function () {
     fresh(5);
     G().step(30);
     await T.wait(50);

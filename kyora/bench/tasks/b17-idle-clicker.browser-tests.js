@@ -26,7 +26,7 @@
   function up(s, id) { return s.upgrades.filter(function (u) { return u.id === id; })[0]; }
   function close(a, b, tol) { return Math.abs(a - b) <= tol; }
 
-  T.test('b17-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b17-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.click', 'input.buy', 'buttonCenter',
@@ -34,7 +34,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b17-t02', 'start() begins with no coins and three upgrades at their base prices', async function () {
+  KyoraTest.test('b17-t02', 'start() begins with no coins and three upgrades at their base prices', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.coins).toBe(0);
@@ -46,7 +46,7 @@
     s.upgrades.forEach(function (u) { expect(u.owned).toBe(0); });
   });
 
-  T.test('b17-t03', 'clicking earns perClick coins', async function () {
+  KyoraTest.test('b17-t03', 'clicking earns perClick coins', async function () {
     fresh(1);
     for (var i = 0; i < 5; i++) G().input.click();
     var s = S();
@@ -55,7 +55,7 @@
     expect(s.score).toBe(5);
   });
 
-  T.test('b17-t04', 'an upgrade cannot be bought without enough coins', async function () {
+  KyoraTest.test('b17-t04', 'an upgrade cannot be bought without enough coins', async function () {
     fresh(1);
     G().debug.addCoins(14);
     expect(G().input.buy('worker')).toBe(false);
@@ -64,7 +64,7 @@
     expect(up(s, 'worker').owned).toBe(0);
   });
 
-  T.test('b17-t05', 'buying a worker spends its price, raises income and the next price', async function () {
+  KyoraTest.test('b17-t05', 'buying a worker spends its price, raises income and the next price', async function () {
     fresh(1);
     G().debug.addCoins(15);
     expect(G().input.buy('worker')).toBe(true);
@@ -75,7 +75,7 @@
     expect(s.perSecond).toBe(1);
   });
 
-  T.test('b17-t06', 'income accrues every tick', async function () {
+  KyoraTest.test('b17-t06', 'income accrues every tick', async function () {
     fresh(1);
     G().debug.addCoins(15);
     G().input.buy('worker');
@@ -85,7 +85,7 @@
     expect(close(s.totalEarned, 25, 0.01)).toBe(true);
   });
 
-  T.test('b17-t07', 'the power upgrade raises coins per click', async function () {
+  KyoraTest.test('b17-t07', 'the power upgrade raises coins per click', async function () {
     fresh(1);
     G().debug.addCoins(10);
     expect(G().input.buy('power')).toBe(true);
@@ -94,7 +94,7 @@
     expect(S().coins).toBe(2);
   });
 
-  T.test('b17-t08', 'prices grow by 15% per purchase, rounded up', async function () {
+  KyoraTest.test('b17-t08', 'prices grow by 15% per purchase, rounded up', async function () {
     fresh(1);
     G().debug.addCoins(1000);
     G().input.buy('factory');
@@ -109,7 +109,7 @@
     expect(s.perSecond).toBe(24);
   });
 
-  T.test('b17-t09', 'earning one million in total wins', async function () {
+  KyoraTest.test('b17-t09', 'earning one million in total wins', async function () {
     fresh(1);
     G().debug.addCoins(1000000);
     G().step(1);
@@ -118,7 +118,7 @@
     expect(s.score).toBeGreaterThanOrEqual(1000000);
   });
 
-  T.test('b17-t10', 'clicking the coin on the canvas earns coins', async function () {
+  KyoraTest.test('b17-t10', 'clicking the coin on the canvas earns coins', async function () {
     fresh(2);
     var p = G().buttonCenter('coin');
     await T.input.click(p.x, p.y);
@@ -126,7 +126,7 @@
     expect(S().coins).toBeGreaterThanOrEqual(1);
   });
 
-  T.test('b17-t11', 'tapping an upgrade button buys it', async function () {
+  KyoraTest.test('b17-t11', 'tapping an upgrade button buys it', async function () {
     fresh(3);
     G().debug.addCoins(15);
     var p = G().buttonCenter('worker');
@@ -135,7 +135,7 @@
     expect(up(S(), 'worker').owned).toBe(1);
   });
 
-  T.test('b17-t12', 'Space clicks and Digit2 buys a worker', async function () {
+  KyoraTest.test('b17-t12', 'Space clicks and Digit2 buys a worker', async function () {
     fresh(4);
     await T.input.key('Space', 60);
     expect(S().coins).toBeGreaterThanOrEqual(1);
@@ -144,7 +144,7 @@
     expect(up(S(), 'worker').owned).toBeGreaterThanOrEqual(1);
   });
 
-  T.test('b17-t13', 'the same actions give the same state', async function () {
+  KyoraTest.test('b17-t13', 'the same actions give the same state', async function () {
     function run() {
       fresh(5);
       for (var i = 0; i < 30; i++) G().input.click();
@@ -157,7 +157,7 @@
     expect(run()).toEqual(run());
   });
 
-  T.test('b17-t14', 'screenshot of the running game', async function () {
+  KyoraTest.test('b17-t14', 'screenshot of the running game', async function () {
     fresh(6);
     G().debug.addCoins(200);
     G().input.buy('worker');

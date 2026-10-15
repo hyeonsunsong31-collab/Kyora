@@ -37,14 +37,14 @@
     return list;
   }
 
-  T.test('b05-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b05-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.flap', 'debug.setInvincible'])).toEqual([]);
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b05-t02', 'start() puts the bird in the air with score 0', async function () {
+  KyoraTest.test('b05-t02', 'start() puts the bird in the air with score 0', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.score).toBe(0);
@@ -54,7 +54,7 @@
     expect(s.birdY).toBeLessThan(s.groundY);
   });
 
-  T.test('b05-t03', 'gravity pulls the bird down', async function () {
+  KyoraTest.test('b05-t03', 'gravity pulls the bird down', async function () {
     var s = fresh(1);
     G().step(20);
     var a = S();
@@ -62,7 +62,7 @@
     expect(a.birdY).toBeGreaterThan(s.birdY);
   });
 
-  T.test('b05-t04', 'flap() gives an immediate upward velocity', async function () {
+  KyoraTest.test('b05-t04', 'flap() gives an immediate upward velocity', async function () {
     fresh(1);
     G().step(20);
     var before = S();
@@ -72,13 +72,13 @@
     expect(S().birdY).toBeLessThan(before.birdY);
   });
 
-  T.test('b05-t05', 'hitting the ground ends the game', async function () {
+  KyoraTest.test('b05-t05', 'hitting the ground ends the game', async function () {
     fresh(1);
     G().step(600);
     expect(S().phase).toBe('over');
   });
 
-  T.test('b05-t06', 'pipes enter from the right and scroll left', async function () {
+  KyoraTest.test('b05-t06', 'pipes enter from the right and scroll left', async function () {
     fresh(2);
     G().debug.setInvincible(true);
     G().step(240);
@@ -92,7 +92,7 @@
     expect(same.x).toBeLessThan(p.x);
   });
 
-  T.test('b05-t07', 'pipe gaps follow the brief (centre in the middle half, 140-200 tall)', async function () {
+  KyoraTest.test('b05-t07', 'pipe gaps follow the brief (centre in the middle half, 140-200 tall)', async function () {
     fresh(3);
     G().debug.setInvincible(true);
     var pipes = collectPipes(1500);
@@ -104,7 +104,7 @@
     expect(bad.length).toBe(0);
   });
 
-  T.test('b05-t08', 'passing pipes increases the score', async function () {
+  KyoraTest.test('b05-t08', 'passing pipes increases the score', async function () {
     fresh(4);
     G().debug.setInvincible(true);
     G().step(1200);
@@ -113,7 +113,7 @@
     expect(a.score).toBeGreaterThanOrEqual(2);
   });
 
-  T.test('b05-t09', 'flying into a pipe ends the game', async function () {
+  KyoraTest.test('b05-t09', 'flying into a pipe ends the game', async function () {
     fresh(5);
     for (var i = 0; i < 2000 && S().phase === 'play'; i++) {
       G().input.flap();
@@ -124,7 +124,7 @@
     expect(a.birdY).toBeLessThan(a.groundY * 0.5);
   });
 
-  T.test('b05-t10', 'same seed gives the same pipes', async function () {
+  KyoraTest.test('b05-t10', 'same seed gives the same pipes', async function () {
     function run() {
       fresh(6);
       G().debug.setInvincible(true);
@@ -133,7 +133,7 @@
     expect(run()).toEqual(run());
   });
 
-  T.test('b05-t11', 'Space flaps', async function () {
+  KyoraTest.test('b05-t11', 'Space flaps', async function () {
     fresh(7);
     G().step(20);
     expect(S().birdVY).toBeGreaterThan(0);
@@ -142,7 +142,7 @@
     expect(S().birdVY).toBeLessThan(0);
   });
 
-  T.test('b05-t12', 'a tap on the canvas flaps', async function () {
+  KyoraTest.test('b05-t12', 'a tap on the canvas flaps', async function () {
     fresh(8);
     G().step(20);
     var b = box();
@@ -151,7 +151,7 @@
     expect(S().birdVY).toBeLessThan(0);
   });
 
-  T.test('b05-t13', 'start() after game over begins a new flight; screenshot', async function () {
+  KyoraTest.test('b05-t13', 'start() after game over begins a new flight; screenshot', async function () {
     fresh(9);
     G().step(600);
     expect(S().phase).toBe('over');

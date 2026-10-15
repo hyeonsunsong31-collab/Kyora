@@ -26,7 +26,7 @@
   function near(a, b) { return Math.abs(a - b) <= 0.01; }
   var HOUR = 60;
 
-  T.test('b18-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b18-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.feed', 'input.play', 'input.work',
@@ -34,7 +34,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b18-t02', 'start() wakes the creature on day 1 at 08:00', async function () {
+  KyoraTest.test('b18-t02', 'start() wakes the creature on day 1 at 08:00', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.day).toBe(1);
@@ -45,7 +45,7 @@
     expect(s.asleep).toBe(false);
   });
 
-  T.test('b18-t03', 'each in-game hour (60 ticks) the needs decay', async function () {
+  KyoraTest.test('b18-t03', 'each in-game hour (60 ticks) the needs decay', async function () {
     fresh(1);
     G().step(HOUR);
     var s = S();
@@ -55,7 +55,7 @@
     expect(near(s.fun, 78)).toBe(true);
   });
 
-  T.test('b18-t04', 'feeding costs 5 coins, adds 25 hunger and is capped at 100', async function () {
+  KyoraTest.test('b18-t04', 'feeding costs 5 coins, adds 25 hunger and is capped at 100', async function () {
     fresh(1);
     expect(G().input.feed()).toBe(true);
     var s = S();
@@ -69,7 +69,7 @@
     expect(S().coins).toBe(0);
   });
 
-  T.test('b18-t05', 'working earns coins and costs energy and fun', async function () {
+  KyoraTest.test('b18-t05', 'working earns coins and costs energy and fun', async function () {
     fresh(1);
     expect(G().input.work()).toBe(true);
     var s = S();
@@ -78,7 +78,7 @@
     expect(s.fun).toBe(70);
   });
 
-  T.test('b18-t06', 'playing raises fun and costs energy', async function () {
+  KyoraTest.test('b18-t06', 'playing raises fun and costs energy', async function () {
     fresh(1);
     expect(G().input.play()).toBe(true);
     var s = S();
@@ -86,7 +86,7 @@
     expect(s.energy).toBe(70);
   });
 
-  T.test('b18-t07', 'sleeping restores energy while hunger keeps falling', async function () {
+  KyoraTest.test('b18-t07', 'sleeping restores energy while hunger keeps falling', async function () {
     fresh(1);
     G().input.sleep();
     expect(S().asleep).toBe(true);
@@ -100,7 +100,7 @@
     expect(S().asleep).toBe(false);
   });
 
-  T.test('b18-t08', 'midnight starts a new day and scores it', async function () {
+  KyoraTest.test('b18-t08', 'midnight starts a new day and scores it', async function () {
     fresh(1);
     G().step(16 * HOUR);
     var s = S();
@@ -110,7 +110,7 @@
     expect(s.score).toBe(1);
   });
 
-  T.test('b18-t09', 'neglect ends the game', async function () {
+  KyoraTest.test('b18-t09', 'neglect ends the game', async function () {
     fresh(1);
     G().step(40 * HOUR);
     var s = S();
@@ -118,7 +118,7 @@
     expect(Math.min(s.hunger, s.energy, s.fun)).toBeLessThanOrEqual(0);
   });
 
-  T.test('b18-t10', 'same seed and same care give the same days', async function () {
+  KyoraTest.test('b18-t10', 'same seed and same care give the same days', async function () {
     function run() {
       fresh(2);
       G().step(10 * HOUR);
@@ -134,7 +134,7 @@
     expect(run()).toEqual(run());
   });
 
-  T.test('b18-t11', 'the F key feeds', async function () {
+  KyoraTest.test('b18-t11', 'the F key feeds', async function () {
     fresh(3);
     G().step(4 * HOUR);
     var before = S().hunger;
@@ -142,7 +142,7 @@
     expect(S().hunger).toBeGreaterThan(before);
   });
 
-  T.test('b18-t12', 'clicking the feed button feeds', async function () {
+  KyoraTest.test('b18-t12', 'clicking the feed button feeds', async function () {
     fresh(4);
     G().step(4 * HOUR);
     var before = S().hunger;
@@ -152,7 +152,7 @@
     expect(S().hunger).toBeGreaterThan(before);
   });
 
-  T.test('b18-t13', 'tapping the play button plays', async function () {
+  KyoraTest.test('b18-t13', 'tapping the play button plays', async function () {
     fresh(5);
     G().step(4 * HOUR);
     var before = S().fun;
@@ -162,7 +162,7 @@
     expect(S().fun).toBeGreaterThan(before);
   });
 
-  T.test('b18-t14', 'screenshot of the running game', async function () {
+  KyoraTest.test('b18-t14', 'screenshot of the running game', async function () {
     fresh(6);
     G().step(3 * HOUR);
     await T.wait(50);

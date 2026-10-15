@@ -49,7 +49,7 @@
     return pred(S());
   }
 
-  T.test('b01-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b01-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(window.Game).toBeDefined();
@@ -58,7 +58,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b01-t02', 'start() enters play with 3 lives, a brick wall and the ball on the paddle', async function () {
+  KyoraTest.test('b01-t02', 'start() enters play with 3 lives, a brick wall and the ball on the paddle', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.score).toBe(0);
@@ -71,7 +71,7 @@
     expect(s.height).toBe(640);
   });
 
-  T.test('b01-t03', 'paddle moves with input and stays inside the field', async function () {
+  KyoraTest.test('b01-t03', 'paddle moves with input and stays inside the field', async function () {
     var s0 = fresh(1);
     G().input.press('right');
     G().step(30);
@@ -89,7 +89,7 @@
     expect(s3.paddleX + s3.paddleW / 2).toBeLessThanOrEqual(s3.width + 1);
   });
 
-  T.test('b01-t04', 'the resting ball follows the paddle and action() launches it upwards', async function () {
+  KyoraTest.test('b01-t04', 'the resting ball follows the paddle and action() launches it upwards', async function () {
     fresh(2);
     G().input.press('right');
     G().step(20);
@@ -106,7 +106,7 @@
     expect(S().ballY).toBeLessThan(s.ballY);
   });
 
-  T.test('b01-t05', 'the ball bounces off the side walls', async function () {
+  KyoraTest.test('b01-t05', 'the ball bounces off the side walls', async function () {
     var s = fresh(1);
     G().debug.setBall(20, s.height * 0.6, -5, -1);
     G().step(20);
@@ -120,7 +120,7 @@
     expect(b.ballX).toBeLessThanOrEqual(s.width);
   });
 
-  T.test('b01-t06', 'the ball bounces off the paddle without losing a life', async function () {
+  KyoraTest.test('b01-t06', 'the ball bounces off the paddle without losing a life', async function () {
     var s = fresh(1);
     G().debug.setBall(s.paddleX, s.height - 150, 0, 5);
     var bounced = stepUntil(function (x) { return x.ballVY < 0; }, 120);
@@ -128,7 +128,7 @@
     expect(S().lives).toBe(3);
   });
 
-  T.test('b01-t07', 'hitting a brick removes it, scores and reflects the ball', async function () {
+  KyoraTest.test('b01-t07', 'hitting a brick removes it, scores and reflects the ball', async function () {
     var s = fresh(1);
     var low = s.brickRects.reduce(function (a, r) { return (r.y + r.h > a.y + a.h) ? r : a; }, s.brickRects[0]);
     G().debug.setBall(low.x + low.w / 2, low.y + low.h + 40, 0, -4);
@@ -141,7 +141,7 @@
     expect(S().ballVY).toBeGreaterThan(0);
   });
 
-  T.test('b01-t08', 'missing the ball costs a life and puts the ball back on the paddle', async function () {
+  KyoraTest.test('b01-t08', 'missing the ball costs a life and puts the ball back on the paddle', async function () {
     var s = fresh(1);
     paddleToLeft();
     G().debug.setBall(s.width - 20, s.height * 0.5, 0, 6);
@@ -152,7 +152,7 @@
     expect(a.ballAttached).toBe(true);
   });
 
-  T.test('b01-t09', 'losing every life ends the game', async function () {
+  KyoraTest.test('b01-t09', 'losing every life ends the game', async function () {
     var s = fresh(1);
     for (var i = 0; i < 6 && S().phase === 'play'; i++) {
       paddleToLeft();
@@ -165,7 +165,7 @@
     expect(a.won).toBe(false);
   });
 
-  T.test('b01-t10', 'clearing the last brick wins', async function () {
+  KyoraTest.test('b01-t10', 'clearing the last brick wins', async function () {
     fresh(1);
     G().debug.keepBricks(1);
     var s = S();
@@ -180,7 +180,7 @@
     expect(a.score).toBeGreaterThan(0);
   });
 
-  T.test('b01-t11', 'same seed and same inputs give the same game', async function () {
+  KyoraTest.test('b01-t11', 'same seed and same inputs give the same game', async function () {
     function run() {
       fresh(7);
       G().input.action();
@@ -193,7 +193,7 @@
     expect(run()).toEqual(run());
   });
 
-  T.test('b01-t12', 'arrow keys move the paddle and Space launches the ball', async function () {
+  KyoraTest.test('b01-t12', 'arrow keys move the paddle and Space launches the ball', async function () {
     var s0 = fresh(3);
     await holdKey('ArrowLeft', 30);
     expect(S().paddleX).toBeLessThan(s0.paddleX);
@@ -204,14 +204,14 @@
     expect(S().ballAttached).toBe(false);
   });
 
-  T.test('b01-t13', 'touching the canvas moves the paddle toward the finger', async function () {
+  KyoraTest.test('b01-t13', 'touching the canvas moves the paddle toward the finger', async function () {
     var s0 = fresh(4);
     var b = box();
     await holdTouch(b.w * 0.08, b.h * 0.85, undefined, undefined, 40);
     expect(S().paddleX).toBeLessThan(s0.paddleX);
   });
 
-  T.test('b01-t14', 'screenshot of the running game', async function () {
+  KyoraTest.test('b01-t14', 'screenshot of the running game', async function () {
     fresh(5);
     G().input.action();
     G().step(30);

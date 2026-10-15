@@ -55,7 +55,7 @@
   function first() { return 0; }
   function last(c) { return c.length - 1; }
 
-  T.test('b20-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b20-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.advance', 'input.choose', 'save', 'load',
@@ -63,7 +63,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b20-t02', 'start() shows the first line with a speaker', async function () {
+  KyoraTest.test('b20-t02', 'start() shows the first line with a speaker', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(typeof s.speaker).toBe('string');
@@ -75,7 +75,7 @@
     expect(s.ending).toBe(null);
   });
 
-  T.test('b20-t03', 'text types out over ticks and advance() completes it first', async function () {
+  KyoraTest.test('b20-t03', 'text types out over ticks and advance() completes it first', async function () {
     var s = fresh(1);
     G().step(1);
     var v1 = S().visibleChars;
@@ -90,7 +90,7 @@
     expect(pos(b) !== pos(a) || b.choices.length > 0).toBe(true);
   });
 
-  T.test('b20-t04', 'choices appear and advance() does not skip them', async function () {
+  KyoraTest.test('b20-t04', 'choices appear and advance() does not skip them', async function () {
     fresh(1);
     var s = toChoices();
     expect(s.phase).toBe('play');
@@ -104,7 +104,7 @@
     expect(a.choices.length).toBe(s.choices.length);
   });
 
-  T.test('b20-t05', 'choose() takes a valid option and rejects an invalid one', async function () {
+  KyoraTest.test('b20-t05', 'choose() takes a valid option and rejects an invalid one', async function () {
     fresh(1);
     var s = toChoices();
     expect(G().input.choose(s.choices.length + 3)).toBe(false);
@@ -115,7 +115,7 @@
     expect(a.phase === 'over' || pos(a) !== pos(s)).toBe(true);
   });
 
-  T.test('b20-t06', 'different choices reach different endings', async function () {
+  KyoraTest.test('b20-t06', 'different choices reach different endings', async function () {
     var a = playthrough(2, first);
     var b = playthrough(2, last);
     expect(a.phase).toBe('over');
@@ -128,7 +128,7 @@
     expect(b.choicePoints).toBeGreaterThanOrEqual(2);
   });
 
-  T.test('b20-t07', 'a middle path reaches a third ending', async function () {
+  KyoraTest.test('b20-t07', 'a middle path reaches a third ending', async function () {
     var seen = {};
     seen[playthrough(3, first).ending] = true;
     seen[playthrough(3, last).ending] = true;
@@ -140,7 +140,7 @@
     expect(Object.keys(seen).length).toBeGreaterThanOrEqual(3);
   });
 
-  T.test('b20-t08', 'save() and load() restore the position through localStorage', async function () {
+  KyoraTest.test('b20-t08', 'save() and load() restore the position through localStorage', async function () {
     fresh(4);
     for (var i = 0; i < 3; i++) { G().input.advance(); G().input.advance(); }
     var saved = S();
@@ -156,26 +156,26 @@
     expect(G().load(9)).toBe(false);
   });
 
-  T.test('b20-t09', 'the history grows as lines are read', async function () {
+  KyoraTest.test('b20-t09', 'the history grows as lines are read', async function () {
     var s = fresh(5);
     for (var i = 0; i < 3; i++) { G().input.advance(); G().input.advance(); }
     expect(S().history).toBeGreaterThan(s.history);
   });
 
-  T.test('b20-t10', 'the same choices give the same story', async function () {
+  KyoraTest.test('b20-t10', 'the same choices give the same story', async function () {
     var a = playthrough(6, last);
     var b = playthrough(6, last);
     expect(a).toEqual(b);
   });
 
-  T.test('b20-t11', 'Space advances', async function () {
+  KyoraTest.test('b20-t11', 'Space advances', async function () {
     var s = fresh(7);
     await T.input.key('Space', 60);
     var a = S();
     expect(pos(a) !== pos(s) || a.visibleChars > s.visibleChars).toBe(true);
   });
 
-  T.test('b20-t12', 'tapping a choice box chooses it', async function () {
+  KyoraTest.test('b20-t12', 'tapping a choice box chooses it', async function () {
     fresh(8);
     var s = toChoices();
     expect(s.choices.length).toBeGreaterThanOrEqual(2);
@@ -185,7 +185,7 @@
     expect(S().choices.length).toBe(0);
   });
 
-  T.test('b20-t13', 'screenshot of the running game', async function () {
+  KyoraTest.test('b20-t13', 'screenshot of the running game', async function () {
     fresh(9);
     G().step(40);
     await T.wait(50);

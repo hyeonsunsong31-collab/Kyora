@@ -62,7 +62,7 @@
     return s;
   }
 
-  T.test('b06-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b06-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.press', 'input.release',
@@ -70,7 +70,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b06-t02', 'start() spawns 4 large asteroids away from the ship', async function () {
+  KyoraTest.test('b06-t02', 'start() spawns 4 large asteroids away from the ship', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.lives).toBe(3);
@@ -84,7 +84,7 @@
     });
   });
 
-  T.test('b06-t03', 'right rotates clockwise, left counter-clockwise', async function () {
+  KyoraTest.test('b06-t03', 'right rotates clockwise, left counter-clockwise', async function () {
     var s = calm(1);
     G().input.press('right');
     G().step(10);
@@ -97,7 +97,7 @@
     expect(angDiff(a, S().ship.angle)).toBeLessThan(-0.01);
   });
 
-  T.test('b06-t04', 'thrust accelerates the ship in the facing direction', async function () {
+  KyoraTest.test('b06-t04', 'thrust accelerates the ship in the facing direction', async function () {
     var s = calm(1);
     G().debug.setShip(s.width / 2, s.height / 2, 0, 0, 0);
     G().input.press('thrust');
@@ -109,7 +109,7 @@
     expect(a.y).toBeLessThan(s.height / 2);
   });
 
-  T.test('b06-t05', 'the ship wraps around the screen edges', async function () {
+  KyoraTest.test('b06-t05', 'the ship wraps around the screen edges', async function () {
     var s = calm(1);
     G().debug.setShip(s.width - 5, s.height / 2, Math.PI / 2, 4, 0);
     G().step(5);
@@ -121,7 +121,7 @@
     expect(S().ship.y).toBeGreaterThan(s.height / 2);
   });
 
-  T.test('b06-t06', 'shooting a large asteroid splits it into two medium ones', async function () {
+  KyoraTest.test('b06-t06', 'shooting a large asteroid splits it into two medium ones', async function () {
     var s = empty(1);
     G().debug.setShip(s.width / 2, s.height * 0.8, 0, 0, 0);
     G().debug.spawnAsteroid(s.width / 2, s.height * 0.8 - 160, 3, 0, 0);
@@ -134,7 +134,7 @@
     expect(a.score).toBeGreaterThan(0);
   });
 
-  T.test('b06-t07', 'shooting a small asteroid destroys it', async function () {
+  KyoraTest.test('b06-t07', 'shooting a small asteroid destroys it', async function () {
     var s = empty(2);
     G().debug.setShip(s.width / 2, s.height * 0.8, 0, 0, 0);
     G().debug.spawnAsteroid(s.width / 2, s.height * 0.8 - 160, 1, 0, 0);
@@ -144,7 +144,7 @@
     expect(S().score).toBeGreaterThan(0);
   });
 
-  T.test('b06-t08', 'a collision costs a life and grants a short invulnerability', async function () {
+  KyoraTest.test('b06-t08', 'a collision costs a life and grants a short invulnerability', async function () {
     var s = empty(1);
     G().debug.setShip(s.width / 2, s.height / 2, 0, 0, 0);
     G().debug.spawnAsteroid(s.width / 2, s.height / 2, 2, 0, 0);
@@ -155,7 +155,7 @@
     expect(a.invulnerable).toBeLessThanOrEqual(120);
   });
 
-  T.test('b06-t09', 'losing every life ends the game', async function () {
+  KyoraTest.test('b06-t09', 'losing every life ends the game', async function () {
     empty(1);
     for (var i = 0; i < 10 && S().phase === 'play'; i++) {
       G().debug.clearAsteroids();
@@ -168,7 +168,7 @@
     expect(a.lives).toBe(0);
   });
 
-  T.test('b06-t10', 'clearing the field starts the next wave', async function () {
+  KyoraTest.test('b06-t10', 'clearing the field starts the next wave', async function () {
     var s = fresh(3);
     G().debug.clearAsteroids();
     G().step(130);
@@ -177,7 +177,7 @@
     expect(a.wave).toBeGreaterThan(s.wave);
   });
 
-  T.test('b06-t11', 'same seed gives the same asteroid field', async function () {
+  KyoraTest.test('b06-t11', 'same seed gives the same asteroid field', async function () {
     function run() {
       var s = fresh(4);
       return s.asteroids.map(function (a) { return [Math.round(a.x * 100) / 100, Math.round(a.y * 100) / 100, a.size]; });
@@ -185,7 +185,7 @@
     expect(run()).toEqual(run());
   });
 
-  T.test('b06-t12', 'arrow keys rotate and Space fires', async function () {
+  KyoraTest.test('b06-t12', 'arrow keys rotate and Space fires', async function () {
     var s = calm(5);
     await holdKey('ArrowLeft', 15);
     expect(Math.abs(angDiff(s.ship.angle, S().ship.angle))).toBeGreaterThan(0.01);
@@ -193,14 +193,14 @@
     expect(S().bullets.length).toBeGreaterThanOrEqual(1);
   });
 
-  T.test('b06-t13', 'holding the left third of the canvas rotates the ship', async function () {
+  KyoraTest.test('b06-t13', 'holding the left third of the canvas rotates the ship', async function () {
     var s = calm(6);
     var b = box();
     await holdTouch(b.w * 0.1, b.h * 0.5, undefined, undefined, 20);
     expect(angDiff(s.ship.angle, S().ship.angle)).toBeLessThan(-0.01);
   });
 
-  T.test('b06-t14', 'screenshot of the running game', async function () {
+  KyoraTest.test('b06-t14', 'screenshot of the running game', async function () {
     fresh(7);
     G().input.fire();
     G().step(30);

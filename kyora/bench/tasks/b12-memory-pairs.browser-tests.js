@@ -32,7 +32,7 @@
     return -1;
   }
 
-  T.test('b12-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
+  KyoraTest.test('b12-t01', 'canvas and the Game contract exist; the page loads in the menu', async function () {
     expect(canvas()).toBeTruthy();
     expect(canvas().width).toBeGreaterThan(0);
     expect(missing(window.Game, ['start', 'getState', 'setSeed', 'step', 'input.flip', 'cardCenter',
@@ -40,7 +40,7 @@
     expect(S().phase).toBe('menu');
   });
 
-  T.test('b12-t02', 'start() deals 16 face-down cards: 8 pairs', async function () {
+  KyoraTest.test('b12-t02', 'start() deals 16 face-down cards: 8 pairs', async function () {
     var s = fresh(1);
     expect(s.phase).toBe('play');
     expect(s.score).toBe(0);
@@ -56,7 +56,7 @@
     Object.keys(counts).forEach(function (k) { expect(counts[k]).toBe(2); });
   });
 
-  T.test('b12-t03', 'flipping turns a card up; flipping it again is ignored', async function () {
+  KyoraTest.test('b12-t03', 'flipping turns a card up; flipping it again is ignored', async function () {
     fresh(1);
     expect(G().input.flip(0)).toBe(true);
     expect(S().cards[0].state).toBe('up');
@@ -65,7 +65,7 @@
     expect(S().moves).toBe(0);
   });
 
-  T.test('b12-t04', 'a matching pair stays matched and scores', async function () {
+  KyoraTest.test('b12-t04', 'a matching pair stays matched and scores', async function () {
     fresh(1);
     var faces = G().debug.faces();
     var j = partnerOf(faces, 0);
@@ -80,7 +80,7 @@
     expect(G().input.flip(0)).toBe(false);
   });
 
-  T.test('b12-t05', 'a mismatched pair turns back face down after 45 ticks', async function () {
+  KyoraTest.test('b12-t05', 'a mismatched pair turns back face down after 45 ticks', async function () {
     fresh(1);
     var faces = G().debug.faces();
     var k = strangerOf(faces, 0);
@@ -101,7 +101,7 @@
     expect(s.score).toBe(0);
   });
 
-  T.test('b12-t06', 'matching all pairs ends the game', async function () {
+  KyoraTest.test('b12-t06', 'matching all pairs ends the game', async function () {
     fresh(2);
     var faces = G().debug.faces();
     var done = {};
@@ -119,7 +119,7 @@
     s.cards.forEach(function (c) { expect(c.state).toBe('matched'); });
   });
 
-  T.test('b12-t07', 'the layout depends on the seed and only on the seed', async function () {
+  KyoraTest.test('b12-t07', 'the layout depends on the seed and only on the seed', async function () {
     fresh(3);
     var a = G().debug.faces().join(',');
     fresh(3);
@@ -130,7 +130,7 @@
     expect(Object.keys(layouts).length).toBeGreaterThan(1);
   });
 
-  T.test('b12-t08', 'clicking a card flips it', async function () {
+  KyoraTest.test('b12-t08', 'clicking a card flips it', async function () {
     fresh(4);
     var p = G().cardCenter(5);
     await T.input.click(p.x, p.y);
@@ -138,7 +138,7 @@
     expect(S().cards[5].state).toBe('up');
   });
 
-  T.test('b12-t09', 'tapping a card flips it', async function () {
+  KyoraTest.test('b12-t09', 'tapping a card flips it', async function () {
     fresh(5);
     var p = G().cardCenter(10);
     await T.input.touch(p.x, p.y);
@@ -146,7 +146,7 @@
     expect(S().cards[10].state).toBe('up');
   });
 
-  T.test('b12-t10', 'start() deals a new game', async function () {
+  KyoraTest.test('b12-t10', 'start() deals a new game', async function () {
     fresh(6);
     var faces = G().debug.faces();
     G().input.flip(0);
@@ -158,7 +158,7 @@
     s.cards.forEach(function (c) { expect(c.state).toBe('down'); });
   });
 
-  T.test('b12-t11', 'screenshot of the running game', async function () {
+  KyoraTest.test('b12-t11', 'screenshot of the running game', async function () {
     fresh(7);
     G().input.flip(3);
     await T.wait(50);
