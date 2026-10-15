@@ -4,7 +4,7 @@
 
 - Source: NVIDIA ACE repository, path `ACE-main/workflows/tokkio/5.0.0-ga/` from the uploaded archive `ACE-main.zip`.
 - Archive sha256: `3dac38e8c7ebc09a7bf0c827d2a6b130f5e9011f5c36a23e1c1b13679529c8dd`
-- Copied byte-for-byte, no file modified. File count: 633.
+- Copied byte-for-byte, no file modified. File count: 639 (6 of them are symlinks, hashed by link text as stored in the archive).
 - Licence: the ACE repository root and `src/llm-rag/LICENSE` are Apache-2.0 (NVIDIA CORPORATION & AFFILIATES). Several source files under `src/llm-rag/src/`, `entrypoint.sh` and the customization notebooks carry an NVIDIA proprietary header ("Any use, reproduction, disclosure or distribution ... without an express license agreement from NVIDIA Corporation is strictly prohibited"). That header conflicts with the Apache-2.0 LICENSE file in the same directory. Kyora redistributes the tree unmodified under the LICENSE file as published by NVIDIA on GitHub and records the discrepancy here. The Tokkio microservice containers, Helm charts and assets themselves are fetched from NGC at deploy time under the NVIDIA AI Product License / NVIDIA AI Enterprise terms; they are not included.
 - Kyora's own additions live outside this tree in `tokkio-kyora/`.
 
@@ -38,36 +38,42 @@ f6208f26ac2f14b7d34fb6c5750bbd687601d22fba2d876f582e62fef86c540e  ./customizatio
 1c207950f1b547edd3038882570ff89953707196bb7482f0c372760a357c3b1a  ./customization-notebooks/pictures/upload_config.png
 99b0783ee8e95eec4f1924a37b694882628878ab637e3374ab5baac0bf227a13  ./llm-rag/README.md
 ef0773e89fc178dad42f058703695b91042da06755d466da6b3a52c10eadabca  ./llm-rag/tokkio-1stream-no-ui/Chart.yaml
+77a75b4b88b40a410cb8bacc188864987d584ccb2b052be9fa7b255ac69975ac  ./llm-rag/tokkio-1stream-no-ui/config/ace-controller/config.yaml
 1f8aecae197592b8498acbefde4422b10648bdf4c67f9a869a448b5063dfeefc  ./llm-rag/tokkio-1stream-no-ui/config/ssl/crt.pem
 e5985570f86ad7fc7e63ab3c516adbc9b5712a12a3e7db786f72a6a4f64b86d8  ./llm-rag/tokkio-1stream-no-ui/config/ssl/key.pem
 8c85a4a3c0b92933c5264008ad46790c7ead1d3eecd0a73f71087f0362c51f5a  ./llm-rag/tokkio-1stream-no-ui/tokkio-app-params.yaml
 332690bc94248cb9d8943e44a6c5753c36335bbba9d405ad7c80b96dcff56d42  ./llm-rag/tokkio-1stream-no-ui/tokkio-app.yaml
 2ad50559636122e8fa6478cb6ae06e85461e603dd4783adbd25f0babbcf2ccb3  ./llm-rag/tokkio-1stream-no-ui/values.yaml
 ef0773e89fc178dad42f058703695b91042da06755d466da6b3a52c10eadabca  ./llm-rag/tokkio-1stream-with-ui/Chart.yaml
+77a75b4b88b40a410cb8bacc188864987d584ccb2b052be9fa7b255ac69975ac  ./llm-rag/tokkio-1stream-with-ui/config/ace-controller/config.yaml
 1f8aecae197592b8498acbefde4422b10648bdf4c67f9a869a448b5063dfeefc  ./llm-rag/tokkio-1stream-with-ui/config/ssl/crt.pem
 e5985570f86ad7fc7e63ab3c516adbc9b5712a12a3e7db786f72a6a4f64b86d8  ./llm-rag/tokkio-1stream-with-ui/config/ssl/key.pem
 69aa81837ecef42387da00ba6ee4a711628c1e504b5b20e0d07289730b4bfcaf  ./llm-rag/tokkio-1stream-with-ui/tokkio-app-params.yaml
 70e915b1d42651f3ff1ee5dd94a3ada80aaae1dc1074b9e551959717face8264  ./llm-rag/tokkio-1stream-with-ui/tokkio-app.yaml
 1d55f01335816440b6f0484ce6e38aa480e9670c57a2c0a1fbd9a82d7f8b1f48  ./llm-rag/tokkio-1stream-with-ui/values.yaml
 ef0773e89fc178dad42f058703695b91042da06755d466da6b3a52c10eadabca  ./llm-rag/tokkio-3stream-no-ui/Chart.yaml
+77a75b4b88b40a410cb8bacc188864987d584ccb2b052be9fa7b255ac69975ac  ./llm-rag/tokkio-3stream-no-ui/config/ace-controller/config.yaml
 1f8aecae197592b8498acbefde4422b10648bdf4c67f9a869a448b5063dfeefc  ./llm-rag/tokkio-3stream-no-ui/config/ssl/crt.pem
 e5985570f86ad7fc7e63ab3c516adbc9b5712a12a3e7db786f72a6a4f64b86d8  ./llm-rag/tokkio-3stream-no-ui/config/ssl/key.pem
 4dbbdb54e0415f8e76d30c054f35f83eecdf3d3f554b1253359a77a407f5f555  ./llm-rag/tokkio-3stream-no-ui/tokkio-app-params.yaml
 3e018b02b4bc0da73b81ec2b4011b7c5ec6265b5c80a896d986fbd5cea724a45  ./llm-rag/tokkio-3stream-no-ui/tokkio-app.yaml
 d0501624bab877e88c9ac154ef0d4632c80dd0cabe4b023569393f637748bbd0  ./llm-rag/tokkio-3stream-no-ui/values.yaml
 ef0773e89fc178dad42f058703695b91042da06755d466da6b3a52c10eadabca  ./llm-rag/tokkio-3stream-with-ui/Chart.yaml
+77a75b4b88b40a410cb8bacc188864987d584ccb2b052be9fa7b255ac69975ac  ./llm-rag/tokkio-3stream-with-ui/config/ace-controller/config.yaml
 1f8aecae197592b8498acbefde4422b10648bdf4c67f9a869a448b5063dfeefc  ./llm-rag/tokkio-3stream-with-ui/config/ssl/crt.pem
 e5985570f86ad7fc7e63ab3c516adbc9b5712a12a3e7db786f72a6a4f64b86d8  ./llm-rag/tokkio-3stream-with-ui/config/ssl/key.pem
 f2ef9b5c41bb76674b19fce246499a6b825628bd74c5988041337c7f6e05faaf  ./llm-rag/tokkio-3stream-with-ui/tokkio-app-params.yaml
 923e525873052662f08975afa4248b6d0854bc31c21b94227c7167325cd5a544  ./llm-rag/tokkio-3stream-with-ui/tokkio-app.yaml
 5fcc488bea193336bbb5df3523ad889f844e5290105653e334f93956e626f7db  ./llm-rag/tokkio-3stream-with-ui/values.yaml
 ef0773e89fc178dad42f058703695b91042da06755d466da6b3a52c10eadabca  ./llm-rag/tokkio-6stream-no-ui/Chart.yaml
+77a75b4b88b40a410cb8bacc188864987d584ccb2b052be9fa7b255ac69975ac  ./llm-rag/tokkio-6stream-no-ui/config/ace-controller/config.yaml
 1f8aecae197592b8498acbefde4422b10648bdf4c67f9a869a448b5063dfeefc  ./llm-rag/tokkio-6stream-no-ui/config/ssl/crt.pem
 e5985570f86ad7fc7e63ab3c516adbc9b5712a12a3e7db786f72a6a4f64b86d8  ./llm-rag/tokkio-6stream-no-ui/config/ssl/key.pem
 6fa71f56043bfa2e6188926919769b93fffb9da2435048f03a9bb921d1712c66  ./llm-rag/tokkio-6stream-no-ui/tokkio-app-params.yaml
 b1d42f9775a456e29bdfc0a26013509c566cd8f37b32559b5e3602b02ef173ee  ./llm-rag/tokkio-6stream-no-ui/tokkio-app.yaml
 69a38f9a082036e87462cdfa2df46a787a5bab868dfdfd852708deeccadb893e  ./llm-rag/tokkio-6stream-no-ui/values.yaml
 ef0773e89fc178dad42f058703695b91042da06755d466da6b3a52c10eadabca  ./llm-rag/tokkio-6stream-with-ui/Chart.yaml
+77a75b4b88b40a410cb8bacc188864987d584ccb2b052be9fa7b255ac69975ac  ./llm-rag/tokkio-6stream-with-ui/config/ace-controller/config.yaml
 1f8aecae197592b8498acbefde4422b10648bdf4c67f9a869a448b5063dfeefc  ./llm-rag/tokkio-6stream-with-ui/config/ssl/crt.pem
 e5985570f86ad7fc7e63ab3c516adbc9b5712a12a3e7db786f72a6a4f64b86d8  ./llm-rag/tokkio-6stream-with-ui/config/ssl/key.pem
 9804aaa15924f73ee0678a262cffd1edb39ad883633ea801f76732b25f3a3376  ./llm-rag/tokkio-6stream-with-ui/tokkio-app-params.yaml

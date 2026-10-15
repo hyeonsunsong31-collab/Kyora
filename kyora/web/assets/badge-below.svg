@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160" role="img" aria-label="Not certified: measured pass rate below 94 percent">
+  <circle cx="80" cy="80" r="72" fill="#0b0f14" stroke="#f5b846" stroke-width="6" stroke-dasharray="10 6"/>
+  <circle cx="80" cy="80" r="60" fill="none" stroke="#223040" stroke-width="1.5"/>
+  <path d="M80 48 V92" stroke="#f5b846" stroke-width="9" stroke-linecap="round"/>
+  <circle cx="80" cy="108" r="5.5" fill="#f5b846"/>
+  <text x="80" y="128" text-anchor="middle" font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#e8eef4" letter-spacing="1.2">NOT CERTIFIED</text>
+  <text x="80" y="143" text-anchor="middle" font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif" font-size="9" fill="#9fb0c0">BELOW 94 % · NUMBER SHOWN AS MEASURED</text>
+</svg>

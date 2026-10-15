@@ -1,0 +1,165 @@
+/* Kyora design tokens. Documented in docs/ui-design.md.
+   Dark is the default studio surface; light follows prefers-color-scheme.
+   Every colour used by app.css and the JS renderers comes from here. */
+
+:root {
+  color-scheme: dark light;
+
+  /* ---- type ---- */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  --fs-0: 0.75rem;   /* 12px  captions, badges */
+  --fs-1: 0.8125rem; /* 13px  table cells, log  */
+  --fs-2: 0.9375rem; /* 15px  body (phone-first) */
+  --fs-3: 1.0625rem; /* 17px  lead */
+  --fs-4: 1.25rem;   /* 20px  section titles */
+  --fs-5: 1.5rem;    /* 24px  view titles */
+  --fs-6: 2rem;      /* 32px  hero numbers */
+  --fs-7: 2.75rem;   /* 44px  gauge number */
+  --lh-tight: 1.2;
+  --lh-body: 1.45;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --tracking-caps: 0.06em;
+
+  /* ---- space (4px grid) ---- */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+  --gutter: 16px;
+  --touch: 44px;
+
+  /* ---- radii ---- */
+  --r-1: 6px;
+  --r-2: 10px;
+  --r-3: 16px;
+  --r-4: 24px;
+  --r-pill: 999px;
+
+  /* ---- motion ---- */
+  --t-fast: 120ms;
+  --t-base: 200ms;
+  --t-slow: 360ms;
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.45, 0, 0.2, 1);
+
+  /* ---- elevation ---- */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-3: 0 18px 48px rgba(0, 0, 0, 0.55);
+
+  /* ---- layout ---- */
+  --nav-h: 60px;
+  --top-h: 52px;
+  --rail-w: 224px;
+  --content-max: 1360px;
+
+  /* ---- dark palette (default) ---- */
+  --bg: #0b0f14;
+  --bg-elev: #121821;
+  --bg-elev-2: #182029;
+  --bg-sunken: #070a0e;
+  --bg-tint: rgba(45, 212, 191, 0.08);
+  --line: #223040;
+  --line-strong: #31465c;
+  --fg: #e8eef4;
+  --fg-muted: #9fb0c0;
+  --fg-subtle: #6b7c8c;
+  --fg-inverse: #06110f;
+
+  --accent: #2dd4bf;
+  --accent-strong: #14b8a6;
+  --accent-ink: #042f2e;
+  --accent-soft: rgba(45, 212, 191, 0.16);
+
+  --ok: #3ddc97;
+  --ok-soft: rgba(61, 220, 151, 0.16);
+  --warn: #f5b846;
+  --warn-soft: rgba(245, 184, 70, 0.16);
+  --danger: #ff6b6b;
+  --danger-soft: rgba(255, 107, 107, 0.16);
+  --info: #60a5fa;
+  --info-soft: rgba(96, 165, 250, 0.16);
+
+  /* per-system hues: used for metric tiles, log badges and the chart legend */
+  --sys-nemotron: #76e36b;
+  --sys-kimi: #b48cff;
+  --sys-claude: #ffb86b;
+  --sys-tokkio: #5ad1ff;
+
+  /* pipeline stage states */
+  --stage-idle: #2a3745;
+  --stage-running: var(--accent);
+  --stage-done: var(--ok);
+  --stage-failed: var(--danger);
+  --stage-blocked: var(--warn);
+  --stage-skipped: #4a5968;
+
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+  --selection: rgba(45, 212, 191, 0.35);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f4f6f8;
+    --bg-elev: #ffffff;
+    --bg-elev-2: #f0f3f6;
+    --bg-sunken: #e7ebf0;
+    --bg-tint: rgba(15, 143, 133, 0.08);
+    --line: #d6dde6;
+    --line-strong: #b9c4d1;
+    --fg: #101820;
+    --fg-muted: #4b5a69;
+    --fg-subtle: #7a8896;
+    --fg-inverse: #ffffff;
+
+    --accent: #0f8f85;
+    --accent-strong: #0b6f68;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(15, 143, 133, 0.12);
+
+    --ok: #1a9d63;
+    --ok-soft: rgba(26, 157, 99, 0.14);
+    --warn: #a86b0b;
+    --warn-soft: rgba(183, 121, 31, 0.16);
+    --danger: #cf3540;
+    --danger-soft: rgba(207, 53, 64, 0.12);
+    --info: #2563eb;
+    --info-soft: rgba(37, 99, 235, 0.12);
+
+    --sys-nemotron: #2f8f2a;
+    --sys-kimi: #6d3fd1;
+    --sys-claude: #b45d0f;
+    --sys-tokkio: #0d7cb0;
+
+    --stage-idle: #cfd8e3;
+    --stage-skipped: #aab6c3;
+
+    --shadow-1: 0 1px 2px rgba(16, 24, 32, 0.08), 0 0 0 1px rgba(16, 24, 32, 0.04);
+    --shadow-2: 0 8px 24px rgba(16, 24, 32, 0.12);
+    --shadow-3: 0 18px 48px rgba(16, 24, 32, 0.18);
+    --selection: rgba(15, 143, 133, 0.25);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --t-fast: 0ms;
+    --t-base: 0ms;
+    --t-slow: 0ms;
+  }
+}
+
+@media (min-width: 960px) {
+  :root {
+    --gutter: 24px;
+    --fs-2: 0.9375rem;
+  }
+}

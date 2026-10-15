@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Kyora">
+  <defs>
+    <linearGradient id="k-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#121821"/>
+      <stop offset="1" stop-color="#0b0f14"/>
+    </linearGradient>
+    <linearGradient id="k-stroke" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#5ad1ff"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#k-bg)" stroke="#223040" stroke-width="2"/>
+  <!-- K drawn as a pipeline: spine + two branches, four nodes = four systems -->
+  <path d="M20 14 V50" stroke="url(#k-stroke)" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M20 32 L44 14" stroke="url(#k-stroke)" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M20 32 L44 50" stroke="url(#k-stroke)" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <circle cx="20" cy="14" r="4.5" fill="#76e36b"/>
+  <circle cx="44" cy="14" r="4.5" fill="#b48cff"/>
+  <circle cx="44" cy="50" r="4.5" fill="#ffb86b"/>
+  <circle cx="20" cy="50" r="4.5" fill="#5ad1ff"/>
+</svg>

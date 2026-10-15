@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f4f6f8" media="(prefers-color-scheme: light)">
+<meta name="description" content="Kyora - an honest orchestration studio for AI game development: Nemotron-3-Ultra, Kimi K3, Claude Code and NVIDIA Tokkio, each in its own role.">
+<title>Kyora Studio</title>
+<link rel="icon" href="/static/assets/logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/assets/logo.svg">
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar" role="banner">
+  <a class="brand" href="#/studio" aria-label="Kyora home">
+    <img src="/static/assets/logo.svg" alt="" width="28" height="28">
+    <span>Kyora</span><span class="brand-sub">studio</span>
+  </a>
+  <div class="topbar-project">
+    <label class="sr-only" for="top-project">Current project</label>
+    <select id="top-project" aria-label="Current project"><option value="">No project</option></select>
+  </div>
+  <div class="conn" id="conn" data-state="idle" role="status" aria-live="polite" title="Event stream state">
+    <span class="dot" aria-hidden="true"></span><span class="conn-label">connecting</span>
+  </div>
+</header>
+
+<nav class="nav" aria-label="Views" id="nav">
+  <a href="#/studio" data-view="studio"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10l8-6 8 6v10"/><path d="M9 20v-6h6v6"/></svg><span>Studio</span></a>
+  <a href="#/pipeline" data-view="pipeline"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M7.5 12h4l5-5M11.5 12l5 5"/></svg><span>Pipeline</span><i class="nav-badge" id="nav-badge-pipeline" hidden></i></a>
+  <a href="#/preview" data-view="preview"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg><span>Preview</span></a>
+  <a href="#/slides" data-view="slides"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="7" height="12" rx="1.5"/><rect x="14" y="6" width="7" height="12" rx="1.5"/><path d="M10 12h4"/></svg><span>Slides</span></a>
+  <a href="#/presenter" data-view="presenter"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/></svg><span>Presenter</span></a>
+  <a href="#/selfcheck" data-view="selfcheck"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg><span>Check</span></a>
+  <a href="#/bench" data-view="bench"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16M6 20V10M12 20V4M18 20v-8"/></svg><span>Bench</span></a>
+  <a href="#/settings" data-view="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg><span>Settings</span></a>
+  <div class="nav-foot" aria-hidden="true">Orchestration, not a merged model.<br>Nemotron-3-Ultra · Kimi K3 · Claude Code · Tokkio</div>
+</nav>
+
+<main id="main" class="main" tabindex="-1">
+
+  <!-- ============================================================ STUDIO -->
+  <section class="view" id="view-studio" data-view="studio" aria-labelledby="h-studio" hidden>
+    <div class="view-head">
+      <div><h1 id="h-studio">Studio</h1><p class="sub">Describe a game or a change. Four systems, each in its own role, build and test it.</p></div>
+    </div>
+    <div class="cap-strip" id="cap-strip" aria-label="Capability status" aria-live="polite"></div>
+    <div class="engine-banner" id="engine-banner" data-tone="unknown" style="margin-top:12px">
+      <div class="eb-icon" aria-hidden="true">?</div>
+      <div><div class="eb-title">Checking code engine...</div><div class="eb-sub">Status from <code>/api/status</code>.</div></div>
+    </div>
+    <div class="split" style="margin-top:16px">
+      <div class="stack">
+        <section class="card" aria-labelledby="h-project">
+          <h2 id="h-project">Project</h2>
+          <div class="project-bar">
+            <div class="field"><label for="studio-project">Selected project</label><select id="studio-project"><option value="">No projects yet</option></select></div>
+            <button class="btn" id="btn-new-project" type="button">New</button>
+            <button class="btn danger" id="btn-delete-project" type="button" aria-label="Delete project">Delete</button>
+          </div>
+          <div id="project-empty" class="empty" style="margin-top:12px" hidden></div>
+        </section>
+
+        <section class="card prompt-area" aria-labelledby="h-prompt">
+          <h2 id="h-prompt">Prompt</h2>
+          <div class="field">
+            <label class="sr-only" for="prompt">Prompt</label>
+            <textarea id="prompt" placeholder="e.g. A one-touch endless runner with a day/night cycle, 3 power-ups and a high-score table. Touch controls first." aria-describedby="prompt-help"></textarea>
+            <div class="help" id="prompt-help">Kimi K3 plans and judges, Nemotron-3-Ultra writes design and copy, Claude Code builds and tests at effort max. <kbd>Ctrl</kbd>+<kbd>Enter</kbd> runs.</div>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="h-att">
+          <h2 id="h-att">Attachments <span class="hint">images, docs, code, game ZIPs</span></h2>
+          <label class="drop" id="drop" for="file-input">
+            <span>Drop files here or tap to choose</span>
+            <span class="drop-hint">Images go to Kimi K3 vision as references. ZIPs can be imported as the base game.</span>
+            <input type="file" id="file-input" multiple accept="image/*,.pdf,.txt,.md,.json,.js,.mjs,.ts,.html,.css,.py,.zip">
+          </label>
+          <div class="att-grid" id="att-grid" aria-live="polite"></div>
+          <p class="help" id="att-help" style="margin:8px 0 0;font-size:var(--fs-0);color:var(--fg-subtle)"></p>
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="card" aria-labelledby="h-kind">
+          <h2 id="h-kind">What to do</h2>
+          <div class="seg" role="group" aria-label="Run kind" id="kind-seg">
+            <button type="button" data-kind="generate" aria-pressed="true">Generate new</button>
+            <button type="button" data-kind="modify" aria-pressed="false">Modify current slide</button>
+          </div>
+          <div class="options-grid" style="margin-top:12px">
+            <div class="field" id="parent-field"><label for="parent-slide">Parent slide</label><select id="parent-slide"><option value="">None (fresh start)</option></select><div class="help">Modifications stack on the parent. Choosing an older slide creates a branch.</div></div>
+            <div class="field"><label for="engine-pref">Code engine</label><select id="engine-pref"><option value="auto">Auto (hub › Claude Code › API)</option><option value="claude_code">Claude Code CLI</option><option value="hub">Kyora Hub (LAN)</option><option value="anthropic_api">Anthropic Messages API</option></select></div>
+            <div class="field"><label for="import-zip">Import ZIP as base</label><select id="import-zip"><option value="">No import</option></select><div class="help">Pick an attached game ZIP to unpack as the starting repository.</div></div>
+          </div>
+        </section>
+        <div class="run-cta">
+          <button class="btn primary lg block" id="btn-run" type="button">Run pipeline</button>
+        </div>
+        <section class="card" aria-labelledby="h-recent">
+          <h2 id="h-recent">Recent runs</h2>
+          <div class="recent-runs" id="recent-runs"><div class="empty"><strong>No runs yet</strong><span class="why">Runs appear here as soon as the pipeline publishes events.</span></div></div>
+        </section>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ PIPELINE -->
+  <section class="view" id="view-pipeline" data-view="pipeline" aria-labelledby="h-pipeline" hidden>
+    <div class="view-head">
+      <div><h1 id="h-pipeline">Pipeline</h1><p class="sub" id="pipe-sub">Live state of the selected run.</p></div>
+      <div class="view-actions"><label class="sr-only" for="run-select">Run</label><select id="run-select" aria-label="Select run"><option value="">No run selected</option></select></div>
+    </div>
+    <div class="split">
+      <div class="stack">
+        <section class="card" aria-labelledby="h-chart">
+          <h2 id="h-chart">Stages <span class="hint" id="iter-counter">iteration -</span></h2>
+          <div class="run-strip" id="run-strip"></div>
+          <div id="pipe-chart" role="img" aria-label="Pipeline stage chart" style="margin-top:12px"></div>
+          <div class="pipe-legend" aria-hidden="true">
+            <span><i style="background:var(--stage-idle)"></i>idle</span><span><i style="background:var(--stage-running)"></i>running</span><span><i style="background:var(--stage-done)"></i>done</span><span><i style="background:var(--stage-failed)"></i>failed</span><span><i style="background:var(--stage-blocked)"></i>blocked</span>
+          </div>
+          <div class="pipe-controls" id="pipe-controls" style="margin-top:12px"></div>
+          <div id="pipe-notice" style="margin-top:12px"></div>
+        </section>
+        <div class="split even">
+          <section class="card" aria-labelledby="h-gate">
+            <h2 id="h-gate">Quality gate</h2>
+            <div class="gauge-wrap" id="gate-gauge"></div>
+          </section>
+          <section class="card" aria-labelledby="h-judge">
+            <h2 id="h-judge">Judge <span class="hint">Kimi K3 on every tool call</span></h2>
+            <div class="judge-counters" id="judge-counters"></div>
+          </section>
+        </div>
+        <section class="card" aria-labelledby="h-metrics">
+          <h2 id="h-metrics">Measured model metrics <span class="hint">from model.metrics and engine.result only</span></h2>
+          <div class="tiles" id="metric-tiles"></div>
+        </section>
+        <section class="card" id="test-frame-card" aria-labelledby="h-testframe" hidden>
+          <h2 id="h-testframe">Browser tests on this device <button class="btn sm ghost" id="btn-close-testframe" type="button">Close</button></h2>
+          <div class="test-frame-wrap"><iframe id="test-frame" title="Kyora browser test harness"></iframe></div>
+        </section>
+      </div>
+      <div class="stack">
+        <section class="card log-card" aria-labelledby="h-log">
+          <h2 id="h-log">Live log <span class="hint" id="log-count">0 lines</span></h2>
+          <div class="log-filters" id="log-filters" role="group" aria-label="Log filters"></div>
+          <div class="stream-tail" id="stream-tail" hidden></div>
+          <div class="log" id="log" role="log" aria-live="polite" aria-relevant="additions" aria-label="Pipeline log"></div>
+          <div class="log-tail"><span id="log-hint">Capped at 2000 lines.</span><button class="btn sm ghost" id="btn-log-follow" type="button" aria-pressed="true">Following</button></div>
+        </section>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ PREVIEW -->
+  <section class="view" id="view-preview" data-view="preview" aria-labelledby="h-preview" hidden>
+    <div class="view-head">
+      <div><h1 id="h-preview">Preview</h1><p class="sub">The real game, served from the slide checkout or the live work tree.</p></div>
+    </div>
+    <div class="split wide-left">
+      <div class="stack">
+        <section class="card">
+          <div class="preview-toolbar">
+            <label class="sr-only" for="preview-ref">Slide or tree</label>
+            <select id="preview-ref" aria-label="Slide or tree to preview"></select>
+            <div class="seg" role="group" aria-label="Device size" id="device-seg">
+              <button type="button" data-size="phone" aria-pressed="true">Phone</button>
+              <button type="button" data-size="tablet" aria-pressed="false">Tablet</button>
+              <button type="button" data-size="desktop" aria-pressed="false">Desktop</button>
+            </div>
+            <button class="btn sm" id="btn-preview-reload" type="button">Reload</button>
+            <button class="btn sm" id="btn-preview-full" type="button">Fullscreen</button>
+            <a class="btn sm" id="btn-preview-open" href="#" target="_blank" rel="noopener">Open</a>
+            <button class="btn sm primary" id="btn-preview-tests" type="button">Run tests</button>
+          </div>
+          <div class="preview-url" id="preview-url" style="margin-top:8px"></div>
+          <div class="preview-stage" id="preview-stage" style="margin-top:12px">
+            <div class="device" id="device" data-size="phone"><iframe id="preview-frame" title="Game preview" sandbox="allow-scripts allow-same-origin allow-pointer-lock allow-forms"></iframe></div>
+          </div>
+          <div id="preview-empty" class="empty" style="margin-top:12px" hidden></div>
+        </section>
+      </div>
+      <div class="stack">
+        <section class="card" aria-labelledby="h-testres">
+          <h2 id="h-testres">Test results <span class="hint" id="testres-hint">none yet</span></h2>
+          <div id="test-results"><div class="empty"><strong>No results</strong><span class="why">Run tests to load the harness for this slide; results post back here.</span></div></div>
+        </section>
+        <section class="card" id="runner-card" hidden aria-labelledby="h-runner">
+          <h2 id="h-runner">Harness <button class="btn sm ghost" id="btn-runner-close" type="button">Close</button></h2>
+          <div class="test-frame-wrap"><iframe id="runner-frame" title="Kyora test harness"></iframe></div>
+        </section>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ SLIDES -->
+  <section class="view" id="view-slides" data-view="slides" aria-labelledby="h-slides" hidden>
+    <div class="view-head">
+      <div><h1 id="h-slides">Slides</h1><p class="sub">Every generation or modification is a tagged commit. Branch, stack, download, present.</p></div>
+      <div class="view-actions">
+        <label class="btn sm" for="import-input">Import ZIP<input type="file" id="import-input" accept=".zip,application/zip" class="sr-only"></label>
+        <a class="btn sm" id="btn-deck" href="#" target="_blank" rel="noopener">Open deck</a>
+      </div>
+    </div>
+    <section class="card">
+      <div class="strip-wrap" id="strip-wrap"><div class="strip" id="strip"></div></div>
+      <div id="slides-empty" class="empty" hidden></div>
+    </section>
+  </section>
+
+  <!-- ============================================================ PRESENTER -->
+  <section class="view" id="view-presenter" data-view="presenter" aria-labelledby="h-presenter" hidden>
+    <div class="view-head">
+      <div><h1 id="h-presenter">Presenter</h1><p class="sub">NVIDIA Tokkio avatar, narrating with Nemotron-3-Ultra. Vendored unmodified; deployed by you.</p></div>
+      <div class="view-actions"><button class="btn sm" id="btn-tokkio-refresh" type="button">Re-check</button></div>
+    </div>
+    <div id="presenter-root"></div>
+  </section>
+
+  <!-- ============================================================ SELF-CHECK -->
+  <section class="view" id="view-selfcheck" data-view="selfcheck" aria-labelledby="h-selfcheck" hidden>
+    <div class="view-head">
+      <div><h1 id="h-selfcheck">Self-check</h1><p class="sub">What is really reachable from this device, with measured latencies.</p></div>
+      <div class="view-actions">
+        <button class="btn sm" id="btn-selfcheck-claude" type="button">Probe Claude model</button>
+        <button class="btn sm primary" id="btn-selfcheck-run" type="button">Run full check</button>
+      </div>
+    </div>
+    <div class="split">
+      <div class="stack">
+        <section class="card" aria-labelledby="h-checks"><h2 id="h-checks">Checks <span class="hint" id="selfcheck-when"></span></h2><div id="selfcheck-table"></div></section>
+        <section class="card" aria-labelledby="h-platform"><h2 id="h-platform">Platform</h2><dl class="kv" id="platform-kv"></dl></section>
+      </div>
+      <div class="stack">
+        <section class="card" aria-labelledby="h-lan"><h2 id="h-lan">Open on another device</h2><div id="lan-root"></div></section>
+        <section class="card" aria-labelledby="h-hub"><h2 id="h-hub">Hub link</h2><div id="hub-root"></div></section>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ BENCH -->
+  <section class="view" id="view-bench" data-view="bench" aria-labelledby="h-bench" hidden>
+    <div class="view-head">
+      <div><h1 id="h-bench">Kyora Bench</h1><p class="sub">Real pipeline runs on fixed tasks. The number shown is your own measurement, nothing else.</p></div>
+    </div>
+    <div class="split">
+      <div class="stack">
+        <section class="card" aria-labelledby="h-tasks">
+          <h2 id="h-tasks">Tasks <span class="hint"><button class="btn sm ghost" id="btn-bench-all" type="button">Select all</button></span></h2>
+          <div id="bench-tasks"></div>
+          <div class="row" style="margin-top:12px">
+            <button class="btn primary" id="btn-bench-run" type="button">Estimate and run selected</button>
+            <button class="btn danger" id="btn-bench-cancel" type="button" hidden>Cancel</button>
+          </div>
+          <div id="bench-progress" style="margin-top:12px"></div>
+        </section>
+      </div>
+      <div class="stack">
+        <section class="card" aria-labelledby="h-score"><h2 id="h-score">Measured pass rate</h2><div id="bench-score"></div></section>
+        <section class="card" aria-labelledby="h-results"><h2 id="h-results">Results</h2><div id="bench-results"></div></section>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ SETTINGS -->
+  <section class="view" id="view-settings" data-view="settings" aria-labelledby="h-settings" hidden>
+    <div class="view-head">
+      <div><h1 id="h-settings">Settings</h1><p class="sub" id="settings-sub">Keys are masked; typing a new value replaces the stored one. Masked values are never sent back.</p></div>
+    </div>
+    <div class="split">
+      <div class="stack" id="settings-root"></div>
+      <div class="stack">
+        <section class="card honesty" aria-labelledby="h-honesty">
+          <h3 id="h-honesty">Honesty</h3>
+          <p><span class="yes">Kyora is</span> an orchestration application. It calls four external systems over their own APIs, each in a fixed role: NVIDIA Nemotron-3-Ultra writes design prose, UI spec and narration; Kimi K3 plans, judges every tool call and reviews; Claude Code implements and tests at <code>--effort max</code> through your Claude subscription; NVIDIA Tokkio presents.</p>
+          <p><span class="no">Kyora is not</span> a merged model, a fine-tune or a lighter copy of any of them. Nothing here is generated locally and nothing is simulated: a missing engine shows as <b>BLOCKED</b>, a missing metric shows as <b>-</b>.</p>
+          <ul>
+            <li><b>94 % is a gate, not a score.</b> Each run must pass at least 94 % of its counted checks (static, Node and in-browser acceptance tests) and all required checks, or it loops through Kimi review and Claude fixes a bounded number of times. Kyora Bench applies the same rule to fixed tasks and only grants a badge when <i>your</i> measured run clears it.</li>
+            <li><b>TOPS is not displayed.</b> Compute lives in NVIDIA's and Anthropic's datacenters; it cannot be measured or set over an API. Kyora shows what it can measure: tokens per second, time to first token, latency, token counts and reachability.</li>
+            <li><b>Model names are shown as resolved.</b> If Claude Code falls back to another model, the active model is displayed, not the requested one.</li>
+          </ul>
+        </section>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="attribution" id="attribution">Nemotron-3-Ultra · Kimi K3 · Claude Code · NVIDIA Tokkio</footer>
+
+<div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+<div id="modal-root"></div>
+<div id="hidden-frames" hidden aria-hidden="true"></div>
+
+<script src="/static/js/api.js" defer></script>
+<script src="/static/js/pipeline-chart.js" defer></script>
+<script src="/static/js/metrics.js" defer></script>
+<script src="/static/js/attachments.js" defer></script>
+<script src="/static/js/slides.js" defer></script>
+<script src="/static/js/preview.js" defer></script>
+<script src="/static/js/deck-link.js" defer></script>
+<script src="/static/js/settings.js" defer></script>
+<script src="/static/js/selfcheck.js" defer></script>
+<script src="/static/js/bench.js" defer></script>
+<script src="/static/js/presenter.js" defer></script>
+<script src="/static/js/app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,102 @@
+Pipeline:
+    # Only one of the following LLM service configurations will be active based on this setting:
+    # - "NvidiaLLMService" - Uses the NvidiaLLMService configuration
+    # - "NvidiaRAGService" - Uses the NvidiaRAGService configuration
+    # - "OpenAILLMService" - Uses the OpenAILLMService configuration
+    llm_processor: "NvidiaLLMService" # OR NvidiaLLMService OR NvidiaRAGService OR OpenAILLMService
+    filler:
+        - "Let me think"
+        - "Hmmm"
+    time_delay: 2.0
+
+UserPresenceProcesssor:
+    welcome_message: "Hello, I am Kyora. I present what the studio is building. Ask me about the current run."
+    farewell_message: "Goodbye. I will keep watching the build."
+
+ProactivityProcessor:
+    timer_duration: 100
+    default_message: "I'm here if you need me!"
+
+OpenAILLMContext:
+    name: "Kyora"
+    prompt: "You are {name}, the spoken presenter of the Kyora game development studio.
+            Kyora is an orchestration application. It calls NVIDIA Nemotron 3 Ultra for design text,
+            Moonshot Kimi K3 for planning and judging, and Claude Code for writing and testing the game code.
+            You are not one of those models. You narrate their progress. You do not write code or UI yourself.
+            A game version in Kyora is called a slide. When a slide is ready, announce its number and what changed.
+            Report build, test and quality gate results exactly as given to you. The quality gate passes at
+            ninety four percent of checks. If a stage is blocked, waiting or failed, say so plainly.
+            Never invent numbers, test results, verdicts or features. If you do not know, say you do not know.
+            Keep each answer to one or two short sentences, under 120 characters when possible.
+            Speak in plain words. Do not use markdown, lists, emojis, code or special characters."
+
+# This configuration is only used when llm_processor is set to "NvidiaRAGService"
+NvidiaRAGService:
+    use_knowledge_base: true
+    max_tokens: 1000
+    rag_server_url: "http://0.0.0.0:8081"
+    collection_name: "collection_name"
+    suffix_prompt: "Respond with one sentence or less than 75 characters."
+
+# This configuration is only used when llm_processor is set to "NvidiaLLMService"
+NvidiaLLMService:
+    base_url: "https://integrate.api.nvidia.com/v1"
+    model: "nvidia/nemotron-3-ultra-550b-a55b"
+
+# This configuration is only used when llm_processor is set to "OpenAILLMService"
+OpenAILLMService:
+    model: "gpt-4o"
+
+RAGMultimodalResponseProcessor:
+    confidence_threshold: 0.37
+    top_n: 2
+
+FacialGestureProviderProcessor:
+    user_stopped_speaking_gesture: "Taunt"
+    start_interruption_gesture: "Pensive"
+    probability: 0.5
+
+# Kyora overlay (read by src/bot.py from tokkio-kyora/src/bot.kyora.py, see customization notebook 11).
+# events_url: base URL of the Kyora server as reachable FROM THE CLUSTER, e.g. "http://192.168.1.20:8765".
+# token:      Kyora hub token (settings: hub.token). Both fall back to env KYORA_EVENTS_URL / KYORA_HUB_TOKEN.
+# narrate:    speak tokkio.narration events through the avatar's TTS.
+# show_views: render tokkio.view events (preview link, screenshot, stage table, action buttons) in the Tokkio UI.
+# reconnect_s: initial reconnect delay when Kyora is unreachable (doubles up to 60 s; never crashes the pipeline).
+KyoraProcessor:
+    events_url: ""
+    token: ""
+    narrate: true
+    show_views: true
+    reconnect_s: 3
+
+# ADVANCED CONFIGURATION SECTION BELOW
+# AnimationGraph service configuration is only needed if your 3D avatar scene has support for gestures and postures.
+# Changing these values will not have an effect unless your scene supports them.
+AnimationGraphService:
+    animation_types:
+        posture:
+            duration_relevant_animation_name: "posture"
+            animations:
+                posture:
+                    default_clip_id: "Attentive"
+                    clips:
+                        - clip_id: Talking
+                          description: "Small gestures with hand and upper body: Avatar is talking"
+                          duration: -1
+                          meaning: Emphasizing that Avatar is talking
+                        - clip_id: Listening
+                          description: "Small gestures with hand and upper body: Avatar is listening"
+                          duration: -1
+                          meaning: Emphasizing that one is listening
+                        - clip_id: Idle
+                          description: "Small gestures with hand and upper body: Avatar is idle"
+                          duration: -1
+                          meaning: Show the user that the avatar is waiting for something to happen
+                        - clip_id: Thinking
+                          description: "Gestures with hand and upper body: Avatar is thinking"
+                          duration: -1
+                          meaning: Show the user that the avatar thinking about his next answer or is trying to remember something
+                        - clip_id: Attentive
+                          description: "Small gestures with hand and upper body: Avatar is attentive"
+                          duration: -1
+                          meaning: Show the user that the avatar is paying attention to the user
