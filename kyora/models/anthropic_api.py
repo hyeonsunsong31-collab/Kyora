@@ -386,14 +386,13 @@ class AnthropicAPIEngine(CodeEngine):
             base_depth = len(target.parts)
             for root, dirs, files in os.walk(target):
                 dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != "node_modules")
-                depth = len(Path(root).parts) - base_depth
-                if depth >= 2:
-                    dirs[:] = []
-                for name in sorted(dirs) + sorted(f for f in files if not f.startswith(".")):
+                for name in list(dirs) + sorted(f for f in files if not f.startswith(".")):
                     if len(entries) >= LISTING_LIMIT:
                         break
                     full = Path(root) / name
                     entries.append(_posix(full.relative_to(ws)) + ("/" if full.is_dir() else ""))
+                if len(Path(root).parts) - base_depth >= 1:
+                    dirs[:] = []  # entries of the root (level 1) and of its sub-directories (level 2) only
             listing = "\n".join(entries) if entries else "(empty)"
             return (f"Here's the files and directories up to 2 levels deep in {shown}, excluding hidden items:\n"
                     f"{listing}\n")
@@ -535,18 +534,19 @@ class AnthropicAPIEngine(CodeEngine):
             return stream.get_final_message(), False
 
     @staticmethod
-    def echo_content(content: list) -> list:
+    def echo_content(content: Any) -> Any:
         """The assistant turn to send back: ``content`` unchanged unless a mid-output fallback happened.
 
         After a ``fallback`` block the API requires omitting ``thinking``,
         ``redacted_thinking``, ``tool_use`` and unpaired server-tool blocks that
         appear *before* the last ``fallback`` block (shared/model-migration.md,
         "Echoing fallback turns back"); text blocks and everything after the
-        boundary are kept.
+        boundary are kept. Without a ``fallback`` block the very same object is returned.
         """
         idx = max((i for i, b in enumerate(content) if _get(b, "type") == "fallback"), default=-1)
         if idx < 0:
             return content
+        content = list(content)
         later_result_ids = {str(_get(b, "tool_use_id")) for b in content if str(_get(b, "type") or "").endswith("_tool_result")}
         kept_server_ids = {str(_get(b, "id")) for b in content[:idx]
                            if _get(b, "type") == "server_tool_use" and str(_get(b, "id")) in later_result_ids}
@@ -765,7 +765,8 @@ class AnthropicAPIEngine(CodeEngine):
             self._account(final, job, sink, state)
             stop = _get(final, "stop_reason")
             state["stop_reason"] = stop
-            content = list(_get(final, "content") or [])
+            raw_content = _get(final, "content") or []
+            content = list(raw_content)
             self._journal(transcript, {"turn": state["turns"], "ts": time.time(), "model": _get(final, "model"),
                                        "stop_reason": stop, "usage": _plain(_get(final, "usage")),
                                        "request_id": rid, "content": _plain(content)})
@@ -782,7 +783,7 @@ class AnthropicAPIEngine(CodeEngine):
                     data["recommended_model"] = _get(details, "recommended_model")
                 self._emit(sink, ENGINE_ERROR, data)
                 break
-            msgs.append({"role": "assistant", "content": self.echo_content(content)})
+            msgs.append({"role": "assistant", "content": self.echo_content(raw_content)})
             active = self.active_blocks(content)
             self._emit_blocks(sink, active)
             tool_uses = [b for b in active if _get(b, "type") == "tool_use"]

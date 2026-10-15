@@ -102,7 +102,8 @@ class App:
 
         def _anthropic():
             from .models.anthropic_api import AnthropicAPIEngine
-            return AnthropicAPIEngine(cfg.anthropic_api_key, cfg.claude_code, self.judge, self.home)
+            # callable: an API key added in Settings takes effect without a restart
+            return AnthropicAPIEngine(lambda: cfg.anthropic_api_key, cfg.claude_code, self.judge, self.home)
         self.anthropic_engine = self._try("anthropic_api", _anthropic)
 
         def _hub_client():
@@ -112,7 +113,7 @@ class App:
 
         def _tokkio():
             from .models.tokkio import Tokkio
-            return Tokkio(cfg.tokkio, self.bus)
+            return Tokkio(lambda: cfg.tokkio, self.bus)  # live: URLs changed in Settings apply immediately
         self.tokkio = self._try("tokkio", _tokkio)
 
         def _browser_results():

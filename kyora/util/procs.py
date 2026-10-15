@@ -86,4 +86,10 @@ def run(args: Sequence[str], *, cwd=None, env=None, timeout: float | None = 120,
         kill_tree(proc, grace_s=3)
         rc = -9
     t_out.join(timeout=5); t_err.join(timeout=5)
+    for stream in (proc.stdout, proc.stderr, proc.stdin):
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001 - closing a finished pipe must never raise
+                pass
     return rc, "".join(out), "".join(err)
