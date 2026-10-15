@@ -171,7 +171,7 @@ def _is_junk(name: str) -> bool:
 
 
 def _plan(zf: zipfile.ZipFile, dest: Path, *, max_total: int, max_files: int, strip_prefix: str = "",
-          drop_junk: bool = False) -> list[tuple[zipfile.ZipInfo, str, bool]]:
+          drop_junk: bool = False, skip_symlinks: bool = False) -> list[tuple[zipfile.ZipInfo, str, bool]]:
     """Validate all entries; return ``(info, relative_name, is_dir)`` to extract (no I/O yet)."""
     dest_resolved = dest.resolve()
     plan: list[tuple[zipfile.ZipInfo, str, bool]] = []
@@ -179,6 +179,9 @@ def _plan(zf: zipfile.ZipFile, dest: Path, *, max_total: int, max_files: int, st
     files = 0
     for info in zf.infolist():
         if _is_symlink_entry(info):
+            if skip_symlinks:
+                log.warning("unzip: skipping symlink entry %s", info.filename)
+                continue
             raise UnsafeZipError(f"symlink entry in archive: {info.filename!r}")
         name, is_dir = _normalise_name(info.filename)
         if info.is_dir():
@@ -275,7 +278,7 @@ def _extract(zf: zipfile.ZipFile, dest: Path, plan: list[tuple[zipfile.ZipInfo, 
 # ----------------------------------------------------------------------------- public extract API
 def unzip_safe(data_or_path: bytes | Path | str | BinaryIO, dest: Path | str, *, replace: bool = False,
                keep: Sequence[str] = (".git",), max_total: int = MAX_TOTAL_DEFAULT,
-               max_files: int = MAX_FILES_DEFAULT) -> list[str]:
+               max_files: int = MAX_FILES_DEFAULT, skip_symlinks: bool = False) -> list[str]:
     """Extract an archive into ``dest`` after validating every entry.
 
     Rejects (raises :class:`UnsafeZipError`, a ``ValueError``) absolute paths,
@@ -286,11 +289,15 @@ def unzip_safe(data_or_path: bytes | Path | str | BinaryIO, dest: Path | str, *,
     existing contents of ``dest`` are deleted first, except top-level names in
     ``keep``. Nothing is written when validation fails. Returns the extracted
     file paths (POSIX, relative to ``dest``) in archive order.
+
+    ``skip_symlinks=True`` drops symlink entries (logged) instead of rejecting
+    the archive; Kyora uses it only for archives it produced itself (``git
+    archive`` of a slide), never for user uploads.
     """
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     with _open_zip(data_or_path) as zf:
-        plan = _plan(zf, dest, max_total=max_total, max_files=max_files)
+        plan = _plan(zf, dest, max_total=max_total, max_files=max_files, skip_symlinks=skip_symlinks)
         if replace:
             _clear_dest(dest, keep)
         return _extract(zf, dest, plan, max_total=max_total)
