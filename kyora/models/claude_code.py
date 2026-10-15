@@ -49,7 +49,17 @@ HOOK_TIMEOUT_S = 300
 AVAILABILITY_TTL_S = 60.0
 PROBE_PROMPT = "Reply with exactly OK"
 PROMPT_ARGV_LIMIT = 24000  # longer prompts go through stdin (Windows command-line limit is 32 K)
-STRIP_ENV = ("CLAUDECODE",)  # nested-session marker: a child CLI must not think it runs inside another
+# Variables that describe a *parent* Claude Code session when Kyora itself is started from one (a Claude
+# Code terminal, desktop or cloud session). Inherited, they make the child CLI think it is nested, adopt the
+# parent's session id (observed in a real run: the child's init carried the parent's session_id), talk to
+# the parent's messaging/ingress channels, or override ``--effort``. Auth and provider settings
+# (CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN, CLAUDE_CODE_USE_BEDROCK, ...) are kept.
+STRIP_ENV = (
+    "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_REMOTE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_PID", "CLAUDE_CODE_WORKER_EPOCH", "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_SESSION_INGRESS_TOKEN_FILE", "CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2",
+    "CLAUDE_CODE_TEE_SDK_STDOUT", "CLAUDE_CODE_REMOTE_SDK_URL", "CLAUDE_EFFORT",
+)
 UNKNOWN_OPTION_RE = re.compile(r"unknown option '?(--[A-Za-z0-9-]+)", re.IGNORECASE)
 MODEL_ERROR_RE = re.compile(
     r"not found|restricted|not available|invalid model|unknown model|does not exist|unsupported model|"
@@ -882,7 +892,11 @@ class ClaudeCodeEngine(CodeEngine):
                 error = str(subtype)
             else:
                 error = f"claude exited with code {attempt.rc} without a result line"
-        active = state.get("active_model")
+        # The init line names the model the CLI was *configured* with; it only counts as the active model
+        # once a real model answered (a message or a tool call). A model refused on its first request
+        # (credits, not found) never served, so it is not reported as active.
+        served = bool(state.get("model_messages") or state.get("tool_uses"))
+        active = state.get("active_model") if served else None
         if not active:
             active = primary_model_from_usage(res.get("modelUsage"), [job.model] + list(job.fallback_models or []))
         duration_ms = int(res.get("duration_ms") or 0) or int((time.monotonic() - started) * 1000)

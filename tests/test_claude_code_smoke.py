@@ -20,6 +20,14 @@ judge journal holds the deny. Optional env:
 
 Run (at most a couple of times; it spends subscription usage):
 ``KYORA_REAL_CLAUDE=1 python3 -m unittest tests.test_claude_code_smoke -v``
+
+Observed on CLI 2.1.300 (OAuth subscription), see ``docs/claude-code-engine.md``:
+``claude-fable-5-1`` was refused on its first request (HTTP 429 ``credits_required``,
+"Switch to another model to continue"; the CLI's ``--fallback-model`` did not
+engage), the engine switched to ``claude-opus-5-5``, which wrote ``allowed.txt``;
+the write of ``forbidden.txt`` was blocked by the hook's exit 2 and the reason
+came back to Claude as an error tool_result. The sanitized captures live in
+``tests/fixtures/stream_json/real_*.jsonl``.
 """
 from __future__ import annotations
 

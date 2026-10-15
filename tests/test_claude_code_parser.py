@@ -2,13 +2,17 @@
 
 * ``parse_stream_line`` against fixtures in ``tests/fixtures/stream_json``
   (synthetic ones plus ``real_*.jsonl`` lines captured from the real CLI by
-  ``tests/test_claude_code_smoke.py`` and sanitized).
+  ``tests/test_claude_code_smoke.py`` and sanitized: ``real_credits_refusal.jsonl``
+  is the primary model's refusal, ``real_session.jsonl`` the full served session
+  on the next model, ``real_{init,assistant_tool_use,user_tool_result,result}``
+  single line types of it).
 * argv / settings construction, the pure retry decisions, ``describe_argv`` and
   ``_build_result``.
 * ``run()`` end to end against a FAKE ``claude``: a small Python script written
   to a temp dir that prints stream-json lines and can simulate a rejected
-  hidden flag, a model error before ``init``, a hang (cancel / idle / wall
-  timeout) and a prompt delivered on stdin.
+  hidden flag, a model error before ``init``, a model refused after ``init``,
+  a hang (cancel / idle / wall timeout), a prompt delivered on stdin, and a
+  replay of the real smoke run's captured CLI output.
 
 Run: ``python3 -m unittest tests.test_claude_code_parser -v``
 """
@@ -56,7 +60,7 @@ FAKE_CLAUDE = textwrap.dedent(r'''
     if prompt is None:
         stdin_text = sys.stdin.read()
     if log_path:
-        env = {k: v for k, v in os.environ.items() if k.startswith("KYORA_") or k == "CLAUDECODE"}
+        env = {k: v for k, v in os.environ.items() if k.startswith(("KYORA_", "CLAUDE"))}
         with open(log_path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"argv": argv, "stdin_len": None if stdin_text is None else len(stdin_text),
                                  "cwd": os.getcwd(), "env": env}) + "\n")
@@ -82,6 +86,15 @@ FAKE_CLAUDE = textwrap.dedent(r'''
     if mode == "crash":
         sys.stderr.write("fatal: something unrelated broke (file not found)\n")
         sys.exit(3)
+    if mode == "replay":
+        # print lines captured from the REAL CLI for the requested model: FAKE_REPLAY={"model": ["file", rc]}
+        path, rc = json.loads(os.environ["FAKE_REPLAY"])[model]
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    sys.stdout.write(line if line.endswith("\n") else line + "\n")
+                    sys.stdout.flush()
+        sys.exit(rc)
 
     sid = "fake-session-1"
     emit({"type": "system", "subtype": "init", "session_id": sid, "model": model, "cwd": os.getcwd(),
@@ -320,7 +333,7 @@ class ParseStreamLineTests(unittest.TestCase):
             self.skipTest("no real_*.jsonl fixtures captured yet (run tests.test_claude_code_smoke)")
         expected = {"real_init.jsonl": "engine.session", "real_assistant_tool_use.jsonl": "engine.tool_use",
                     "real_user_tool_result.jsonl": "engine.tool_result", "real_result.jsonl": "engine.result",
-                    "real_credits_refusal.jsonl": "engine.result"}
+                    "real_credits_refusal.jsonl": "engine.result", "real_session.jsonl": "engine.result"}
         for name, path in sorted(files.items()):
             state = ClaudeCodeEngine.new_parse_state("claude-fable-5-1", 8)
             lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
@@ -359,7 +372,49 @@ class ParseStreamLineTests(unittest.TestCase):
                 self.assertIn("Switch to another model", reason)
                 self.assertIn("HTTP 429", reason)
                 self.assertIn("credits_required", reason)
-        self.assertIn("real_credits_refusal.jsonl", files)
+            if name == "real_session.jsonl":
+                # CLI 2.1.300 serving the fallback model: init, thinking_tokens notices, (redacted) thinking,
+                # two Write tool_use blocks, rate_limit_event lines, the hook's exit-2 block, final text, result
+                self.assertEqual(state["active_model"], "claude-opus-5-5")
+                self.assertEqual(state["tool_uses"], 2)
+                self.assertIsNone(ClaudeCodeEngine.model_unavailable_after_init(state))
+                self.assertEqual(state["result"]["permission_denials"][0]["tool_input"]["file_path"],
+                                 "/WORKSPACE/forbidden.txt")
+                self.assertEqual([r["status"] for r in state["rate_limits"]], ["allowed", "allowed"])
+        for name in ("real_credits_refusal.jsonl", "real_session.jsonl", "real_init.jsonl",
+                     "real_assistant_tool_use.jsonl", "real_user_tool_result.jsonl", "real_result.jsonl"):
+            self.assertIn(name, files)
+
+    def test_real_fixture_details(self):
+        """Exact values observed on the real CLI (2.1.300, subscription login) during the smoke run."""
+        events, state = parse_file("real_init.jsonl")
+        sess = [e.data for e in events if e.type == "engine.session"][0]
+        self.assertEqual(sess["model"], "claude-opus-5-5")
+        self.assertEqual(sess["permission_mode"], "acceptEdits")
+        self.assertEqual(sess["cwd"], "/WORKSPACE")
+        for tool in ALLOWED_TOOLS:
+            if tool != "MultiEdit":  # CLI 2.1.300 no longer lists MultiEdit; allowing it is harmless
+                self.assertIn(tool, sess["tools"])
+        self.assertEqual([e.data for e in events if e.type == "engine.model_resolved"],
+                         [{"requested": "claude-fable-5-1", "active": "claude-opus-5-5", "fallback_used": True}])
+        events, state = parse_file("real_assistant_tool_use.jsonl")
+        uses = [e.data for e in events if e.type == "engine.tool_use"]
+        self.assertEqual([(u["name"], u["summary"]) for u in uses],
+                         [("Write", "/WORKSPACE/allowed.txt"), ("Write", "/WORKSPACE/forbidden.txt")])
+        events, state = parse_file("real_user_tool_result.jsonl")
+        results = [e.data for e in events if e.type == "engine.tool_result"]
+        self.assertEqual([r["is_error"] for r in results], [False, True])
+        self.assertTrue(results[1]["excerpt"].startswith("PreToolUse:Write hook error:"))
+        self.assertIn("Kyora judge (rule) denied Write: smoke test rule", results[1]["excerpt"])
+        events, state = parse_file("real_result.jsonl")
+        res = [e.data for e in events if e.type == "engine.result"][0]
+        self.assertEqual((res["subtype"], res["is_error"], res["num_turns"], res["duration_ms"]),
+                         ("success", False, 3, 9253))
+        self.assertAlmostEqual(res["cost_usd"], 0.0730166)
+        self.assertEqual(state["result"]["terminal_reason"], "completed")
+        events, state = parse_file("real_session.jsonl")
+        thinking = [e.data["text"] for e in events if e.type == "engine.thinking"]
+        self.assertEqual(thinking, ["", ""])  # the CLI streamed redacted thinking (signature only)
 
     def test_model_unavailable_after_init(self):
         f = ClaudeCodeEngine.model_unavailable_after_init
@@ -614,6 +669,7 @@ class BuildResultTests(TempHomeMixin, unittest.TestCase):
         st = ClaudeCodeEngine.new_parse_state(self.job.model, 10)
         st["result"] = result
         st["active_model"] = active
+        st["model_messages"] = 1 if active else 0  # a real model answered
         st["session_id"] = "sess"
         return st
 
@@ -639,6 +695,18 @@ class BuildResultTests(TempHomeMixin, unittest.TestCase):
         self.assertEqual(res.raw["duration_api_ms"], 1200)
         self.assertEqual(res.raw["stream"], (self.run_dir / "engine" / "stream.jsonl").as_posix())
         json.dumps(res.to_dict())
+
+    def test_init_model_that_never_served_is_not_active(self):
+        att = _Attempt()
+        att.rc = 1
+        st = self.state({"subtype": "success", "is_error": True, "result": "Switch to another model to continue.",
+                         "modelUsage": {}})
+        st["active_model"] = "claude-fable-5-1"  # named by the init line only
+        res = self.build(st, att)
+        self.assertIsNone(res.active_model)
+        self.assertFalse(res.fallback_used)
+        st["tool_uses"] = 1  # a tool call proves the model served
+        self.assertEqual(self.build(st, att).active_model, "claude-fable-5-1")
 
     def test_active_model_from_model_usage_when_stream_had_none(self):
         att = _Attempt()
@@ -756,11 +824,19 @@ class RunWithFakeCLITests(TempHomeMixin, unittest.TestCase):
 
     def test_success_run(self):
         eng = self.engine()
-        os.environ["CLAUDECODE"] = "1"  # must not leak into the child
+        # a parent Claude Code session's markers must not leak into the child; auth/config dirs must
+        parent = {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "parent-session", "CLAUDE_EFFORT": "low",
+                  "CLAUDE_CODE_ENTRYPOINT": "remote", "CLAUDE_CONFIG_DIR": str(self.tmp / "claude-config")}
+        saved = {k: os.environ.get(k) for k in parent}
+        os.environ.update(parent)
         try:
             res, sink = self.run_job(eng, self.job("ok", model="claude-opus-5-5"))
         finally:
-            os.environ.pop("CLAUDECODE", None)
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
         self.assertTrue(res.ok, res.error)
         self.assertEqual(res.active_model, "claude-opus-5-5")
         self.assertFalse(res.fallback_used)
@@ -806,7 +882,9 @@ class RunWithFakeCLITests(TempHomeMixin, unittest.TestCase):
         self.assertEqual(Path(inv[0]["cwd"]).resolve(), self.ws.resolve())
         self.assertIsNone(inv[0]["stdin_len"])
         env = inv[0]["env"]
-        self.assertNotIn("CLAUDECODE", env)
+        for key in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_EFFORT", "CLAUDE_CODE_ENTRYPOINT"):
+            self.assertNotIn(key, env)
+        self.assertEqual(env["CLAUDE_CONFIG_DIR"], str(self.tmp / "claude-config"))
         self.assertEqual(env["KYORA_RUN_ID"], "r_test")
         self.assertEqual(env["KYORA_JUDGE_URL"], "")
         self.assertEqual(env["KYORA_HOME"], str(self.home))
@@ -927,9 +1005,53 @@ class RunWithFakeCLITests(TempHomeMixin, unittest.TestCase):
     def test_model_refused_after_init_without_fallback(self):
         res, sink = self.run_job(self.engine(), self.job("credits", model="credit-model", fallback_models=[]))
         self.assertFalse(res.ok)
+        self.assertIsNone(res.active_model)  # named in init, but it never served
+        self.assertFalse(res.fallback_used)
         self.assertEqual(res.error, "api_error (HTTP 429): You're out of usage credits. Switch to another model to continue.")
         self.assertEqual(res.raw["rate_limits"], [{"status": "rejected", "errorCode": "credits_required"}])
         self.assertEqual(len(self.invocations()), 1)
+
+    def test_replay_of_the_real_smoke_run(self):
+        """The real CLI output captured by the smoke run drives run() to the outcome observed there.
+
+        Primary model: init, ``rate_limit_event`` rejected, ``<synthetic>`` "Switch to another model",
+        is_error result (HTTP 429 credits_required). Next model: a served session in which the hook's
+        exit-2 block of ``forbidden.txt`` came back as an error tool_result.
+        """
+        table = {"claude-fable-5-1": [str(FIXTURES / "real_credits_refusal.jsonl"), 1],
+                 "claude-opus-5-5": [str(FIXTURES / "real_session.jsonl"), 0]}
+        judge = FakeJudge(verdict_ids={"toolu_01LGVDVyZiY2JTxfs8iy7DhS", "toolu_01SDxR4nbD8qZZdL8wR6nFfE"})
+        app = SimpleNamespace(server_url="http://127.0.0.1:1", judge=judge)
+        res, sink = self.run_job(self.engine(app), self.job("replay", max_turns=8,
+                                                             env={"FAKE_REPLAY": json.dumps(table)}))
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(res.requested_model, "claude-fable-5-1")
+        self.assertEqual(res.active_model, "claude-opus-5-5")
+        self.assertTrue(res.fallback_used)
+        self.assertEqual(res.session_id, "d32fed4d-5f3a-4d3e-91b6-0a20bef58fe0")
+        self.assertEqual((res.num_turns, res.duration_ms), (3, 9253))
+        self.assertAlmostEqual(res.cost_usd, 0.0730166)
+        self.assertEqual(res.raw["attempts"], 2)
+        self.assertEqual(res.raw["model_usage"]["claude-opus-5-5"]["outputTokens"], 570)
+        self.assertEqual(res.permission_denials[0]["tool_input"]["file_path"], "/WORKSPACE/forbidden.txt")
+        self.assertIn("forbidden.txt", res.result_text)
+        argvs = [i["argv"] for i in self.invocations()]
+        self.assertEqual([(a[a.index("--model") + 1], a[a.index("--fallback-model") + 1]) for a in argvs],
+                         [("claude-fable-5-1", "claude-opus-5-5,claude-sonnet-5-5"),
+                          ("claude-opus-5-5", "claude-sonnet-5-5")])
+        retry = sink.of("engine.compat_retry")
+        self.assertEqual(len(retry), 1)
+        self.assertEqual(retry[0]["argv_change"], "--model claude-opus-5-5")
+        self.assertIn("HTTP 429, model_requires_usage_credits, credits_required", retry[0]["reason"])
+        self.assertEqual(sink.of("engine.model_resolved"), [
+            {"requested": "claude-fable-5-1", "active": "claude-fable-5-1", "fallback_used": False},
+            {"requested": "claude-fable-5-1", "active": "claude-opus-5-5", "fallback_used": True}])
+        blocked = [r for r in sink.of("engine.tool_result") if r["is_error"]]
+        self.assertEqual(len(blocked), 1)
+        self.assertIn("Kyora judge (rule) denied Write", blocked[0]["excerpt"])
+        self.assertEqual(sink.of("judge.unavailable"), [])  # both Write calls have a journaled verdict
+        self.assertEqual(judge.forgotten, ["r_test"])
+        self.assertEqual(len(sink.of("engine.session")), 2)
 
     def test_auth_error_after_init_does_not_switch_model(self):
         res, sink = self.run_job(self.engine(), self.job("auth401"))
