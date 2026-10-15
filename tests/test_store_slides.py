@@ -12,7 +12,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from kyora.projects.slides import GitBackend, SlideManager, SnapshotBackend, VersionError, git_available
+from kyora.projects.slides import GitBackend, SnapshotBackend, VersionError, git_available
 from kyora.projects.store import (MAX_ATTACHMENT_BYTES, TEXT_EXCERPT_BYTES, Attachment, Project, ProjectStore, Run,
                                   sanitize_filename)
 

@@ -8,7 +8,6 @@ import os
 import shutil
 import tempfile
 import unittest
-import urllib.parse
 import zipfile
 from pathlib import Path
 
@@ -231,7 +230,7 @@ class ProjectRoutesTests(unittest.TestCase):
         status, _, _ = self.request("GET", f"/preview/{pid}/run-{run.id}/index.html")
         self.assertEqual(status, 200)
         for bad in (f"/preview/{pid}/v1/missing.js", f"/preview/{pid}/v9/index.html", f"/preview/{pid}/bogus/index.html",
-                    f"/preview/{pid}/run-r_nope/index.html", f"/preview/p_nope/v1/index.html",
+                    f"/preview/{pid}/run-r_nope/index.html", "/preview/p_nope/v1/index.html",
                     f"/preview/{pid}/work/.git/config"):
             status, _, _ = self.request("GET", bad)
             self.assertEqual(status, 404, bad)
