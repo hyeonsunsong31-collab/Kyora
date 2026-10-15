@@ -169,6 +169,11 @@ class App:
                     comp.stop()
                 except Exception:
                     pass
+        if self.store is not None and hasattr(self.store, "close"):
+            try:
+                self.store.close()
+            except Exception:  # noqa: BLE001 - closing on shutdown is best effort
+                pass
         self.bus.close()
 
     # ------------------------------------------------------------------ status
