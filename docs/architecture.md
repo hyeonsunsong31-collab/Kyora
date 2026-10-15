@@ -186,7 +186,8 @@ argv (cwd = workspace, stdin DEVNULL):
 ```
 <cfg.command...> -p <prompt> --model <model> [--fallback-model a,b] --effort max --max-turns N
   --output-format stream-json --verbose --permission-mode acceptEdits --permission-prompts none
-  --allowedTools "Read,Write,Edit,MultiEdit,Bash,Glob,Grep" --append-system-prompt-file <run_dir>/system_prompt.md
+  --allowedTools "Read,Write,Edit,MultiEdit,Bash,Glob,Grep" --tools "Read,Write,Edit,MultiEdit,Bash,Glob,Grep"
+  --strict-mcp-config --append-system-prompt-file <run_dir>/system_prompt.md
   --settings <run_dir>/claude_settings.json [--resume <session_id>] <cfg.extra_args...>
 ```
 Never `--bare`. On stderr `unknown option '--max-turns'|'--append-system-prompt-file'` retry with `--append-system-prompt <text>`

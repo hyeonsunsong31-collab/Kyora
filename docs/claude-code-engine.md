@@ -37,6 +37,8 @@ pipe carrying the prompt, see below), its own process group.
   --output-format stream-json --verbose
   --permission-mode acceptEdits --permission-prompts none
   --allowedTools Read,Write,Edit,MultiEdit,Bash,Glob,Grep
+  --tools Read,Write,Edit,MultiEdit,Bash,Glob,Grep          (the only tools the session gets)
+  --strict-mcp-config                                       (no MCP servers from the host)
   [--append-system-prompt-file <run_dir>/system_prompt.md]   (when a system prompt is given)
   --settings <run_dir>/claude_settings.json
   [--resume <session_id>]
@@ -231,7 +233,9 @@ in `raw.retries`.
 1. **Compat** (`compat_retry_decision`, pure): stderr `unknown option '--max-turns'`
    -> drop `--max-turns` (the watchdog bounds the run);
    `'--append-system-prompt-file'` -> `--append-system-prompt <text>`;
-   `'--permission-prompts'` -> drop it. One flag per retry, never twice.
+   `'--permission-prompts'` -> drop it; `'--tools'` -> drop it (`--strict-mcp-config`
+   still keeps MCP tools out); `'--strict-mcp-config'` -> drop it. One flag per retry,
+   never twice.
 2. **Model before init** (`model_retry_decision`, pure): no `init` line and the
    output mentions a model together with `not found|restricted|not available|invalid model|...`
    -> next model of `[model] + fallbacks`. An unrelated pre-init error (`file not found`) is not retried.
@@ -311,9 +315,15 @@ and reproduces the outcome above.
 
 ## 12. Known limits
 
-* `--allowedTools` pre-approves 7 tools; it does not hide the others the CLI
-  offers. With `--permission-prompts none` any of them that would need a
-  permission is denied automatically; only the `judge_tools` go through the judge.
+* `--allowedTools` only pre-approves tools; it does not hide the others. A live run
+  on CLI 2.1.300 showed the session receiving every MCP server and agent tool configured
+  on the host (for example a desktop-commander `write_file`), none of which the judge
+  hook matches. Kyora therefore also passes `--tools <the 7 built-ins>` and
+  `--strict-mcp-config`, verified on that CLI to leave exactly
+  `Bash, Edit, Glob, Grep, Read, Write` (it has no `MultiEdit`) and no MCP servers.
+  On an older CLI that rejects one of these flags the compat retry drops it and says so
+  in `engine.compat_retry`; anything left that would need a permission is still denied
+  by `--permission-prompts none`.
 * The judge rules are heuristics in front of Kimi, not a sandbox; when Kimi is not
   configured, deferred calls run unjudged (visible as `judge.unavailable`).
 * A model refused *after* it already worked (usage limit mid-run) ends the run
