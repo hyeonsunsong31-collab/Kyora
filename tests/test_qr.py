@@ -100,11 +100,15 @@ def _function_map(version: int) -> list[list[bool]]:
     for i in range(size):
         f[6][i] = f[i][6] = True
     centers = ALIGNMENT_CENTERS[version]
-    for r in centers:
-        for c in centers:
-            if f[r][c]:
-                continue  # overlaps a finder
-            mark(c - 2, r - 2, 5, 5)
+    if centers:
+        first, last = centers[0], centers[-1]
+        for r in centers:
+            for c in centers:
+                # only the three positions overlapping a finder are omitted; those on the
+                # timing lines (e.g. (6, 22) from version 7 on) are real alignment patterns
+                if (r, c) in ((first, first), (first, last), (last, first)):
+                    continue
+                mark(c - 2, r - 2, 5, 5)
     if version >= 7:
         mark(size - 11, 0, 3, 6)
         mark(0, size - 11, 6, 3)

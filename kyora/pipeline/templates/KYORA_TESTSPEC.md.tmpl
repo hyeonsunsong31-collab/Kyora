@@ -1,0 +1,13 @@
+# Acceptance tests
+
+These ids are measured by the Kyora quality gate. Browser tests run inside the preview page; node tests run with `node --test tests/logic-tests.mjs`. A test marked required must pass regardless of the overall pass rate. The gate threshold is $threshold_pct %.
+
+$tests_list
+
+## KyoraTest API (available in tests/browser-tests.js)
+- `KyoraTest.test(id, name, async (t) => { ... })` registers a test; `t` is the same object as `KyoraTest`.
+- `t.expect(x)` with `toBe`, `toEqual`, `toBeTruthy`, `toBeFalsy`, `toBeDefined`, `toBeNull`, `toBeGreaterThan`, `toBeGreaterThanOrEqual`, `toBeLessThan`, `toBeLessThanOrEqual`, `toBeCloseTo`, `toContain`, `toHaveLength`, `toMatch`, `toThrow`; `.not` negates.
+- `await t.wait(ms)`, `await t.waitFor(() => condition, timeoutMs)`, `await t.frames(n)`.
+- `await t.input.key(code, holdMs)` (e.g. 'Space', 'ArrowLeft', 'KeyA'), `await t.input.click(x, y)`, `await t.input.touch(x, y, moveToX, moveToY, holdMs)`; coordinates are CSS pixels relative to the first canvas.
+- `t.screenshot(name)` captures the first canvas; `t.log(message)`.
+- Each test has a 10 second timeout. Prefer `waitFor` over fixed waits and never depend on pixel colours.

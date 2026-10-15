@@ -1,0 +1,32 @@
+# Build contract for "$title"
+
+This file is written by Kyora for the code engine. It is part of the repository so every slide records the contract it was built against.
+
+## Engine
+- Kind: $engine (vanilla = plain HTML5 Canvas/DOM, no libraries; phaser/three only when the plan says so and only from local files)
+- Entry point: `index.html` (must exist, must be well-formed HTML, must contain a `<canvas>` or `<script>`)
+
+## Files to create
+$files_list
+
+## Public game contract (window.Game)
+$contract_list
+
+Tests drive the game only through this contract and simulated input. Do not return constant or fake values from `Game.getState()`.
+
+## Constraints
+$constraints_list
+
+## Manifest `.kyora/manifest.json`
+```
+{"entry": "index.html", "engine": "$engine", "scripts": ["<every classic script you load, relative path>"], "modules": ["<every ES module you load>"], "tests": ["tests/browser-tests.js"], "version": 1}
+```
+Every listed file must exist. Kyora checks the syntax of every listed script.
+
+## Tests
+- `tests/browser-tests.js` runs inside the preview page through the Kyora harness. Register exactly one test per browser acceptance id listed in KYORA_TESTSPEC.md, with that id, for example `KyoraTest.test('at-01', 'name', async (t) => { ... })`.
+- Optional `tests/logic-tests.mjs` (node:test) for acceptance tests of kind `node`; name each test starting with its id.
+- Never delete or weaken tests. If a test is wrong, fix the test so it checks the behaviour the plan describes.
+
+## Controls
+- Keyboard and touch for every action. Touch targets at least 44x44 px. The HUD must stay readable on a 390x760 phone screen.

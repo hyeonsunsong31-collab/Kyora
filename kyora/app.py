@@ -108,7 +108,7 @@ class App:
 
         def _hub_client():
             from .hub import HubClientEngine
-            return HubClientEngine(cfg.hub, self.bus)
+            return HubClientEngine(lambda: cfg.hub, self.bus)  # live: url/token changed in Settings apply immediately
         self.hub_client = self._try("hub_client", _hub_client)
 
         def _tokkio():

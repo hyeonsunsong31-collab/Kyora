@@ -38,8 +38,11 @@ def cmd_serve(args, hub_mode: bool = False) -> int:
         token = app.config.hub.token
         for ip in lan_addresses():
             print(f"Hub:   http://{ip}:{server.port}   token: {token}")
-        link = f"http://{(lan_addresses() or ['127.0.0.1'])[0]}:{server.port}/#hub=http://{(lan_addresses() or ['127.0.0.1'])[0]}:{server.port}&token={token}"
-        print(f"Link:  {link}")
+        from .hub import link_payload
+        ip = (lan_addresses() or ["127.0.0.1"])[0]
+        # The phone opens this link in its OWN Kyora (127.0.0.1:8765), which stores hub.url/token.
+        link = link_payload(f"http://{ip}:{server.port}", token)
+        print(f"Link:  {link}   (open on the phone while its own Kyora is running)")
         try:
             from .util.qr import qr_ansi
             print(qr_ansi(link))
