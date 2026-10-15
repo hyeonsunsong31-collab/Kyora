@@ -195,6 +195,17 @@ def _packaged_defaults_dir() -> Path | None:
     return d if (d / "keys.json").exists() else None
 
 
+def _read_packaged_default(name: str):
+    """``kyora/defaults/<name>`` via importlib.resources (works inside ``kyora.pyz``); None if absent."""
+    try:
+        from importlib import resources
+        node = resources.files("kyora").joinpath("defaults").joinpath(name)
+        return json.loads(node.read_text(encoding="utf-8")) if node.is_file() else None
+    except (OSError, ValueError) as exc:
+        print(f"kyora: cannot read packaged default {name}: {exc}", file=sys.stderr)
+        return None
+
+
 class Config:
     """Loaded configuration with typed views and save/patch support."""
 
@@ -224,11 +235,11 @@ class Config:
         if not (home_cfg / "keys.json").exists():
             src = _packaged_defaults_dir() or _repo_config_dir()
             home_cfg.mkdir(parents=True, exist_ok=True)
-            if src:
-                for name in ("keys.json", "settings.json"):
-                    data = read_json(src / name, default=None)
-                    if data is not None:
-                        atomic_write_json(home_cfg / name, data)
+            for name in ("keys.json", "settings.json"):
+                # inside kyora.pyz the filesystem checks above fail; importlib.resources reads the archive
+                data = read_json(src / name, default=None) if src else _read_packaged_default(name)
+                if data is not None:
+                    atomic_write_json(home_cfg / name, data)
             if not (home_cfg / "keys.json").exists():
                 atomic_write_json(home_cfg / "keys.json", DEFAULT_KEYS)
             if not (home_cfg / "settings.json").exists():

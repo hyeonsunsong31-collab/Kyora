@@ -468,6 +468,7 @@
       store.set({ projects: [], projectsMissing: !!r.missing, projectsLoaded: true });
       if (!r.missing) toast('Could not load projects: ' + errText(r.error), 'danger');
       if (state.projectId) await selectProject('');
+      else await loadRuns();
       return [];
     }
     const list = unwrapList(r.data, 'projects');
@@ -475,6 +476,7 @@
     const wanted = preferId || state.projectId || lsGet('kyora.projectId', '');
     const pick = list.some((p) => p.id === wanted) ? wanted : (list[0] ? list[0].id : '');
     if (pick !== state.projectId || (pick && !state.project)) await selectProject(pick);
+    else if (!state.runs.length) await loadRuns();
     return list;
   }
 
