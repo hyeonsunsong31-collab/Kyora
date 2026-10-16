@@ -215,10 +215,14 @@ GATE fail & iteration==max -> FINALIZE(below_threshold) -> FAILED_GATE (slide st
 no engine -> BLOCKED (resumable); no browser in browser_wait_s -> BLOCKED; exception -> FAILED; cancel -> CANCELLED (tree reset)
 Kyora stopping (App.stop -> RunManager.stop) -> BLOCKED "interrupted: Kyora stopped ..." (no rollback, resumable)
 ```
+Gate: total = counted checks (static non-skipped + browser + node); pass_rate = passed/total; ok iff pass_rate >= min_pass_rate
+AND required checks pass (index.html exists, html well-formed, js syntax, manifest valid) AND every plan acceptance id present in results.
+
 Stopping Kyora is not a cancel: `RunManager.stop()` sets its stopping flag before the runs' cancel events, and a
 runner that sees both ends the run BLOCKED with its built work and iteration commits kept. A queued run is not
 started once the flag is set. Runs that a hard kill (or the stop) leaves in an active or `created` state are
 marked BLOCKED with the same reason on the next start.
+
 Lineage branches: a run works on `lineage/main` (first generation), on the head branch of its parent slide
 (modify), or on its own `lineage/<rid>`. A branch held by another unfinished run (prepared, not ended, no slide
 committed yet) is never shared: the new run (or an import) gets its own `lineage/<rid>` instead. `run.options.tip`
@@ -231,8 +235,6 @@ Cancel: a running run gets its cancel event (it rolls back itself). A queued run
 nothing to roll back. A blocked or queued prepared run is rolled back under the per-project lock; while another
 run of the project holds that lock (it is executing in the shared work tree), only the cancelled run's branch ref
 moves and the work tree is never touched.
-Gate: total = counted checks (static non-skipped + browser + node); pass_rate = passed/total; ok iff pass_rate >= min_pass_rate
-AND required checks pass (index.html exists, html well-formed, js syntax, manifest valid) AND every plan acceptance id present in results.
 
 ## Hub protocol (hub.py)
 
