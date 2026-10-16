@@ -57,6 +57,7 @@ MAX_SCAN_BYTES = 5 * 1024 * 1024
 TEXT_SCAN_EXTS = frozenset({".html", ".htm", ".js", ".mjs", ".cjs", ".css"})
 HTML_EXTS = frozenset({".html", ".htm"})
 DEFERRED_DETAIL = "no syntax verification available"
+DID_NOT_RUN_DETAIL = "did not run"
 
 _ACCEPTANCE_ID_RE = re.compile(r"^([A-Za-z]{1,8}-\d+)(?=$|[\s:.,)\]-])")
 _SAFE_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -1279,9 +1280,11 @@ class QualityGate:
     """Applies the measured pass-rate threshold and the hard requirements to a set of checks.
 
     ``ok`` iff at least one check was counted, ``passed/total >= cfg.min_pass_rate``,
-    no required check failed (a required check still ``deferred`` counts as failed)
-    and every plan acceptance test id (kind browser or node) was reported by the
-    browser or Node runner. Plan tests marked ``required: true`` make their checks
+    no required check failed (a required check still ``deferred`` or ``skip`` counts
+    as failed) and every plan acceptance test id (kind browser or node) was reported
+    with a pass/fail result by the browser or Node runner: a plan acceptance test
+    that was skipped (TAP ``# SKIP`` / ``# TODO``, harness ``skip``) did not run and
+    counts as a failure. Plan tests marked ``required: true`` make their checks
     required.
     """
 
@@ -1296,16 +1299,23 @@ class QualityGate:
         """Compute the :class:`GateResult` for ``checks`` (inputs are not mutated)."""
         tests = [t for t in _plan_tests(self.plan) if t["kind"] in ("browser", "node")]
         required_ids = {t["id"].lower() for t in tests if t["required"]}
+        plan_ids = {t["id"].lower() for t in tests}
         work: list[Check] = []
         for c in checks:
             c = Check(**asdict(c))
+            is_test = c.group in ("browser", "node")
+            if is_test and c.id.lower() in required_ids:
+                c.required = True
             if c.status == "deferred" and c.required:
                 c.status = "fail"
                 c.detail = DEFERRED_DETAIL + (f" ({c.detail})" if c.detail else "")
-            if c.group in ("browser", "node") and c.id.lower() in required_ids:
-                c.required = True
+            elif c.status in ("skip", "deferred") and (c.required or (is_test and c.id.lower() in plan_ids)):
+                # a skipped/TODO required check or plan acceptance test never ran: that is a failure
+                c.status = "fail"
+                c.detail = DID_NOT_RUN_DETAIL + (f" ({c.detail})" if c.detail else "")
             work.append(c)
-        reported = {c.id.lower() for c in work if c.group in ("browser", "node")}
+        # an acceptance id is reported only by a pass/fail result of the browser or Node runner
+        reported = {c.id.lower() for c in work if c.group in ("browser", "node") and c.status in COUNTED_STATUSES}
         missing: list[str] = []
         for t in tests:
             if t["id"].lower() not in reported:

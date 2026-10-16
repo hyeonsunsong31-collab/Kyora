@@ -62,9 +62,10 @@ source.
    acceptance tests run **in a real browser** through Kyora's harness page (your phone's browser,
    Safari on iOS, or headless Chromium where available). `pass_rate = passed / counted checks`. The
    gate passes only if `pass_rate >= 0.94` (`settings.quality.min_pass_rate`) **and** every required
-   check passes **and** every acceptance test id from Kimi K3's plan has a result. A check that could
-   not run is reported as skipped and is not counted; a required check that never ran counts as
-   failed. Below the threshold, Kimi K3 reviews the results and screenshots and Claude Code fixes,
+   check passes **and** every acceptance test id from Kimi K3's plan has a pass or fail result. A
+   check that could not run is reported as skipped and is not counted; a required check that never
+   ran (skipped or deferred) and a plan acceptance test that was skipped (`test.skip`, `test.todo`,
+   TAP `# SKIP` / `# TODO`, or a harness `skip`) count as failed ("did not run"). Below the threshold, Kimi K3 reviews the results and screenshots and Claude Code fixes,
    for at most `settings.quality.max_fix_iterations` (default 3) rounds. If the gate still fails,
    the slide is committed and labelled **below 94 % - not complete** (state `failed_gate`).
 2. **Kyora Bench certification threshold.** Kyora Bench runs the full pipeline on a fixed task set

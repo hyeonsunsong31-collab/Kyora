@@ -11,6 +11,10 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   (content hash before and after the call), the run is `blocked` with the engine error and can be
   resumed; before, a modify run measured the unchanged parent game and ended `complete` with a new
   slide. Every failed call is recorded in `run.json` (`extra.engine_failures`, `tree_changed`).
+- **Skipped acceptance tests no longer pass the gate.** A plan acceptance test reported as skipped
+  (`test.skip`, `test.todo`, TAP `# SKIP` / `# TODO`, harness `skip`) and any required check that was
+  skipped or deferred now count as failed with the detail "did not run"; an acceptance id counts as
+  reported only with a pass or fail result.
 
 ## 0.1.0 - 2026-10-15
 
