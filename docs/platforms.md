@@ -47,6 +47,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\kyora.ps1 serve 
   with Kyora's exit code.
 * Claude Code on Windows uses Git Bash for its Bash tool; if it cannot find `bash.exe`, set
   `CLAUDE_CODE_GIT_BASH_PATH`.
+* If `claude` resolves to the npm shim `claude.cmd` (`npm install -g @anthropic-ai/claude-code`),
+  Windows runs it through `cmd.exe`, which cuts an argument at its first line break and expands `%`.
+  Kyora therefore sends every prompt to a `.cmd`/`.bat` shim on stdin, passes the system prompt only
+  with `--append-system-prompt-file` (no inline retry for CLIs that lack that flag: update Claude Code),
+  and refuses to start the shim when any other argument contains a line break, `%`, `"`, `&`, `|`,
+  `<`, `>` or `^` (for example a `KYORA_HOME` path or `claude_code.extra_args`). The native
+  `claude.exe` (winget or the official installer) has none of these limits.
 * To reach the PC from a phone, allow Python through Windows Defender Firewall on private networks
   when Windows asks (first `kyora hub`).
 

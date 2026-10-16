@@ -92,6 +92,24 @@ def _tail(text: str, n: int = 1500) -> str:
     return text if len(text) <= n else text[-n:]
 
 
+# Windows runs a .cmd/.bat target (the npm shim claude.cmd) through cmd.exe, which stops at the first line
+# break, expands %VAR%, does not understand list2cmdline's \" escaping and treats & | < > ^ in an unquoted
+# argument as syntax. Free text never goes into such an argv: the prompt goes through stdin, the system
+# prompt only through --append-system-prompt-file, and any other argument with these characters is refused.
+CMD_SHIM_UNSAFE_RE = re.compile(r'[\r\n%"&|<>^]')
+
+
+def _is_cmd_shim(exe: str | None) -> bool:
+    return str(exe or "").lower().endswith((".cmd", ".bat"))
+
+
+def cmd_shim_unsafe_args(argv: list[str]) -> list[str]:
+    """Arguments after ``argv[0]`` that cmd.exe would mangle when ``argv[0]`` is a .cmd/.bat shim."""
+    if not argv or not _is_cmd_shim(argv[0]):
+        return []
+    return [a for a in argv[1:] if CMD_SHIM_UNSAFE_RE.search(a)]
+
+
 def _canonical_model(name: str) -> str:
     """Lower-case model id without a ``[1m]``-style suffix or a ``-YYYYMMDD`` snapshot date."""
     out = _MODEL_SUFFIX_RE.sub("", name.strip().lower())
@@ -402,11 +420,13 @@ class ClaudeCodeEngine(CodeEngine):
             "permissions": {"deny": list(DENIED_PERMISSIONS)},
         }
 
-    def prompt_via_stdin(self, job: EngineJob) -> bool:
-        return len(job.prompt or "") > PROMPT_ARGV_LIMIT
+    def prompt_via_stdin(self, job: EngineJob, exe: str | None = None) -> bool:
+        """Long prompts, and every prompt for a .cmd/.bat shim ``exe``, go through stdin instead of argv."""
+        return _is_cmd_shim(exe) or len(job.prompt or "") > PROMPT_ARGV_LIMIT
 
     def build_argv(self, job: EngineJob, run_dir: Path | str, compat: dict | None = None) -> list[str]:
-        """Command line for one attempt. ``compat`` may override ``model``/``fallbacks`` and flag support."""
+        """Command line for one attempt. ``compat`` may override ``model``/``fallbacks`` and flag support;
+        ``compat["cmd_shim"]`` says the resolved executable is a .cmd/.bat shim (no free text in argv)."""
         compat = {**DEFAULT_COMPAT, **(compat or {})}
         run_dir = Path(run_dir)
         model = compat.get("model") or job.model
@@ -414,8 +434,9 @@ class ClaudeCodeEngine(CodeEngine):
         if fallbacks is None:
             fallbacks = [m for m in (job.fallback_models or []) if m and m != model]
         argv = list(self.cfg.command or ["claude"])
+        shim = bool(compat.get("cmd_shim")) or _is_cmd_shim(argv[0])
         argv.append("-p")
-        if not self.prompt_via_stdin(job):
+        if not shim and not self.prompt_via_stdin(job):
             prompt = job.prompt or ""
             argv.append(" " + prompt if prompt.startswith("-") else prompt)
         argv += ["--model", model]
@@ -435,7 +456,7 @@ class ClaudeCodeEngine(CodeEngine):
         if compat.get("strict_mcp_config", True):
             argv.append("--strict-mcp-config")
         if job.system_prompt:
-            if compat.get("append_system_prompt_file", True):
+            if compat.get("append_system_prompt_file", True) or shim:
                 argv += ["--append-system-prompt-file", _posix(run_dir / "system_prompt.md")]
             else:
                 argv += ["--append-system-prompt", job.system_prompt]
@@ -470,7 +491,9 @@ class ClaudeCodeEngine(CodeEngine):
             if opt == "--max-turns" and compat.get("max_turns"):
                 return {"compat": {"max_turns": False}, "reason": f"CLI rejected {opt}",
                         "argv_change": "dropped --max-turns (Kyora's watchdog bounds the run)"}
-            if opt == "--append-system-prompt-file" and compat.get("append_system_prompt_file"):
+            # Through a .cmd/.bat shim the system prompt may only travel as a file, so there is no inline retry.
+            if opt == "--append-system-prompt-file" and compat.get("append_system_prompt_file") \
+                    and not compat.get("cmd_shim"):
                 return {"compat": {"append_system_prompt_file": False}, "reason": f"CLI rejected {opt}",
                         "argv_change": "replaced --append-system-prompt-file <file> with --append-system-prompt <text>"}
             if opt == "--tools" and compat.get("tools"):
@@ -700,7 +723,7 @@ class ClaudeCodeEngine(CodeEngine):
         for m in [job.model] + list(job.fallback_models or []):
             if m and m not in models:
                 models.append(m)
-        compat = dict(DEFAULT_COMPAT)
+        compat: dict[str, bool] = {**DEFAULT_COMPAT, "cmd_shim": _is_cmd_shim(base[0])}
         model_index = 0
         attempts = 0
         max_attempts = len(models) + len(DEFAULT_COMPAT)
@@ -775,15 +798,25 @@ class ClaudeCodeEngine(CodeEngine):
                                      "argv": self.describe_argv(argv)}) + "\n")
         except OSError as exc:
             log.warning("cannot write %s: %s", stream_path, exc)
+        unsafe = cmd_shim_unsafe_args(argv)
+        if unsafe:
+            attempt.spawn_error = (
+                f"{argv[0]} is a .cmd/.bat shim that Windows runs through cmd.exe, which would mangle the argument "
+                f"{_tail(unsafe[0], 120)!r} (line breaks, %, quotes or & | < > ^); not started. Install the native "
+                "Claude Code (claude.exe), or set claude_code.command to node and the CLI's cli.js, or move "
+                "KYORA_HOME / claude_code.extra_args off those characters")
+            attempt.rc = -1
+            self._emit(sink, EngineEvent(ENGINE_ERROR, {"error": attempt.spawn_error}))
+            return attempt
+        via_stdin = self.prompt_via_stdin(job, argv[0])
         try:
-            proc = popen(argv, cwd=job.workspace, env=env,
-                         stdin=subprocess.PIPE if self.prompt_via_stdin(job) else subprocess.DEVNULL)
+            proc = popen(argv, cwd=job.workspace, env=env, stdin=subprocess.PIPE if via_stdin else subprocess.DEVNULL)
         except OSError as exc:
             attempt.spawn_error = f"cannot start {argv[0]}: {exc}"
             attempt.rc = -1
             self._emit(sink, EngineEvent(ENGINE_ERROR, {"error": attempt.spawn_error}))
             return attempt
-        if self.prompt_via_stdin(job):
+        if via_stdin:
             def _feed():
                 try:
                     proc.stdin.write(job.prompt or "")

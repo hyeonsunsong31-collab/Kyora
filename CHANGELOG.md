@@ -13,6 +13,10 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   SDK merges `extra_body` into the top level), so the effort was silently dropped. It now sends the
   top-level `chat_template_kwargs.reasoning_effort`. Self-check names the field and value it sent
   (`measured.effort_sent`) and no longer suggests the mode that was just rejected.
+- Windows npm install (`claude.cmd`): the prompt went into argv, where `cmd.exe` cut it at the first
+  line break and dropped every later flag (stream-json, `--tools`, `--settings` with the judge hook).
+  A `.cmd`/`.bat` shim now always gets the prompt on stdin and the system prompt only as a file, and
+  an attempt is refused with a clear error when another argument holds characters `cmd.exe` mangles.
 
 ## 0.1.0 - 2026-10-15
 
