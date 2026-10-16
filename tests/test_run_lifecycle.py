@@ -399,6 +399,38 @@ class ShutdownTests(_RunnerHome):
         self.assertTrue(rm2.resume(run.id))
 
 
+class BuildNarrationTests(_RunnerHome):
+    """The build is announced only after an engine was selected, naming the real backend and effort."""
+
+    def _run_until_build(self, select_engine, effort: str):
+        self.app.config.claude_code.effort = effort
+
+        def build(ctx):
+            raise runner_module.StageBlocked("stop after the announcement", "build")
+
+        self._patch(intake_stage=lambda ctx: {}, plan_stage=lambda ctx: {"title": "t", "acceptance_tests": []},
+                    design_stage=lambda ctx: {}, build_stage=build, select_engine=select_engine)
+        p = self.store.create("Narration")
+        run = self.store.create_run(p.id, "generate", "a game")
+        Runner(self.app, run, threading.Event()).execute()
+        return [t for t in self.narrations if "building" in t], self.store.get_run(run.id)
+
+    def test_names_the_selected_backend_and_configured_effort(self):
+        said, _ = self._run_until_build(lambda ctx: SimpleNamespace(name="anthropic_api"), "high")
+        self.assertEqual(said, ["The Anthropic API engine is now building your game at high effort."])
+        said, _ = self._run_until_build(lambda ctx: SimpleNamespace(name="hub"), "max")
+        self.assertEqual(said[-1], "Claude Code on the Kyora Hub is now building your game at maximum effort.")
+
+    def test_nothing_is_announced_when_no_engine_is_available(self):
+        def no_engine(ctx):
+            raise runner_module.StageBlocked("no code engine is available", "build")
+
+        said, run = self._run_until_build(no_engine, "max")
+        self.assertEqual(said, [])
+        self.assertEqual(run.state, "blocked")
+        self.assertEqual(run.blocked_reason, "no code engine is available")
+
+
 class RunnerResumeTests(_RunnerHome):
     def test_resume_on_a_moved_branch_blocks_instead_of_testing_another_game(self):
         p, sm, run, sha = self._blocked_after_build()

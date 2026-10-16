@@ -31,13 +31,15 @@ from ..util.ids import now_iso
 from . import events as ev
 from .stages import (
     RunCancelled, StageBlocked, StageContext, build_stage, design_stage, finalize_stage, fix_stage, gate_stage,
-    intake_stage, load_gate, narrate, plan_stage, review_stage, show_view, test_stage,
+    intake_stage, load_gate, narrate, plan_stage, review_stage, select_engine, show_view, test_stage,
 )
 
 log = logging.getLogger("kyora.runner")
 
 ACTIVE_STATES = ("intake", "plan", "awaiting_approval", "design", "build", "test", "gate", "review", "fix", "finalize")
 INTERRUPTED_REASON = "interrupted: Kyora stopped while this run was active; press Resume to continue"
+_ENGINE_LABELS = {"claude_code": "Claude Code", "anthropic_api": "The Anthropic API engine",
+                  "hub": "Claude Code on the Kyora Hub"}
 
 
 class RunManager:
@@ -364,8 +366,7 @@ class Runner:
             rec = self._iter_record(n)
             if not rec.get("built"):
                 if n == 0:
-                    narrate(ctx, "Claude Code is now building your game at maximum effort.")
-                    self._stage("build", lambda: build_stage(ctx), rerun=True)
+                    self._stage("build", lambda: self._build(ctx), rerun=True)
                 else:
                     prev_gate = load_gate(ctx, n - 1) or {}
                     from ..util.fs import read_json
@@ -403,6 +404,16 @@ class Runner:
             run.iteration = n + 1
             self.store.save_run(run)
             self._publish(ev.FIX_ITERATION, {"n": run.iteration})
+
+    def _build(self, ctx: StageContext) -> Any:
+        """Select the engine first (no engine -> blocked, nothing announced), then narrate what really builds."""
+        ctx.engine = ctx.engine or select_engine(ctx)
+        name = str(getattr(ctx.engine, "name", "") or "")
+        label = _ENGINE_LABELS.get(name) or (f"The {name} code engine" if name else "The code engine")
+        effort = str(getattr(getattr(self.cfg, "claude_code", None), "effort", "") or "")
+        how = " at maximum effort" if effort == "max" else (f" at {effort} effort" if effort else "")
+        narrate(ctx, f"{label} is now building your game{how}.")
+        return build_stage(ctx)
 
     def _finish(self, ctx: StageContext, gate: dict, *, ok: bool, reason: str | None = None) -> None:
         slide = self._stage("finalize", lambda: finalize_stage(ctx, gate, ok), rerun=True)
