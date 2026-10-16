@@ -65,7 +65,10 @@ source.
    check passes **and** every acceptance test id from Kimi K3's plan has a pass or fail result. A
    check that could not run is reported as skipped and is not counted; a required check that never
    ran (skipped or deferred) and a plan acceptance test that was skipped (`test.skip`, `test.todo`,
-   TAP `# SKIP` / `# TODO`, or a harness `skip`) count as failed ("did not run"). Below the threshold, Kimi K3 reviews the results and screenshots and Claude Code fixes,
+   TAP `# SKIP` / `# TODO`, or a harness `skip`) count as failed ("did not run"). Kimi K3 is told at
+   plan time whether Node is installed on the device that runs the tests; without Node (iSH on iPhone,
+   Windows without Node) it must plan browser tests only, and a plan that still contains Node tests
+   is `blocked` with that reason instead of looping fixes for tests no device can run. Below the threshold, Kimi K3 reviews the results and screenshots and Claude Code fixes,
    for at most `settings.quality.max_fix_iterations` (default 3) rounds. If the gate still fails,
    the slide is committed and labelled **below 94 % - not complete** (state `failed_gate`).
 2. **Kyora Bench certification threshold.** Kyora Bench runs the full pipeline on a fixed task set

@@ -15,6 +15,10 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   (`test.skip`, `test.todo`, TAP `# SKIP` / `# TODO`, harness `skip`) and any required check that was
   skipped or deferred now count as failed with the detail "did not run"; an acceptance id counts as
   reported only with a pass or fail result.
+- **Node acceptance tests without Node.** Kimi K3's plan input now says whether Node is installed on
+  the device that runs TEST; without Node only browser acceptance tests are accepted (one repair
+  round, then the run blocks), and a plan with Node tests blocks at PLAN or TEST with an explicit
+  reason instead of spending every fix iteration on tests that can never report.
 
 ## 0.1.0 - 2026-10-15
 

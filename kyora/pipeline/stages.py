@@ -311,18 +311,35 @@ def intake_stage(ctx: StageContext) -> dict:
     return intake
 
 
+def unrunnable_node_tests(plan: dict, node: str | None) -> list[str]:
+    """Plan acceptance ids of kind ``node`` when this device has no Node (they could never report a result)."""
+    return [] if node else [t["id"] for t in plan_tests(plan) if t["kind"] == "node"]
+
+
+def _block_unrunnable_node_tests(plan: dict, node: str | None, stage: str) -> None:
+    ids = unrunnable_node_tests(plan, node)
+    if ids:
+        raise StageBlocked(f"the plan has Node acceptance tests ({', '.join(ids)}) but Node.js is not installed on this "
+                           "device, so they can never run: install Node.js and press Resume, or start a new run "
+                           "(Kimi K3 then plans browser tests only)", stage)
+
+
 def plan_stage(ctx: StageContext) -> dict:
+    from .quality import find_node
+    node = find_node()
     plan = ctx.read_artifact("plan")
     if not isinstance(plan, dict):
         kimi = _require(ctx.app.kimi, "Kimi K3", "plan")
         intake = ctx.read_artifact("intake") or {}
         try:
-            plan = _model_call("plan", "Kimi K3", kimi.plan, intake, ctx.run_id, ctx.project_id, ctx.cancel)
+            plan = _model_call("plan", "Kimi K3", kimi.plan, intake, ctx.run_id, ctx.project_id, ctx.cancel,
+                               node_available=bool(node))
         except ValueError as exc:
             raise StageBlocked(f"Kimi K3 returned no valid plan: {exc}", "plan") from None
         plan = _apply_bench_contract(ctx, plan)
         ctx.write_artifact("plan", plan)
         ctx.save_run()
+    _block_unrunnable_node_tests(plan, node, "plan")
     if ctx.cfg.quality.require_plan_approval and not (ctx.run.options or {}).get("plan_approved"):
         ctx.app.store.set_state(ctx.run, "awaiting_approval")
         ctx.publish(ev.RUN_AWAITING_APPROVAL, {"plan_title": plan.get("title"), "tests": len(plan_tests(plan)),
@@ -514,6 +531,7 @@ def test_stage(ctx: StageContext, n: int) -> tuple[list, list, list]:
     _inject_bench_tests(ctx)
     plan = ctx.read_artifact("plan") or {}
     node = find_node()
+    _block_unrunnable_node_tests(plan, node, "test")  # e.g. Node removed since PLAN: never loop fixes on them
     static = StaticChecker(ctx.workspace, plan, node).run()
     atomic_write_json(ctx.iter_dir(n) / "static.json", [c.to_dict() for c in static])
     ctx.publish(ev.TEST_STATIC, {"iteration": n, "passed": sum(c.status == "pass" for c in static),

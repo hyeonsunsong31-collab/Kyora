@@ -13,11 +13,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import kyora.pipeline.quality as Q
 import kyora.pipeline.runner as R
+import kyora.pipeline.stages as S
 from kyora.models.base import Availability, CodeEngine, EngineResult
 from kyora.pipeline.events import EventBus
 from kyora.pipeline.quality import Check
-from kyora.pipeline.stages import tree_fingerprint
+from kyora.pipeline.stages import StageBlocked, StageContext, tree_fingerprint
 from kyora.projects.store import ProjectStore
 
 PLAN = {"title": "Sky Runner", "acceptance_tests": [{"id": "at-01", "name": "boots", "kind": "browser"}]}
@@ -146,6 +148,52 @@ class FailedEngineTests(RunnerHarness):
         self.assertIn("lost contact with the hub", run.blocked_reason)
         self.assertEqual(calls["n"], 1, "the unchanged tree must not be measured again")
         self.assertEqual(run.extra["engine_failures"][0]["kind"], "fix")
+
+
+class NodeAvailabilityTests(RunnerHarness):
+    """Without Node a kind 'node' acceptance test can never report: Kimi is told, and such a plan blocks."""
+
+    def ctx(self):
+        p = self.store.create("demo")
+        run = self.store.create_run(p.id, "generate", "a runner")
+        sm = self.store.slide_manager(p.id)
+        return StageContext(app=self.app, run=run, project=p, run_dir=self.store.run_dir(run),
+                            workspace=sm.work_tree(), cancel=threading.Event(), slides=sm)
+
+    def kimi_returning(self, plan):
+        seen = {}
+
+        def plan_fn(intake, run_id, project_id, cancel, **kw):
+            seen.update(kw)
+            return plan
+        self.app.kimi = SimpleNamespace(plan=plan_fn)
+        return seen
+
+    def test_plan_stage_tells_kimi_and_blocks_node_tests_without_node(self):
+        node_plan = {"title": "T", "acceptance_tests": [{"id": "at-01", "kind": "browser"},
+                                                        {"id": "at-02", "kind": "node", "required": True}]}
+        seen = self.kimi_returning(node_plan)
+        with mock.patch.object(Q, "find_node", lambda: None):
+            ctx = self.ctx()
+            with self.assertRaises(StageBlocked) as cm:
+                S.plan_stage(ctx)
+        self.assertEqual(seen, {"node_available": False})
+        self.assertEqual(cm.exception.stage, "plan")
+        self.assertIn("at-02", cm.exception.reason)
+        self.assertIn("Node.js is not installed", cm.exception.reason)
+        with mock.patch.object(Q, "find_node", lambda: "/usr/bin/node"):
+            seen = self.kimi_returning(node_plan)
+            self.assertEqual(S.plan_stage(self.ctx())["acceptance_tests"][1]["kind"], "node")
+        self.assertEqual(seen, {"node_available": True})
+
+    def test_test_stage_blocks_instead_of_looping_fixes(self):
+        ctx = self.ctx()
+        ctx.write_artifact("plan", {"title": "T", "acceptance_tests": [{"id": "at-02", "kind": "node"}]})
+        with mock.patch.object(Q, "find_node", lambda: None):
+            with self.assertRaises(StageBlocked) as cm:
+                S.test_stage(ctx, 0)
+        self.assertEqual(cm.exception.stage, "test")
+        self.assertIn("at-02", cm.exception.reason)
 
 
 class TreeFingerprintTests(unittest.TestCase):
