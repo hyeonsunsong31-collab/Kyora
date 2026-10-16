@@ -34,6 +34,9 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - **One engine/model means every engine call.** Bench certification reads every entry of the run's
   `extra.engine_runs` (BUILD and each FIX), so a task served by two models is mixed and blocks
   certification; results list `served` pairs. Slides and the deck name every model that served a run.
+- **The deck credits only what ran.** An imported-ZIP slide's architecture slide now says "imported ZIP -
+  no code engine ran" (or "not built yet") instead of drawing the Build step as Claude Code, and the
+  tests slide lists the code-engine errors recorded for the run.
 
 ## 0.1.0 - 2026-10-15
 

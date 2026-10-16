@@ -38,7 +38,7 @@ _COLOR_RE = re.compile(r"^(#[0-9a-fA-F]{3,8}|(rgb|rgba|hsl|hsla)\([0-9\s.,%a-z/+
 _ITER_RE = re.compile(r"^iter-(\d+)$")
 _NOT_PENDING = frozenset({"complete", "failed_gate", "failed", "cancelled", "blocked"})
 _BACKEND_LABELS = {"claude_code": "Claude Code", "anthropic_api": "Anthropic API (Claude)", "hub": "Kyora Hub (Claude Code)",
-                   "import": "imported ZIP"}
+                   "import": "imported ZIP - no code engine ran"}
 
 
 def esc(value: Any) -> str:
@@ -434,11 +434,17 @@ class DeckBuilder:
         run, slide, gate = d["run"], d["slide"], d["gate"]
         engine = _run_engine(run) or \
                  ((slide or {}).get("engine") if isinstance((slide or {}).get("engine"), dict) else {}) or {}
-        backend = engine.get("backend") if engine.get("backend") not in (None, "import") else "claude_code"
-        engine_label = _BACKEND_LABELS.get(backend, str(backend))
+        backend = engine.get("backend")
         models = [m for m in str(engine.get("active_model") or "").split(" + ") if m]
-        model = (models[0] if len(models) == 1 else f"{len(models)} models (below)" if models
-                 else engine.get("requested_model") or "model not resolved")
+        if backend == "import":  # a slide imported from a ZIP: no code engine built it
+            engine_label, model = "imported ZIP", "no code engine ran"
+        elif not backend:
+            engine_label, model = "not built yet", "no code engine ran"
+        else:
+            engine_label = _BACKEND_LABELS.get(backend, str(backend))
+            engine_label = engine_label if len(engine_label) <= 22 else "Claude Code"
+            model = (models[0] if len(models) == 1 else f"{len(models)} models (below)" if models
+                     else engine.get("requested_model") or "model not resolved")
         threshold = (gate or {}).get("threshold")
         if threshold is None and run is not None and isinstance(run.gate, dict):
             threshold = run.gate.get("threshold")
@@ -446,7 +452,7 @@ class DeckBuilder:
             ("Intake", "Kimi K3", "vision intake"),
             ("Plan", "Kimi K3", "plan + tests"),
             ("Design", "Nemotron-3-Ultra", "GDD + UI spec"),
-            ("Build", engine_label if len(engine_label) <= 22 else "Claude Code", str(model)[:24]),
+            ("Build", engine_label, str(model)[:24]),
             ("Test", "browser + node", "tests"),
             ("Gate", f"gate {_threshold_pct(threshold)}", "measured"),
             ("Finalize", "git slide", "+ deck"),
@@ -504,6 +510,13 @@ class DeckBuilder:
             extra += f"<h4>Required checks failing</h4>{_ul(gate.get('required_failures'))}"
         if gate.get("missing_spec_tests"):
             extra += f"<h4>Acceptance tests missing from the results</h4>{_ul(gate.get('missing_spec_tests'))}"
+        run = d["run"]
+        failures = (getattr(run, "extra", None) or {}).get("engine_failures") if run is not None else None
+        if failures:
+            extra += "<h4>Code engine errors in this run</h4>" + _ul(
+                f"{f.get('kind')} (iteration {f.get('iteration')}, {f.get('backend') or 'engine'}): {f.get('error')} - "
+                + ("it had changed files, which were measured" if f.get("tree_changed") else "no file changed")
+                for f in failures if isinstance(f, dict))
         checks = gate.get("checks") if isinstance(gate.get("checks"), list) else []
         table = ""
         if checks:
