@@ -8,7 +8,8 @@
 // modules may be missing), every tab shows its section, the capability strip + engine banner
 // match /api/status, the settings form masks secrets, the hub-link hash flow updates
 // /api/settings, and after the driver publishes a scripted run the chart, metric tiles, gate
-// gauge (94) and judge counters (1 allowed / 1 denied) reflect it.
+// gauge (94) and judge counters (1 allowed / 1 denied) reflect it, and that game previews load
+// from the separate preview origin (which serves no API).
 // Optional: KYORA_SMOKE_SHOTS=<dir> saves a screenshot of every view.
 import { spawn, execSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -288,6 +289,29 @@ async function checkOtherViews(page, label, wantNarration) {
   await page.waitForFunction(() => document.querySelector('#selfcheck-table table, #selfcheck-table .empty') && document.querySelector('#platform-kv dt'), null, { timeout: 30000 });
 }
 
+/* Games run on the preview listener (a separate origin): the preview frame points there, the
+   main-origin preview-check explains an empty ref, and that origin serves no API. */
+async function checkPreviewOrigin(page, label) {
+  const st = await page.evaluate(() => fetch('/api/status').then((r) => r.json()));
+  const mainPort = Number(new URL(page.url()).port);
+  assert(st.preview_port && st.preview_port !== mainPort, `[${label}] /api/status has no separate preview_port (${st.preview_port})`);
+  const origin = 'http://127.0.0.1:' + st.preview_port;
+  await gotoView(page, 'preview');
+  await page.waitForFunction((o) => {
+    const f = document.getElementById('preview-frame');
+    return f && f.src.indexOf(o + '/preview/') === 0;
+  }, origin, { timeout: 8000 });
+  await page.waitForFunction(() => {
+    const e = document.getElementById('preview-empty');
+    return e && !e.hidden && /Nothing to preview/.test(e.textContent || '');
+  }, null, { timeout: 8000 });
+  const api = await page.context().request.get(origin + '/api/settings?reveal=1');
+  assert(api.status() === 404, `[${label}] the preview origin answered /api/settings with ${api.status()}`);
+  const redirect = await page.context().request.get(new URL(page.url()).origin + '/preview/x/v1/index.html', { maxRedirects: 0 });
+  assert(redirect.status() === 302 && (redirect.headers().location || '').indexOf(origin + '/preview/') === 0,
+    `[${label}] /preview on the main origin must redirect to the preview origin (got ${redirect.status()})`);
+}
+
 async function runViewport(browser, driver, opts) {
   const { label, viewport, mobile, publish, secrets } = opts;
   const context = await browser.newContext({ viewport, isMobile: !!mobile, hasTouch: !!mobile, deviceScaleFactor: mobile ? 2 : 1 });
@@ -314,6 +338,7 @@ async function runViewport(browser, driver, opts) {
   await check(`[${label}] pipeline reflects the scripted run (chart, tiles, gauge 94, judge 1/1)`, () => checkPipeline(page, label));
   await shot(page, `${label}-pipeline-run`);
   await check(`[${label}] presenter, slides, preview, bench and self-check degrade gracefully`, () => checkOtherViews(page, label, publish));
+  await check(`[${label}] game previews come from the separate preview origin`, () => checkPreviewOrigin(page, label));
   await shot(page, `${label}-selfcheck-final`);
   await check(`[${label}] no page errors and no unexpected console errors`, async () => {
     assert(problems.length === 0, problems.slice(0, 5).join(' || '));

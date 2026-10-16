@@ -2,7 +2,7 @@
 
 Boots a real :class:`kyora.app.App` + :class:`kyora.server.KyoraServer` on
 127.0.0.1 with a temporary copy of ``config/`` and a temporary ``KYORA_HOME``,
-prints ``URL <url>`` and then waits. When ``PUBLISH`` arrives on stdin (or after
+prints ``PREVIEW <preview origin>`` and ``URL <url>`` and then waits. When ``PUBLISH`` arrives on stdin (or after
 ``--publish-after`` seconds) it publishes a scripted run on the real EventBus so
 the browser UI can be checked end to end. The scripted events live here, under
 ``tests/``, and are never part of the product.
@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     server = KyoraServer(app, "127.0.0.1", port, router)
     server.start()
     try:
-        app.start(server.url)
+        app.start(server.url, server.preview_url)
     except Exception as exc:  # noqa: BLE001 - report and keep serving; the UI must degrade gracefully
         print(f"WARN app.start failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
 
@@ -143,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"PROJECT {project_id or '-'}", flush=True)
     if app.missing:
         print("MISSING " + ", ".join(sorted(app.missing)), flush=True)
+    print(f"PREVIEW {server.preview_url}", flush=True)  # games: the separate preview origin
     print(f"URL {server.url}", flush=True)
 
     lock = threading.Lock()
