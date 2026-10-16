@@ -9,6 +9,10 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - NVIDIA streaming parser: a delta that carries both `reasoning_content` and `reasoning` (vLLM 0.11
   and later sends one as a copy of the other) is now taken once, so the reasoning trace, the UI stream
   and the assistant message Kimi K3 echoes back on the next turn are no longer doubled.
+- `kimi.effort_field = extra_body` sent a literal `"extra_body"` key that no server reads (the OpenAI
+  SDK merges `extra_body` into the top level), so the effort was silently dropped. It now sends the
+  top-level `chat_template_kwargs.reasoning_effort`. Self-check names the field and value it sent
+  (`measured.effort_sent`) and no longer suggests the mode that was just rejected.
 
 ## 0.1.0 - 2026-10-15
 

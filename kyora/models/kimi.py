@@ -15,8 +15,9 @@ does four jobs in the pipeline:
   honesty guard: ``complete`` is never accepted while the measured gate failed.
 
 Sampling is fixed at ``temperature 1.0, top_p 1.0``; the reasoning effort is
-sent as ``reasoning_effort`` either top-level or inside ``extra_body``
-(``settings.kimi.effort_field``). Kimi's preserved thinking requires the
+sent as the top-level ``reasoning_effort`` field or, with
+``settings.kimi.effort_field = extra_body``, as the chat-template keyword
+``chat_template_kwargs.reasoning_effort`` (see :meth:`Kimi.effort_extra`). Kimi's preserved thinking requires the
 COMPLETE assistant message (``reasoning_content`` and ``tool_calls``) to be
 echoed back on the next turn; :class:`KimiConversation` stores exactly what
 :attr:`ChatResult.message` returns.
@@ -801,7 +802,10 @@ class Kimi:
             return {}
         field = self.effort_field
         if field == "extra_body":
-            return {"extra_body": {"reasoning_effort": effort}}
+            # "extra_body" is the OpenAI SDK argument NVIDIA's samples use for template switches; the SDK
+            # merges it into the top level of the body, so a literal "extra_body" key reaches no server.
+            # The top-level field a server reads instead is the chat template's own keyword.
+            return {"chat_template_kwargs": {"reasoning_effort": effort}}
         if field != "top_level":
             log.warning("kimi: unknown effort_field %r; sending reasoning_effort top-level", field)
         return {"reasoning_effort": effort}
