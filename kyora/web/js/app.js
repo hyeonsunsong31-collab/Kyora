@@ -83,8 +83,16 @@
     return err.message || String(err);
   }
   function enc(s) { return encodeURIComponent(String(s)); }
+  /* Game code (previews, the test harness) is served by the preview listener: a separate origin on
+     this host at /api/status preview_port, so it can never call this origin's API. '' until the
+     status is known; relative /preview and /runner URLs then redirect there. */
+  function previewOrigin() {
+    const port = state.status && state.status.preview_port;
+    return port ? window.location.protocol + '//' + window.location.hostname + ':' + port : '';
+  }
+  function previewHref(path) { return /^\//.test(path || '') ? previewOrigin() + path : path; }
 
-  K.util = { $, $$, esc, lsGet, lsSet, toDate, fmtClock, fmtDate, relTime, debounce, unwrapList, pctText, clip, errText, enc };
+  K.util = { $, $$, esc, lsGet, lsSet, toDate, fmtClock, fmtDate, relTime, debounce, unwrapList, pctText, clip, errText, enc, previewOrigin, previewHref };
 
   /* ================================================================== store */
   const state = {
@@ -1500,7 +1508,7 @@
     f.setAttribute('title', 'Kyora browser tests for ' + ctx.id + ' (hidden)');
     f.setAttribute('data-run', ctx.id);
     f.setAttribute('tabindex', '-1');
-    f.src = ab.runner_url;
+    f.src = previewHref(ab.runner_url);
     host.appendChild(f);
     host.hidden = false; // rendered off-screen (see .hidden-frames) so games get real frames
     host.classList.add('hidden-frames');
@@ -1521,7 +1529,7 @@
     const card = $('#test-frame-card');
     const frame = $('#test-frame');
     if (!card || !frame) return;
-    frame.src = ab.runner_url;
+    frame.src = previewHref(ab.runner_url);
     card.hidden = false;
     try { card.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) { card.scrollIntoView(); }
   }

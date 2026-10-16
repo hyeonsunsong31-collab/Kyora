@@ -7,6 +7,14 @@ Design notes
   OR a valid hub token in ``Authorization: Bearer``/``kyora_token`` cookie),
   ``loopback`` (loopback client only, e.g. the judge hook endpoint), ``hub``
   (valid token required).
+- Before routing, every request passes the origin guard: the ``Host`` header
+  must name this machine (loopback, its LAN names when bound beyond loopback,
+  or ``server.allowed_hosts``) so DNS rebinding cannot reach the API, and a
+  state-changing request that carries an ``Origin`` must come from this
+  listener's own origin. No ``Access-Control-Allow-*`` header is ever sent.
+- Two listeners: the main one (UI + API) and the preview listener, a separate
+  origin that serves only untrusted game code, the test harness and the
+  browser-results POSTs, so game JavaScript never runs on the API's origin.
 - Static files come from the ``kyora/web`` package directory via
   ``importlib.resources`` so they also work inside ``kyora.pyz``.
 """
@@ -34,6 +42,9 @@ from .util.sse import encode_event, keepalive
 log = logging.getLogger("kyora.server")
 MAX_BODY = 256 * 1024 * 1024
 LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+LOOPBACK_NAMES = {"localhost", "127.0.0.1", "::1"}  # Host names that always mean this machine
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+_HOST_RE = re.compile(r"^(?:\[(?P<v6>[0-9A-Fa-f:.]+)\]|(?P<name>[A-Za-z0-9._-]+))(?::\d{1,5})?$")
 
 
 # ----------------------------------------------------------------------------- multipart
@@ -120,6 +131,9 @@ class Request:
 
     def json(self) -> Any:
         if not self._json_loaded:
+            # A body must be declared JSON: browsers send text/plain cross-origin without a CORS preflight.
+            if self.body and not is_json_type(self.content_type):
+                raise ValueError("Content-Type must be application/json")
             self._json = json.loads(self.body.decode("utf-8")) if self.body else {}
             self._json_loaded = True
         return self._json
@@ -146,6 +160,20 @@ class Request:
 
     def is_loopback(self) -> bool:
         return self.client_ip in LOOPBACK
+
+
+def is_json_type(content_type: str) -> bool:
+    """True for ``application/json`` and ``application/<x>+json`` (parameters such as charset ignored)."""
+    main, _ = _parse_header_params(content_type or "")
+    return main == "application/json" or (main.startswith("application/") and main.endswith("+json"))
+
+
+def parse_host(value: str) -> str | None:
+    """Host name of a ``Host``/``host:port`` value (lower case, no port, ``[::1]`` -> ``::1``); None if malformed."""
+    m = _HOST_RE.match((value or "").strip())
+    if not m:
+        return None
+    return (m.group("v6") or m.group("name") or "").lower().rstrip(".") or None
 
 
 class Response:
@@ -207,23 +235,38 @@ def _web_root():
     return resources.files("kyora").joinpath("web")
 
 
+def safe_resource_rel(rel: str) -> str | None:
+    """``a/b.js`` for a safe path under ``kyora/web``; None for traversal or anything not a plain relative path.
+
+    Both ``/`` and ``\\`` separate segments (``WindowsPath.joinpath`` treats a backslash as a
+    separator); ``..``, ``.``, empty segments, drive letters/streams (``:``) and NUL are rejected.
+    """
+    rel = (rel or "").strip("/")
+    parts = re.split(r"[\\/]", rel)
+    if not rel or any(p in ("", ".", "..") or ":" in p or "\x00" in p for p in parts):
+        return None
+    return "/".join(parts)
+
+
 def read_resource(rel: str) -> bytes | None:
     """Read a file under ``kyora/web`` (works from a source tree or a zipapp)."""
-    rel = rel.strip("/")
-    if ".." in rel.split("/"):
+    rel = safe_resource_rel(rel)
+    if rel is None:
         return None
     with _STATIC_LOCK:
         cached = _STATIC_CACHE.get(rel)
     if cached:
         return cached[0]
-    node = _web_root()
+    root = node = _web_root()
     for part in rel.split("/"):
         node = node.joinpath(part)
     try:
+        if isinstance(node, Path):  # filesystem install: the resolved file must stay inside kyora/web
+            node.resolve().relative_to(Path(root).resolve())
         if not node.is_file():
             return None
         data = node.read_bytes()
-    except (FileNotFoundError, OSError, NotADirectoryError):
+    except (FileNotFoundError, OSError, NotADirectoryError, ValueError):
         return None
     with _STATIC_LOCK:
         _STATIC_CACHE[rel] = (data, mimetypes.guess_type(rel)[0] or "application/octet-stream")
@@ -236,7 +279,8 @@ def clear_resource_cache() -> None:
 
 
 def resource_response(rel: str, cache: str = "no-cache") -> Response:
-    data = read_resource(rel)
+    rel = safe_resource_rel(rel) or ""
+    data = read_resource(rel) if rel else None
     if data is None:
         return Response.error(404, "not found")
     ctype = mimetypes.guess_type(rel)[0] or "application/octet-stream"
@@ -293,6 +337,7 @@ class KyoraHandler(BaseHTTPRequestHandler):
     sys_version = ""
     app = None  # set by KyoraServer
     router: Router = None  # type: ignore
+    frame_options: str | None = None  # X-Frame-Options for HTML (the main listener: SAMEORIGIN)
 
     def log_message(self, fmt, *args):  # quiet by default
         log.debug("%s - %s", self.address_string(), fmt % args)
@@ -316,6 +361,51 @@ class KyoraHandler(BaseHTTPRequestHandler):
         expose = bool(self.app and self.app.config.hub.expose_ui)
         return token_ok and (expose or route.pattern.startswith("/api/code-engine"))
 
+    # origin guard -------------------------------------------------------------
+    def _host_allowed(self, name: str) -> bool:
+        """Loopback names, ``server.allowed_hosts``, the address the request arrived on, and the LAN
+        names of this host when the listener is bound beyond loopback."""
+        if name in LOOPBACK_NAMES:
+            return True
+        server_cfg = getattr(getattr(self.app, "config", None), "server", None)
+        if name in {parse_host(h) for h in (getattr(server_cfg, "allowed_hosts", None) or [])}:
+            return True
+        try:
+            local = str(self.connection.getsockname()[0])
+        except (OSError, AttributeError):
+            local = ""
+        if name == local.removeprefix("::ffff:"):
+            return True
+        return str(self.server.server_address[0]) not in LOOPBACK and name in local_host_names()
+
+    def _origin_allowed(self, origin: str, raw_host: str) -> bool:
+        """This listener's origin ``http://<allowed host>:<port>``, or (behind a proxy) the Host the browser used."""
+        try:
+            o = urllib.parse.urlsplit(origin)
+            port = o.port
+        except ValueError:
+            return False
+        if o.scheme not in ("http", "https") or not o.hostname or o.username or o.path or o.query:
+            return False  # includes "null" (sandboxed documents, file: pages)
+        if not self._host_allowed(o.hostname.rstrip(".")):
+            return False
+        if o.scheme == "http" and (port or 80) == self.server.server_address[1]:
+            return True
+        return o.netloc.lower() == raw_host.strip().lower()
+
+    def _guard(self, req: Request) -> Response | None:
+        """403 for a foreign Host (DNS rebinding) or a cross-origin state-changing request; None when fine."""
+        raw_host = req.headers.get("host")
+        if raw_host is not None:
+            name = parse_host(raw_host)
+            if name is None or not self._host_allowed(name):
+                return Response.error(403, f"host not allowed: {(name or raw_host.strip())[:120]}")
+        origin = req.headers.get("origin")
+        if req.method.upper() not in SAFE_METHODS and origin is not None \
+                and not self._origin_allowed(origin.strip(), raw_host or ""):
+            return Response.error(403, "cross-origin request refused")
+        return None
+
     # dispatch -----------------------------------------------------------------
     def _dispatch(self):
         parsed = urllib.parse.urlsplit(self.path)
@@ -328,6 +418,10 @@ class KyoraHandler(BaseHTTPRequestHandler):
             return
         body = self.rfile.read(length) if length else b""
         req = Request(self.command, path, query, headers, body, self.client_address[0], parsed.query)
+        blocked = self._guard(req)
+        if blocked is not None:
+            self._send(blocked)
+            return
         route, params, exists = self.router.match(self.command, path)
         if route is None:
             self._send(Response.error(405 if exists else 404, "method not allowed" if exists else "not found"))
@@ -372,8 +466,12 @@ class KyoraHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             return
         body = b"" if self.command == "HEAD" else resp.body
+        headers = list(resp.headers)
+        if self.frame_options and any(k.lower() == "content-type" and v.lower().startswith("text/html") for k, v in headers) \
+                and not any(k.lower() == "x-frame-options" for k, _ in headers):
+            headers.append(("X-Frame-Options", self.frame_options))
         self.send_response(resp.status)
-        for k, v in resp.headers:
+        for k, v in headers:
             self.send_header(k, v)
         self.send_header("Content-Length", str(len(resp.body)))
         self.end_headers()
@@ -386,39 +484,100 @@ class KyoraHandler(BaseHTTPRequestHandler):
     do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _dispatch
 
 
-class KyoraServer:
-    """Owns the ThreadingHTTPServer and its serving thread."""
+def _bound_handler(app, router: Router, frame_options: str | None) -> type:
+    return type("BoundKyoraHandler", (KyoraHandler,), {"app": app, "router": router, "frame_options": frame_options})
 
-    def __init__(self, app, host: str, port: int, router: Router | None = None):
+
+class KyoraServer:
+    """Owns the main listener, the preview listener and their serving threads.
+
+    The preview listener is a second origin (same bind address) for untrusted game code. Its
+    routes come from ``preview_router`` or, when the app has ``register_preview_routes``, from
+    the app. ``preview_port`` None reads ``app.config.server.preview_port``; None there means
+    main port + 1 (an ephemeral port when that one is busy or the main port is 0). The app's
+    ``preview_url`` is set to the listener's loopback base so the main listener can redirect.
+    """
+
+    def __init__(self, app, host: str, port: int, router: Router | None = None, *,
+                 preview_port: int | None = None, preview_router: Router | None = None):
         self.app = app
         self.host = host
         self.port = port
         self.router = router or Router()
-        handler = type("BoundKyoraHandler", (KyoraHandler,), {"app": app, "router": self.router})
         ThreadingHTTPServer.allow_reuse_address = True
         ThreadingHTTPServer.daemon_threads = True
-        self.httpd = ThreadingHTTPServer((host, port), handler)
+        self.httpd = ThreadingHTTPServer((host, port), _bound_handler(app, self.router, "SAMEORIGIN"))
         self.port = self.httpd.server_address[1]
-        self._thread: threading.Thread | None = None
+        self.preview_httpd: ThreadingHTTPServer | None = None
+        self.preview_port: int | None = None
+        self._threads: list[threading.Thread] = []
+        if preview_router is None and callable(getattr(type(app), "register_preview_routes", None)):
+            preview_router = Router()
+            app.register_preview_routes(preview_router, self.router)
+        if preview_router is not None:
+            try:
+                self.preview_httpd = self._bind_preview(app, host, port, preview_port, preview_router)
+            except BaseException:
+                self.httpd.server_close()
+                raise
+            self.preview_port = self.preview_httpd.server_address[1]
+            if hasattr(app, "preview_url"):
+                app.preview_url = self.preview_url
+
+    @staticmethod
+    def _bind_preview(app, host: str, port: int, preview_port: int | None, router: Router) -> ThreadingHTTPServer:
+        handler = _bound_handler(app, router, None)  # the harness page is framed by the main UI
+        if preview_port is None:
+            preview_port = getattr(getattr(getattr(app, "config", None), "server", None), "preview_port", None)
+        auto = preview_port is None
+        if auto:
+            preview_port = port + 1 if 0 < port < 65535 else 0
+        try:
+            return ThreadingHTTPServer((host, preview_port), handler)
+        except OSError as exc:
+            if not auto or preview_port == 0:
+                raise
+            log.warning("preview port %s is not available (%s); using an ephemeral port", preview_port, exc)
+            return ThreadingHTTPServer((host, 0), handler)
+
+    @staticmethod
+    def _base(host: str, port: int) -> str:
+        host = "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
+        return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
 
     @property
     def url(self) -> str:
-        host = "127.0.0.1" if self.host in ("0.0.0.0", "", "::") else self.host
-        return f"http://{host}:{self.port}"
+        return self._base(self.host, self.port)
+
+    @property
+    def preview_url(self) -> str:
+        """Loopback base of the preview listener ("" without one)."""
+        return self._base(self.host, self.preview_port) if self.preview_httpd is not None else ""
+
+    def _start_thread(self, httpd: ThreadingHTTPServer, name: str) -> None:
+        t = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.5}, name=name, daemon=True)
+        t.start()
+        self._threads.append(t)
 
     def start(self) -> None:
-        self._thread = threading.Thread(target=self.httpd.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True)
-        self._thread.start()
+        if self.preview_httpd is not None:
+            self._start_thread(self.preview_httpd, "kyora-preview")
+        self._start_thread(self.httpd, "kyora-server")
 
     def serve_forever(self) -> None:
+        if self.preview_httpd is not None:
+            self._start_thread(self.preview_httpd, "kyora-preview")
         self.httpd.serve_forever(poll_interval=0.5)
 
     def shutdown(self) -> None:
-        try:
-            self.httpd.shutdown()
-            self.httpd.server_close()
-        except Exception:
-            pass
+        for httpd in (self.httpd, self.preview_httpd):
+            if httpd is None:
+                continue
+            try:
+                httpd.shutdown()
+                httpd.server_close()
+            except Exception:
+                pass
 
 
 # ----------------------------------------------------------------------------- SSE stream helper
@@ -452,6 +611,32 @@ def event_stream(bus, *, run_id: str | None, project_id: str | None, types: list
             last_send = time.monotonic()
     finally:
         sub.close()
+
+
+_NAMES_LOCK = threading.Lock()
+_NAMES_CACHE: dict = {"at": 0.0, "names": frozenset()}
+
+
+def local_host_names(ttl_s: float = 60.0) -> frozenset:
+    """Names of this host for the Host allow-list: LAN addresses, hostname, ``<hostname>.local``, FQDN.
+
+    Cached for ``ttl_s`` (``getfqdn`` may wait on DNS); only consulted when a listener is bound
+    beyond loopback and the Host is not otherwise allowed.
+    """
+    now = time.monotonic()
+    with _NAMES_LOCK:
+        if _NAMES_CACHE["names"] and now - _NAMES_CACHE["at"] < ttl_s:
+            return _NAMES_CACHE["names"]
+    names = set(lan_addresses())
+    try:
+        hostname = socket.gethostname()
+        names.update({hostname, hostname + ".local", socket.getfqdn()})
+    except OSError:
+        pass
+    out = frozenset(n.lower().rstrip(".") for n in names if n)
+    with _NAMES_LOCK:
+        _NAMES_CACHE.update(at=now, names=out)
+    return out
 
 
 def lan_addresses() -> list[str]:

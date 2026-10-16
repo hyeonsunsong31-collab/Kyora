@@ -1,5 +1,5 @@
 {
-  "server": {"host": "127.0.0.1", "port": 8765, "workers": 2},
+  "server": {"host": "127.0.0.1", "port": 8765, "preview_port": null, "allowed_hosts": [], "workers": 2},
   "claude_code": {
     "command": ["claude"],
     "model": "claude-fable-5-1",

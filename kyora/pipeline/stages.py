@@ -497,8 +497,8 @@ def test_stage(ctx: StageContext, n: int) -> tuple[list, list, list]:
     ctx.save_run()
     ctx.publish(ev.TEST_AWAIT_BROWSER, {"runner_url": runner_url, "iteration": n})
     show_view(ctx, f"Testing iteration {n}", buttons=[("kyora:run_tests", "Run tests")])
-    if node and ctx.cfg.quality.auto_run_browser_tests and getattr(ctx.app, "server_url", ""):
-        _headless_driver(ctx, ctx.app.server_url.rstrip("/") + runner_url, node)
+    if node and ctx.cfg.quality.auto_run_browser_tests and getattr(ctx.app, "preview_url", ""):
+        _headless_driver(ctx, ctx.app.preview_url.rstrip("/") + runner_url, node)  # the harness's own origin
     payload = collector.wait(ctx.run_id, n, float(ctx.cfg.quality.browser_wait_s), ctx.cancel)
     ctx.check_cancel()
     if payload is None:
@@ -597,7 +597,8 @@ def show_view(ctx: StageContext, title: str, *, buttons: list[tuple[str, str]] |
         return
     stages = [{"name": name, "status": (ctx.run.stages.get(name) or {}).get("status", "idle")}
               for name in ("intake", "plan", "design", "build", "test", "gate", "review", "fix", "finalize")]
-    view = {"title": title, "preview_url": f"/preview/{ctx.project_id}/run-{ctx.run_id}/index.html", "stages": stages,
+    preview_base = str(getattr(ctx.app, "preview_url", "") or "").rstrip("/")  # game code: the preview origin
+    view = {"title": title, "preview_url": f"{preview_base}/preview/{ctx.project_id}/run-{ctx.run_id}/index.html", "stages": stages,
             "buttons": [{"id": i, "text": t} for i, t in (buttons or [])]}
     if screenshot_b64:
         view["screenshot_b64"] = screenshot_b64

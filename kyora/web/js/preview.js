@@ -1,7 +1,8 @@
 /* Preview: the real game served from a slide checkout (/preview/<pid>/v<n>/) or the live work
    tree (/preview/<pid>/work/), in a phone/tablet/desktop frame, with reload, fullscreen, open in
-   a new tab and "Run tests" (the in-browser harness at /runner/<pid>/<ref>). Test results arrive
-   as window messages of type 'kyora:test-result' from same-origin harness frames. */
+   a new tab and "Run tests" (the in-browser harness at /runner/<pid>/<ref>). Games and the harness
+   come from the preview listener (a separate origin, see K.util.previewOrigin); test results arrive
+   as window messages of type 'kyora:test-result' and are accepted only from that origin. */
 (function () {
   'use strict';
   const K = (window.Kyora = window.Kyora || {});
@@ -17,10 +18,10 @@
   function state() { return K.store.state; }
   function $(id) { return document.getElementById(id); }
 
-  function previewUrl(pid, r) { return '/preview/' + U().enc(pid) + '/' + U().enc(r) + '/index.html'; }
+  function previewUrl(pid, r) { return U().previewHref('/preview/' + U().enc(pid) + '/' + U().enc(r) + '/index.html'); }
   function runnerUrl(pid, r) {
     const run = /^run-/.test(r) ? r.slice(4) : '';
-    return '/runner/' + U().enc(pid) + '/' + U().enc(r) + '?run=' + encodeURIComponent(run) + '&iter=&auto=1&post=1';
+    return U().previewHref('/runner/' + U().enc(pid) + '/' + U().enc(r) + '?run=' + encodeURIComponent(run) + '&iter=&auto=1&post=1');
   }
 
   function refOptions() {
@@ -83,23 +84,19 @@
     setEmpty('');
     loadedUrl = url;
     if (frame) frame.src = force ? url + '?kyora_reload=' + Date.now() : url;
+    checkPreview(pid, ref || 'work', url);
   }
 
-  /* After load, a same-origin JSON error body means there is nothing to preview at that ref. */
-  function onFrameLoad() {
-    const frame = $('preview-frame');
-    if (!frame || !loadedUrl) return;
-    let text = '';
-    try {
-      const doc = frame.contentDocument;
-      text = doc && doc.body ? String(doc.body.textContent || '').trim().slice(0, 400) : '';
-    } catch (_) { return; /* not same-origin: nothing to inspect */ }
-    if (/^\{\s*"error"/.test(text)) {
-      let msg = 'not found';
-      try { msg = JSON.parse(text).error || msg; } catch (_) { /* partial body */ }
-      const missing = state().status && state().status.missing && state().status.missing['routes:projects.routes'];
-      setEmpty('Nothing to preview at "' + ref + '"', missing ? 'The preview route is not available on this server (kyora/projects/routes.py did not load).'
-        : 'The server answered: ' + msg + '. Run the pipeline first, or pick a slide that has an index.html.');
+  /* The game frame is cross-origin (preview listener), so ask this origin whether the ref has an
+     index.html; nothing to preview -> explain instead of showing an error body in the frame. */
+  async function checkPreview(pid, r, url) {
+    const res = await K.api.maybe(K.api.get('/api/projects/' + U().enc(pid) + '/preview-check', { ref: r }));
+    if (url !== loadedUrl) return; // the user picked something else meanwhile
+    const missing = state().status && state().status.missing && state().status.missing['routes:projects.routes'];
+    if (res.ok && res.data && res.data.ok === false) {
+      setEmpty('Nothing to preview at "' + r + '"', 'The server answered: ' + (res.data.error || 'not found') + '. Run the pipeline first, or pick a slide that has an index.html.');
+    } else if (!res.ok && missing) {
+      setEmpty('Nothing to preview at "' + r + '"', 'The preview route is not available on this server (kyora/projects/routes.py did not load).');
     }
   }
 
@@ -186,7 +183,7 @@
   }
 
   function onMessage(e) {
-    if (e.origin !== window.location.origin) return;
+    if (!e.origin || e.origin !== U().previewOrigin()) return; // only the harness on the preview listener
     const msg = e.data;
     if (!msg || typeof msg !== 'object' || msg.type !== 'kyora:test-result') return;
     lastResult = msg;
@@ -225,14 +222,12 @@
       if (frame) frame.src = 'about:blank';
       if (card) card.hidden = true;
     });
-    const frame = $('preview-frame');
-    if (frame) frame.addEventListener('load', onFrameLoad);
     window.addEventListener('message', onMessage);
     K.store.subscribe((s, keys) => {
       if (keys.indexOf('projectId') >= 0) { ref = ''; loadedUrl = ''; }
       if (keys.indexOf('slides') >= 0 || keys.indexOf('projectId') >= 0 || keys.indexOf('project') >= 0) { renderRefSelect(); load(false); }
       if (keys.indexOf('view') >= 0 && s.view === 'preview') load(false);
-      if (keys.indexOf('projectsMissing') >= 0) load(false);
+      if (keys.indexOf('projectsMissing') >= 0 || keys.indexOf('status') >= 0) load(false); // status: preview origin known
     });
     renderRefSelect();
     load(false);

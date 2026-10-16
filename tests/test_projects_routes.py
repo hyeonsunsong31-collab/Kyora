@@ -99,8 +99,9 @@ class ProjectRoutesTests(unittest.TestCase):
         self.app.run_manager = None
 
     # ------------------------------------------------------------------ http helpers
-    def request(self, method: str, path: str, body: bytes | None = None, headers: dict | None = None):
-        conn = http.client.HTTPConnection("127.0.0.1", self.server.port, timeout=30)
+    def request(self, method: str, path: str, body: bytes | None = None, headers: dict | None = None,
+                port: int | None = None):
+        conn = http.client.HTTPConnection("127.0.0.1", port or self.server.port, timeout=30)
         try:
             conn.request(method, path, body=body, headers=headers or {})
             resp = conn.getresponse()
@@ -113,6 +114,10 @@ class ProjectRoutesTests(unittest.TestCase):
         body = json.dumps(obj).encode() if obj is not None else None
         status, headers, data = self.request(method, path, body, {"Content-Type": "application/json"} if body else {})
         return status, (json.loads(data) if data else None)
+
+    def preview(self, path: str):
+        """GET on the preview listener (game files and the harness live there, not on the main origin)."""
+        return self.request("GET", path, port=self.server.preview_port)
 
     def create_project(self, name="Route Game") -> str:
         status, body = self.json("POST", "/api/projects", {"name": name})
@@ -201,44 +206,47 @@ class ProjectRoutesTests(unittest.TestCase):
         events = self.app.bus.replay(0, project_id=pid, types=["slide.created"])
         self.assertEqual(events[-1].data["number"], 1)
 
-        # preview of the materialized slide
-        status, headers, data = self.request("GET", f"/preview/{pid}/v1/index.html")
+        # preview of the materialized slide (on the preview listener; the main origin only redirects)
+        status, headers, _ = self.request("GET", f"/preview/{pid}/v1/index.html?kyora=1")
+        self.assertEqual(status, 302)
+        self.assertEqual(headers["location"], f"http://127.0.0.1:{self.server.preview_port}/preview/{pid}/v1/index.html?kyora=1")
+        status, headers, data = self.preview(f"/preview/{pid}/v1/index.html")
         self.assertEqual(status, 200)
         self.assertEqual(headers["content-type"], "text/html; charset=utf-8")
         self.assertEqual(headers["cache-control"], "no-store")
         self.assertIn(b'<script src="src/game.js"></script>', data)
-        status, headers, data = self.request("GET", f"/preview/{pid}/v1/src/game.js")
+        status, headers, data = self.preview(f"/preview/{pid}/v1/src/game.js")
         self.assertEqual(status, 200)
         self.assertEqual(headers["content-type"], "application/javascript; charset=utf-8")
         self.assertEqual(data, (GAME_OK / "src" / "game.js").read_bytes())
-        status, headers, _ = self.request("GET", f"/preview/{pid}/v1/.kyora/manifest.json")
+        status, headers, _ = self.preview(f"/preview/{pid}/v1/.kyora/manifest.json")
         self.assertEqual(status, 200)
         self.assertEqual(headers["content-type"], "application/json; charset=utf-8")
-        status, _, data = self.request("GET", f"/preview/{pid}/v1/")
+        status, _, data = self.preview(f"/preview/{pid}/v1/")
         self.assertEqual(status, 200)
         self.assertIn(b"<canvas", data)
-        status, headers, _ = self.request("GET", f"/preview/{pid}/v1")
+        status, headers, _ = self.preview(f"/preview/{pid}/v1")
         self.assertEqual(status, 301)
         self.assertEqual(headers["location"], f"/preview/{pid}/v1/")
-        status, headers, _ = self.request("GET", f"/preview/{pid}/v1/src?kyora=1")
+        status, headers, _ = self.preview(f"/preview/{pid}/v1/src?kyora=1")
         self.assertEqual(status, 301)
         self.assertEqual(headers["location"], f"/preview/{pid}/v1/src/?kyora=1")
-        status, _, data = self.request("GET", f"/preview/{pid}/work/tests/browser-tests.js")
+        status, _, data = self.preview(f"/preview/{pid}/work/tests/browser-tests.js")
         self.assertEqual(status, 200)
         self.assertIn(b"at-06", data)
         run = self.app.store.create_run(pid, "modify", "faster", parent_slide=1)
-        status, _, _ = self.request("GET", f"/preview/{pid}/run-{run.id}/index.html")
+        status, _, _ = self.preview(f"/preview/{pid}/run-{run.id}/index.html")
         self.assertEqual(status, 200)
         for bad in (f"/preview/{pid}/v1/missing.js", f"/preview/{pid}/v9/index.html", f"/preview/{pid}/bogus/index.html",
                     f"/preview/{pid}/run-r_nope/index.html", "/preview/p_nope/v1/index.html",
                     f"/preview/{pid}/work/.git/config"):
-            status, _, _ = self.request("GET", bad)
+            status, _, _ = self.preview(bad)
             self.assertEqual(status, 404, bad)
 
         # path escapes (encoded ..) are 404, never content
         for esc in ("%2e%2e/%2e%2e/project.json", "..%2f..%2fproject.json", "%2e%2e%2f%2e%2e%2f%2e%2e%2fkyora.db",
                     "src/%2e%2e/%2e%2e/%2e%2e/%2e%2e/project.json", "%2E%2E/%2E%2E/%2E%2E/repo/.git/HEAD"):
-            status, _, data = self.request("GET", f"/preview/{pid}/v1/{esc}")
+            status, _, data = self.preview(f"/preview/{pid}/v1/{esc}")
             self.assertEqual(status, 404, esc)
             self.assertNotIn(b'"slides"', data)
 
@@ -306,14 +314,17 @@ class ProjectRoutesTests(unittest.TestCase):
 
     def test_runner_route(self):
         pid = self.create_project("Runner")
-        status, headers, data = self.request("GET", f"/runner/{pid}/v1?run=r_x&iter=1")
+        status, headers, _ = self.request("GET", f"/runner/{pid}/v1?run=r_x&iter=1")
+        self.assertEqual(status, 302)
+        self.assertEqual(headers["location"], f"http://127.0.0.1:{self.server.preview_port}/runner/{pid}/v1?run=r_x&iter=1")
+        status, headers, data = self.preview(f"/runner/{pid}/v1?run=r_x&iter=1")
         harness = REPO / "kyora" / "web" / "runner" / "harness.html"
         if harness.is_file():
             self.assertEqual(status, 200)
             self.assertTrue(headers["content-type"].startswith("text/html"))
         else:  # written by another module; a 404 is the documented behaviour until then
             self.assertEqual(status, 404)
-        status, _, _ = self.request("GET", "/runner/p_nope/v1")
+        status, _, _ = self.preview("/runner/p_nope/v1")
         self.assertEqual(status, 404)
 
     def test_preview_content_types(self):

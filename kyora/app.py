@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import secrets
 import threading
+import urllib.parse
 from pathlib import Path
 
 from . import __version__
@@ -20,6 +21,10 @@ from .server import Request, Response, Router, event_stream, lan_addresses, reso
 from .util.fs import kyora_home, platform_info
 
 log = logging.getLogger("kyora.app")
+
+# Main-listener routes the preview listener serves too: the harness posts results to its own origin.
+PREVIEW_SHARED_ROUTES = {("POST", "/api/runs/{id}/browser-results"),
+                         ("POST", "/api/projects/{id}/slides/{n}/browser-results")}
 
 
 class App:
@@ -33,6 +38,7 @@ class App:
         self.bus = EventBus(self.home / "kyora.db")
         self.missing: dict[str, str] = {}
         self.server_url: str = ""
+        self.preview_url: str = ""  # loopback base of the preview listener (separate origin for game code)
         self.started = threading.Event()
         # components (populated by _wire)
         self.store = None
@@ -152,8 +158,17 @@ class App:
     def engine(self):
         return select_engine(self)
 
-    def start(self, server_url: str) -> None:
+    @property
+    def preview_port(self) -> int | None:
+        try:
+            return urllib.parse.urlsplit(self.preview_url).port if self.preview_url else None
+        except ValueError:
+            return None
+
+    def start(self, server_url: str, preview_url: str | None = None) -> None:
         self.server_url = server_url
+        if preview_url is not None:
+            self.preview_url = preview_url
         if self.claude_engine and hasattr(self.claude_engine, "install_hook"):
             self._try("hook_install", self.claude_engine.install_hook)
         if self.run_manager:
@@ -200,6 +215,8 @@ class App:
             "config_dir": str(self.config.config_dir),
             "hub_mode": self.hub_mode,
             "server_url": self.server_url,
+            "preview_url": self.preview_url,
+            "preview_port": self.preview_port,
             "lan": lan_addresses(),
             "components": {k: (v is not None) for k, v in {
                 "store": self.store, "nemotron": self.nemotron, "kimi": self.kimi, "judge": self.judge,
@@ -221,7 +238,9 @@ class App:
             resp = resource_response("index.html")
             tok = req.query.get("token")
             if tok and app.config.hub.token and tok == app.config.hub.token:
-                resp.headers.append(("Set-Cookie", f"kyora_token={tok}; Path=/; SameSite=Lax"))
+                # HttpOnly: cookies are shared by every port of a host, so game code on the preview
+                # listener must not be able to read the token
+                resp.headers.append(("Set-Cookie", f"kyora_token={tok}; Path=/; SameSite=Lax; HttpOnly"))
             return resp
 
         def static(req: Request, params: dict) -> Response:
@@ -258,7 +277,7 @@ class App:
             port = app.server_url.rsplit(":", 1)[-1] if app.server_url else str(app.config.server.port)
             urls = [f"http://{ip}:{port}" for ip in lan_addresses()]
             return Response.json({"urls": urls, "loopback": app.server_url, "hub_mode": app.hub_mode,
-                                  "expose_ui": app.config.hub.expose_ui})
+                                  "expose_ui": app.config.hub.expose_ui, "preview_port": app.preview_port})
 
         def qr_svg(req: Request, params: dict) -> Response:
             text = req.query.get("text") or app.server_url
@@ -288,3 +307,22 @@ class App:
             except Exception as exc:  # noqa: BLE001
                 self.missing[f"routes:{modname}"] = f"{type(exc).__name__}: {exc}"
                 log.warning("routes for %s unavailable: %s", modname, exc)
+
+    def register_preview_routes(self, router: Router, main_router: Router | None = None) -> None:
+        """Routes of the preview listener: game files, the harness and its results - nothing else.
+
+        Untrusted game code runs on this origin, so settings, keys, runs and the UI are absent.
+        """
+        def favicon(req: Request, params: dict) -> Response:
+            return Response(204)
+
+        router.add("GET", "/favicon.ico", favicon, auth="any")
+        try:
+            from .projects.routes import register_preview_routes
+            register_preview_routes(router, self)
+        except Exception as exc:  # noqa: BLE001
+            self.missing["routes:preview"] = f"{type(exc).__name__}: {exc}"
+            log.warning("preview routes unavailable: %s", exc)
+        for route in (main_router.routes if main_router is not None else []):
+            if (route.method, route.pattern) in PREVIEW_SHARED_ROUTES:
+                router.routes.append(route)
