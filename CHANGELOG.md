@@ -2,6 +2,16 @@
 
 All notable changes to Kyora. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- **Slides keep ignored game files**: slide commits (and so ZIP downloads and previews) now include
+  files named by the game's `.gitignore`, `.git/info/exclude` or the user's global excludes file, as
+  the snapshot backend always did; the gate measured them, so the saved slide now matches the
+  measured game. Resets and checkouts also remove ignored leftovers, so a cancelled run's ignored
+  files cannot reach the next slide.
+
 ## 0.1.0 - 2026-10-15
 
 First release.

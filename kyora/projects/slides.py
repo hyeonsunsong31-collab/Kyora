@@ -6,6 +6,9 @@ Two interchangeable backends implement :class:`VersionBackend`:
   identity, ``core.autocrlf=false`` and signing disabled), annotated tags whose
   message is the slide's JSON meta, lineage branches (``lineage/main``,
   ``lineage/<rid>``) and ``git archive --format=zip`` for downloads/previews.
+  Commits stage every file of the work tree, including files that the game's
+  ``.gitignore``, ``.git/info/exclude`` or the user's global excludes file
+  ignore: the gate measures the whole tree, so the slide must hold all of it.
 * :class:`SnapshotBackend` - used when git is not installed: every commit is a
   full copy under ``snapshots/<n>/``; the same API, with branch/tag pointers in
   ``snapshots/state.json``. The UI reports which backend a project uses.
@@ -126,7 +129,7 @@ class VersionBackend(ABC):
 
     @abstractmethod
     def checkout(self, ref: str) -> None:
-        """Force-checkout ``ref`` (branch attaches HEAD; tag/sha detaches) and remove untracked files."""
+        """Force-checkout ``ref`` (branch attaches HEAD; tag/sha detaches) and remove untracked and ignored files."""
 
     @abstractmethod
     def checkout_orphan(self, name: str) -> None:
@@ -134,7 +137,7 @@ class VersionBackend(ABC):
 
     @abstractmethod
     def commit(self, message: str, meta: dict | None = None) -> str:
-        """Commit every change in the work tree (empty commits allowed); return the sha."""
+        """Commit every change in the work tree, ignored files included (empty commits allowed); return the sha."""
 
     @abstractmethod
     def tag(self, name: str, sha: str, meta: dict) -> None:
@@ -258,7 +261,7 @@ class GitBackend(VersionBackend):
 
     def checkout(self, ref: str) -> None:
         self._run("checkout", "-q", "-f", _check_ref(ref), "--")
-        self._run("clean", "-fdq")
+        self._run("clean", "-fdxq")  # -x: an ignored leftover would otherwise reach the next commit (add -f)
 
     def checkout_orphan(self, name: str) -> None:
         _check_ref(name)
@@ -272,7 +275,7 @@ class GitBackend(VersionBackend):
         text = (message or "Kyora commit").strip()
         if meta:
             text += "\n\nKyora-Meta: " + json.dumps(meta, sort_keys=True, ensure_ascii=False, default=str)
-        self._run("add", "-A", timeout=600)
+        self._run("add", "-A", "-f", timeout=600)  # -f: ignore rules must not drop game files from the slide
         self._run("commit", "-q", "--allow-empty", "--no-verify", "--cleanup=verbatim", "-F", "-",
                   input_text=text + "\n")
         sha = self.head()
@@ -303,7 +306,7 @@ class GitBackend(VersionBackend):
     def reset_to(self, ref: str | None) -> None:
         if ref:
             self._run("reset", "-q", "--hard", _check_ref(ref))
-            self._run("clean", "-fdq")
+            self._run("clean", "-fdxq")
             return
         branch = self.current_branch()
         if branch and self.branch_sha(branch):
