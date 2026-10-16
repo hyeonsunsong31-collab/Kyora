@@ -13,7 +13,7 @@ from unittest import mock
 
 import kyora.pipeline.runner as runner_module
 from kyora.pipeline.events import EventBus
-from kyora.pipeline.runner import Runner
+from kyora.pipeline.runner import RunManager, Runner
 from kyora.projects.slides import git_available
 from kyora.projects.store import ProjectStore
 
@@ -286,6 +286,74 @@ class _RunnerHome(_Home):
             run.stages[st] = {"status": "done"}
         self.store.set_state(run, "blocked", blocked_reason="no browser")
         return p, sm, run, sha
+
+
+class CancelTests(_RunnerHome):
+    """cancel() never touches the work tree while another run of the project is executing."""
+
+    def _running_a(self, rm: RunManager, pid: str, sm):
+        """Run A executes (worker holds the project lock) with uncommitted fix work in the tree."""
+        a = self.store.create_run(pid, "generate", "game A")
+        info = sm.prepare_run(a)
+        wt = sm.work_tree()
+        (wt / "index.html").write_text("A v1", encoding="utf-8")
+        sm.commit_iteration(a, 0, None)
+        (wt / "index.html").write_text("A v2 (fix in progress)", encoding="utf-8")
+        (wt / "src").mkdir(exist_ok=True)
+        (wt / "src" / "game.js").write_text("// written by the engine", encoding="utf-8")
+        plock = rm._project_lock(pid)
+        plock.acquire()
+        self.addCleanup(plock.release)
+        rm._running[a.id] = threading.Event()
+        return a, info["branch"]
+
+    def _assert_a_untouched(self, sm, branch):
+        wt = sm.work_tree()
+        self.assertEqual(sm.backend.current_branch(), branch)
+        self.assertEqual((wt / "index.html").read_text(encoding="utf-8"), "A v2 (fix in progress)")
+        self.assertTrue((wt / "src" / "game.js").is_file())
+
+    def test_cancel_of_a_queued_run_leaves_the_running_tree_alone(self):
+        rm = RunManager(self.app, workers=1)  # workers not started: B waits in the queue
+        p = self.store.create("Cancel queued")
+        sm = self.store.slide_manager(p.id)
+        a, a_branch = self._running_a(rm, p.id, sm)
+        b = self.store.create_run(p.id, "modify", "game B")
+        self.assertTrue(rm.submit(b.id))
+        self.assertTrue(rm.cancel(b.id))
+        self.assertEqual(self.store.get_run(b.id).state, "cancelled")
+        self._assert_a_untouched(sm, a_branch)
+
+    def test_cancel_of_a_blocked_run_moves_only_its_branch_while_another_run_executes(self):
+        rm = RunManager(self.app, workers=1)
+        p, sm, b, b_sha = self._blocked_after_build("B built")  # B holds lineage/main
+        a, a_branch = self._running_a(rm, p.id, sm)
+        self.assertNotEqual(a_branch, "lineage/main")
+        self.assertTrue(rm.cancel(b.id))
+        self.assertEqual(self.store.get_run(b.id).state, "cancelled")
+        self._assert_a_untouched(sm, a_branch)
+        self.assertIsNone(sm.backend.branch_sha("lineage/main"))  # B's own commits are gone
+
+    def test_cancel_never_resets_a_checked_out_branch_while_another_run_executes(self):
+        rm = RunManager(self.app, workers=1)
+        p, sm, b, b_sha = self._blocked_after_build("B built")
+        # another run executes on the same checked-out branch (e.g. prepared before branches were exclusive)
+        plock = rm._project_lock(p.id)
+        plock.acquire()
+        self.addCleanup(plock.release)
+        (sm.work_tree() / "index.html").write_text("A v2 (fix in progress)", encoding="utf-8")
+        self.assertTrue(rm.cancel(b.id))
+        self.assertEqual(self.store.get_run(b.id).state, "cancelled")
+        self.assertEqual((sm.work_tree() / "index.html").read_text(encoding="utf-8"), "A v2 (fix in progress)")
+        self.assertEqual(sm.backend.branch_sha("lineage/main"), b_sha)
+
+    def test_cancel_of_a_blocked_run_on_an_idle_project_resets_the_tree(self):
+        rm = RunManager(self.app, workers=1)
+        p, sm, b, b_sha = self._blocked_after_build("B built")
+        (sm.work_tree() / "leftover.js").write_text("x", encoding="utf-8")
+        self.assertTrue(rm.cancel(b.id))
+        self.assertEqual(_files(sm.work_tree()), [])
+        self.assertIsNone(sm.backend.branch_sha("lineage/main"))
 
 
 class RunnerResumeTests(_RunnerHome):

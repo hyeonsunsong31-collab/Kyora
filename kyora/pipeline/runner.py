@@ -118,10 +118,18 @@ class RunManager:
         except FileNotFoundError:
             return False
         if pending or run.state in ("blocked", "awaiting_approval", "created"):
+            # All runs of a project share one work tree. While another run of the project holds the
+            # project lock (it is executing), the rollback may only move this run's branch ref.
+            plock = self._project_lock(run.project_id)
+            idle = plock.acquire(blocking=False)
             try:
-                store.slide_manager(run.project_id).rollback_working_tree(run)
+                if not store.slide_manager(run.project_id).rollback_working_tree(run, touch_tree=idle):
+                    log.warning("cancelled run %s: its commits were left in place", run_id)
             except Exception as exc:  # noqa: BLE001
                 log.warning("rollback for cancelled run %s failed: %s", run_id, exc)
+            finally:
+                if idle:
+                    plock.release()
             store.set_state(run, "cancelled")
             self.app.bus.publish(ev.RUN_CANCELLED, {}, run_id=run.id, project_id=run.project_id)
             self.app.bus.publish(ev.RUN_STATE, {"state": "cancelled", "iteration": run.iteration},

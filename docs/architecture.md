@@ -221,6 +221,11 @@ records the commit the run last left on its branch (its base until its first com
 that commit (forced checkout, untracked and ignored leftovers removed); when the branch no longer points there the
 run BLOCKS with a reason instead of testing someone else's game. Rollback only resets a branch whose tip is still
 the run's own commit.
+
+Cancel: a running run gets its cancel event (it rolls back itself). A queued run that was never prepared left
+nothing to roll back. A blocked or queued prepared run is rolled back under the per-project lock; while another
+run of the project holds that lock (it is executing in the shared work tree), only the cancelled run's branch ref
+moves and the work tree is never touched.
 Gate: total = counted checks (static non-skipped + browser + node); pass_rate = passed/total; ok iff pass_rate >= min_pass_rate
 AND required checks pass (index.html exists, html well-formed, js syntax, manifest valid) AND every plan acceptance id present in results.
 

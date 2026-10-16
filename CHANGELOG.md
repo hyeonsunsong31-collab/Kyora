@@ -18,6 +18,9 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   clear reason when the branch moved on, so a resumed run never tests or commits another run's game.
   Rollback only resets a branch whose tip is still the run's own commit, so cancelling an older run
   can no longer delete the branch that holds a newer slide.
+- **Cancelling a queued or blocked run no longer resets a running run's work**: a never-started
+  run needs no rollback, and while another run of the project is executing the cancel only moves
+  the cancelled run's own branch ref; it never resets, cleans or checks out the shared work tree.
 
 ## 0.1.0 - 2026-10-15
 
