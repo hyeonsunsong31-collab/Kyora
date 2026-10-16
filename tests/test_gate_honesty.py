@@ -150,6 +150,50 @@ class FailedEngineTests(RunnerHarness):
         self.assertEqual(run.extra["engine_failures"][0]["kind"], "fix")
 
 
+class InvalidKimiAnswerTests(RunnerHarness):
+    """A twice-invalid Kimi answer (ValueError) blocks the run (resumable) instead of failing it."""
+
+    INVALID = "Kimi review: invalid emit_review payload after one repair attempt: 'decision' missing"
+
+    def test_invalid_review_blocks_and_resumes(self):
+        p = self.project_with_v1()
+        answers = [ValueError(self.INVALID), {"decision": "stop", "reasons": ["cannot be fixed"]}]
+
+        def review(summary, gate, shots, run_id, project_id, cancel):
+            a = answers.pop(0)
+            if isinstance(a, Exception):
+                raise a
+            return a
+        self.app.kimi = SimpleNamespace(review=review)
+        failing = lambda ctx, n: ([Check("s0", "static", "s", "pass")], [], [Check("at-01", "browser", "boots", "fail")])
+        with mock.patch.object(R, "test_stage", failing):
+            self.engine = ScriptedEngine([(True, None, {"index.html": "<canvas></canvas><script>v2</script>"})])
+            run = self.store.create_run(p.id, "modify", "add a pause menu", parent_slide=1)
+            run = self.execute(run.id)
+            self.assertEqual(run.state, "blocked")
+            self.assertEqual(run.extra.get("blocked_stage"), "review")
+            self.assertIn("no valid review", run.blocked_reason)
+            self.assertIsNone(run.error)
+            run = self.execute(run.id)  # resume: the measured gate is reused, the review is asked again
+        self.assertEqual(run.state, "failed_gate")
+        self.assertEqual(run.result_slide, 2)
+        self.assertEqual(self.engine.calls, ["build"])
+
+    def test_invalid_intake_blocks(self):
+        def intake(*a, **k):
+            raise ValueError("Kimi intake: invalid emit_intake payload after one repair attempt: 'goal' missing")
+        self.app.kimi = SimpleNamespace(intake=intake)
+        p = self.store.create("demo")
+        run = self.store.create_run(p.id, "generate", "a runner")
+        sm = self.store.slide_manager(p.id)
+        ctx = StageContext(app=self.app, run=run, project=p, run_dir=self.store.run_dir(run),
+                           workspace=sm.work_tree(), cancel=threading.Event(), slides=sm)
+        with self.assertRaises(StageBlocked) as cm:
+            S.intake_stage(ctx)
+        self.assertEqual(cm.exception.stage, "intake")
+        self.assertIn("no valid intake", cm.exception.reason)
+
+
 class DeckRunTests(RunnerHarness):
     def test_finalize_deck_describes_the_finalizing_run_not_a_queued_one(self):
         p = self.store.create("demo")

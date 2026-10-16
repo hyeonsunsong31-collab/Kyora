@@ -21,6 +21,9 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   reason instead of spending every fix iteration on tests that can never report.
 - **The deck in a slide describes that slide's run.** FINALIZE passes the finalizing run to the deck
   builder; before, a run queued for the same project (state `created`) was shown as "this build".
+- **An invalid Kimi K3 intake or review answer blocks the run** (resumable, like PLAN and DESIGN)
+  instead of failing it; before, a twice-unparseable review after a long build ended the run
+  `failed`, with no slide and no way to resume.
 
 ## 0.1.0 - 2026-10-15
 

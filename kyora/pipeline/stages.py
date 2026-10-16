@@ -305,8 +305,11 @@ def intake_stage(ctx: StageContext) -> dict:
     views = app.store.attachment_views(ctx.project_id, ids) if ids else []
     ctx.data["attachment_views"] = views
     prompt = ctx.run.prompt or ("Continue from the imported game base." if import_id else "")
-    intake = _model_call("intake", "Kimi K3", kimi.intake, prompt, views, ctx.run_id, ctx.project_id, ctx.cancel,
-                         import_attachment_id=import_id)
+    try:
+        intake = _model_call("intake", "Kimi K3", kimi.intake, prompt, views, ctx.run_id, ctx.project_id, ctx.cancel,
+                             import_attachment_id=import_id)
+    except ValueError as exc:
+        raise StageBlocked(f"Kimi K3 returned no valid intake: {exc}", "intake") from None
     ctx.write_artifact("intake", intake)
     return intake
 
@@ -606,8 +609,11 @@ def review_stage(ctx: StageContext, n: int, gate: dict) -> dict:
                                              "missing_spec_tests")}
     compact_gate["failing_checks"] = [{k: c.get(k) for k in ("id", "group", "name", "required", "detail")}
                                       for c in gate.get("checks") or [] if c.get("status") == "fail"][:80]
-    review = _model_call("review", "Kimi K3", kimi.review, summary, compact_gate, shots, ctx.run_id, ctx.project_id,
-                         ctx.cancel)
+    try:
+        review = _model_call("review", "Kimi K3", kimi.review, summary, compact_gate, shots, ctx.run_id, ctx.project_id,
+                             ctx.cancel)
+    except ValueError as exc:
+        raise StageBlocked(f"Kimi K3 returned no valid review: {exc}", "review") from None
     atomic_write_json(ctx.run_dir / f"review-{n}.json", review)
     ctx.publish(ev.REVIEW_DECISION, {"iteration": n, "decision": review.get("decision"),
                                      "reasons": (review.get("reasons") or [])[:5]})
