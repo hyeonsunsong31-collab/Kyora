@@ -1,8 +1,10 @@
 """HTTP surface hardening: Host allow-list, Origin check, JSON content type, file-only engine command,
-the separate preview listener for untrusted game code, the HttpOnly token cookie and static traversal.
+the separate preview listener for untrusted game code, the HttpOnly token cookie, static traversal and
+exclusive port binding.
 
 Regression tests for the review findings security-dns-rebind-settings-rce,
-security-preview-same-origin-api-access and security-static-backslash-traversal-windows.
+security-preview-same-origin-api-access, security-static-backslash-traversal-windows (and
+portability-win-static-path-traversal) and portability-win-reuseaddr-double-bind.
 """
 from __future__ import annotations
 
@@ -16,8 +18,10 @@ import socket
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from kyora import server as server_mod
 from kyora.config import Config
@@ -175,8 +179,9 @@ class HostAllowListTests(AppServerCase):
 
 class OriginAndContentTypeTests(AppServerCase):
     def test_cross_origin_state_change_is_refused(self):
+        # the preview listener (game code) is another origin of the same host: refused like any other
         for origin in ("http://evil.example", "null", f"http://127.0.0.1:{self.pport}", f"http://localhost:{self.pport}",
-                       f"https://127.0.0.1:{self.port}", f"http://127.0.0.1:{self.port}/path"):
+                       f"https://127.0.0.1:{self.pport}", f"http://{REBIND}:{self.port}", f"http://127.0.0.1:{self.port}/path"):
             status, _, data = self.main_json("POST", "/api/projects", {"name": "x-origin"}, {"Origin": origin})
             self.assertEqual(status, 403, origin)
             self.assertEqual(json.loads(data)["error"], "cross-origin request refused")
@@ -522,6 +527,89 @@ class StaticTraversalTests(unittest.TestCase):
                 self.assertNotIn(b"api_key", data)
         finally:
             srv.shutdown()
+
+
+class ExclusiveBindTests(unittest.TestCase):
+    """portability-win-reuseaddr-double-bind: a second Kyora must not share a listening port."""
+
+    def _handler(self):
+        r = Router()
+        r.add("GET", "/ping", lambda req, p: Response.json({"ok": True}), auth="any")
+        return server_mod._bound_handler(SimpleNamespace(), r, None)
+
+    def _bind_options(self, windows: bool) -> list:
+        """setsockopt calls made by ``_HTTPServer.server_bind`` with Windows or POSIX semantics."""
+        fake_exclusive = 0x7F00  # stands in for SO_EXCLUSIVEADDRUSE, which only Windows defines
+        srv = server_mod._HTTPServer(("127.0.0.1", 0), self._handler(), bind_and_activate=False)
+        self.addCleanup(srv.server_close)
+        real, calls = srv.socket, []
+
+        class Spy:
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+            def setsockopt(self, level, opt, value):
+                calls.append((level, opt, value))
+                if opt != fake_exclusive:
+                    real.setsockopt(level, opt, value)
+
+        srv.socket = Spy()
+        with mock.patch.object(server_mod, "IS_WINDOWS", windows), \
+                mock.patch.object(socket, "SO_EXCLUSIVEADDRUSE", fake_exclusive, create=True):
+            srv.server_bind()
+        return [(opt, value) for _, opt, value in calls], fake_exclusive
+
+    def test_windows_claims_the_port_exclusively(self):
+        calls, exclusive = self._bind_options(windows=True)
+        self.assertIn((exclusive, 1), calls)
+        self.assertNotIn((socket.SO_REUSEADDR, 1), calls)  # on Windows it would allow a double bind
+
+    def test_posix_keeps_reuseaddr_for_quick_restarts(self):
+        calls, exclusive = self._bind_options(windows=False)
+        self.assertIn((socket.SO_REUSEADDR, 1), calls)
+        self.assertNotIn((exclusive, 1), calls)
+
+    def test_stdlib_server_class_is_not_mutated(self):
+        from http.server import ThreadingHTTPServer
+        before = ThreadingHTTPServer.allow_reuse_address
+        srv = KyoraServer(SimpleNamespace(), "127.0.0.1", 0, Router())
+        srv.shutdown()
+        self.assertEqual(ThreadingHTTPServer.allow_reuse_address, before)
+
+    def test_second_server_on_a_busy_port_fails(self):
+        first = KyoraServer(SimpleNamespace(), "127.0.0.1", 0, Router())
+        self.addCleanup(first.shutdown)
+        first.start()
+        with self.assertRaises(OSError):
+            KyoraServer(SimpleNamespace(), "127.0.0.1", first.port, Router())
+
+    def test_unstarted_server_shuts_down(self):
+        """shutdown() of a listener whose loop never ran must not wait forever."""
+        app = SimpleNamespace(preview_url="", config=SimpleNamespace(
+            server=SimpleNamespace(preview_port=None, allowed_hosts=[]), hub=SimpleNamespace(token="", expose_ui=False)))
+        srv = KyoraServer(app, "127.0.0.1", 0, Router(), preview_router=Router())
+        srv.shutdown()
+
+    def test_serve_on_a_busy_port_exits_clearly_before_starting_the_app(self):
+        with tempfile.TemporaryDirectory(prefix="kyora-busy-") as d:
+            config_dir = Path(d) / "config"
+            shutil.copytree(REPO / "config", config_dir)
+            blocker = socket.socket()
+            self.addCleanup(blocker.close)
+            blocker.bind(("127.0.0.1", 0))
+            blocker.listen(1)
+            busy = blocker.getsockname()[1]
+            from kyora import __main__ as cli
+            from kyora.app import App
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch.object(App, "start") as start, mock.patch("logging.basicConfig"), \
+                    redirect_stdout(out), redirect_stderr(err):
+                rc = cli.main(["serve", "--config", str(config_dir), "--home", str(Path(d) / "home"),
+                               "--host", "127.0.0.1", "--port", str(busy)])
+            self.assertEqual(rc, 2)
+            start.assert_not_called()  # app.start() would mark the other instance's runs interrupted
+            self.assertIn(f"cannot listen on 127.0.0.1:{busy}", err.getvalue())
+            self.assertIn("--port", err.getvalue())
 
 
 if __name__ == "__main__":

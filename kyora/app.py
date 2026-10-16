@@ -23,8 +23,8 @@ from .util.fs import kyora_home, platform_info
 log = logging.getLogger("kyora.app")
 
 # Main-listener routes the preview listener serves too: the harness posts results to its own origin.
-PREVIEW_SHARED_ROUTES = {("POST", "/api/runs/{id}/browser-results"),
-                         ("POST", "/api/projects/{id}/slides/{n}/browser-results")}
+# (The slide variant is registered by kyora.projects.routes.register_preview_routes.)
+PREVIEW_SHARED_ROUTES = {("POST", "/api/runs/{id}/browser-results")}
 
 
 class App:

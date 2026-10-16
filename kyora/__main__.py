@@ -29,7 +29,15 @@ def cmd_serve(args, hub_mode: bool = False) -> int:
     port = args.port if args.port is not None else app.config.server.port
     router = Router()
     app.register_routes(router)
-    server = KyoraServer(app, host, port, router, preview_port=getattr(args, "preview_port", None))
+    try:
+        server = KyoraServer(app, host, port, router, preview_port=getattr(args, "preview_port", None))
+    except OSError as exc:
+        # Before app.start(): a second Kyora must not touch the first one's runs.
+        print(f"Kyora cannot listen on {host}:{port} (or its preview port): {exc}\n"
+              "Another Kyora or another program is using that port. Stop it, or start with --port N "
+              "(and --preview-port M).", file=sys.stderr)
+        app.stop()
+        return 2
     app.start(server.url, server.preview_url)
     print(f"Kyora {__version__} - {app.platform['kind']} - config: {app.config.config_dir}")
     print(f"Open:  {server.url}")
@@ -143,7 +151,8 @@ def main(argv=None) -> int:
     common(p_hub)
     p_hub.add_argument("--host")
     p_hub.add_argument("--port", type=int)
-    p_hub.add_argument("--preview-port", type=int, help="port of the game preview listener (default: port + 1)")
+    p_hub.add_argument("--preview-port", type=int,
+                       help="port of the game preview listener (default: settings server.preview_port, else port + 1)")
     p_hub.add_argument("--open", action="store_true")
 
     p_check = sub.add_parser("selfcheck", help="check models, engines, tools and Tokkio reachability")

@@ -24,6 +24,7 @@ import hmac
 import json
 import logging
 import mimetypes
+import os
 import re
 import socket
 import threading
@@ -40,6 +41,7 @@ from typing import Any, Callable, Iterable, Iterator
 from .util.sse import encode_event, keepalive
 
 log = logging.getLogger("kyora.server")
+IS_WINDOWS = os.name == "nt"
 MAX_BODY = 256 * 1024 * 1024
 LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 LOOPBACK_NAMES = {"localhost", "127.0.0.1", "::1"}  # Host names that always mean this machine
@@ -488,6 +490,25 @@ def _bound_handler(app, router: Router, frame_options: str | None) -> type:
     return type("BoundKyoraHandler", (KyoraHandler,), {"app": app, "router": router, "frame_options": frame_options})
 
 
+class _HTTPServer(ThreadingHTTPServer):
+    """``ThreadingHTTPServer`` that owns its port exclusively.
+
+    ``SO_REUSEADDR`` lets a restarted Kyora rebind a port still in TIME_WAIT on POSIX, where a
+    second bind to a listening port still fails. On Windows the same option lets a second process
+    bind a port that another socket is listening on, so a second Kyora would start silently next
+    to the first; there the option stays off and ``SO_EXCLUSIVEADDRUSE`` makes the bind fail.
+    """
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def server_bind(self):
+        if IS_WINDOWS:
+            self.allow_reuse_address = False
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 class KyoraServer:
     """Owns the main listener, the preview listener and their serving threads.
 
@@ -504,13 +525,12 @@ class KyoraServer:
         self.host = host
         self.port = port
         self.router = router or Router()
-        ThreadingHTTPServer.allow_reuse_address = True
-        ThreadingHTTPServer.daemon_threads = True
-        self.httpd = ThreadingHTTPServer((host, port), _bound_handler(app, self.router, "SAMEORIGIN"))
+        self.httpd = _HTTPServer((host, port), _bound_handler(app, self.router, "SAMEORIGIN"))
         self.port = self.httpd.server_address[1]
         self.preview_httpd: ThreadingHTTPServer | None = None
         self.preview_port: int | None = None
         self._threads: list[threading.Thread] = []
+        self._serving: set[int] = set()
         if preview_router is None and callable(getattr(type(app), "register_preview_routes", None)):
             preview_router = Router()
             app.register_preview_routes(preview_router, self.router)
@@ -533,12 +553,12 @@ class KyoraServer:
         if auto:
             preview_port = port + 1 if 0 < port < 65535 else 0
         try:
-            return ThreadingHTTPServer((host, preview_port), handler)
+            return _HTTPServer((host, preview_port), handler)
         except OSError as exc:
             if not auto or preview_port == 0:
                 raise
             log.warning("preview port %s is not available (%s); using an ephemeral port", preview_port, exc)
-            return ThreadingHTTPServer((host, 0), handler)
+            return _HTTPServer((host, 0), handler)
 
     @staticmethod
     def _base(host: str, port: int) -> str:
@@ -555,6 +575,7 @@ class KyoraServer:
         return self._base(self.host, self.preview_port) if self.preview_httpd is not None else ""
 
     def _start_thread(self, httpd: ThreadingHTTPServer, name: str) -> None:
+        self._serving.add(id(httpd))
         t = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.5}, name=name, daemon=True)
         t.start()
         self._threads.append(t)
@@ -567,6 +588,7 @@ class KyoraServer:
     def serve_forever(self) -> None:
         if self.preview_httpd is not None:
             self._start_thread(self.preview_httpd, "kyora-preview")
+        self._serving.add(id(self.httpd))
         self.httpd.serve_forever(poll_interval=0.5)
 
     def shutdown(self) -> None:
@@ -574,10 +596,12 @@ class KyoraServer:
             if httpd is None:
                 continue
             try:
-                httpd.shutdown()
+                if id(httpd) in self._serving:  # shutdown() of a never-started loop would wait forever
+                    httpd.shutdown()
                 httpd.server_close()
             except Exception:
                 pass
+        self._serving.clear()
 
 
 # ----------------------------------------------------------------------------- SSE stream helper
