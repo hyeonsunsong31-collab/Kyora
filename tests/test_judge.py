@@ -202,6 +202,36 @@ class RuleTests(unittest.TestCase):
                     "git diff --output=patch.txt", "node build.js", "npm test", "cd /tmp && ls"):
             self.assertIsNone(self.v(bash(cmd, cwd=str(self.ws))), cmd)
 
+    def test_env_assignment_segments_are_not_read_only(self):
+        # Regression for security-judge-readonly-env-bypass: an assignment (export or bare, and leading env
+        # assignments on a command) can steer an otherwise read-only tool into running an arbitrary program,
+        # so the read-only fast path must never allow it; it defers to Kimi instead.
+        for cmd in (
+            "export GIT_CONFIG_COUNT=1; export GIT_CONFIG_KEY_0=core.fsmonitor; "
+            "export GIT_CONFIG_VALUE_0=touch${IFS}../PWNED; git status",
+            "export GIT_EXTERNAL_DIFF=touch${IFS}../x; git diff",
+            "GIT_PAGER=sh git log", "LD_PRELOAD=/tmp/e.so ls", "PATH=/tmp ls", "IFS=; ls",
+            "BASH_ENV=/tmp/e.sh cat index.html", "NODE_OPTIONS=--require=/tmp/e.js node --check src/a.js",
+            "PYTHONSTARTUP=/tmp/e.py python3 --version", "FOO=bar", "export FOO=bar", "x=1 y=2 ls",
+        ):
+            self.assertIsNone(self.v(bash(cmd, cwd=str(self.ws))), cmd)
+
+    def test_tool_subprocess_flags_are_not_read_only(self):
+        # Regression for security-judge-readonly-env-bypass: read-only tools whose flags can run another
+        # program or write a file must leave the read-only class (defer to Kimi).
+        for cmd in (
+            "rg --pre=sh pat src", "rg --pre sh pat src", "rg --hostname-bin /tmp/h pat",
+            "sort --compress-program=sh big.txt", "sort -S 1 --compress-program=sh big.txt",
+            "sort -o out.txt in.txt", "node --check src/a.js --require ./evil.cjs",
+            "node -c --require=./evil.cjs src/a.js", "node -c -e \"require('cp').execSync('id')\"",
+            "python3 -m py_compile a.py -c 'import os'", "git -c core.pager=sh log", "git diff --ext-diff",
+            "git log --textconv", "git --config-env=core.pager=X log", "find . -fprint0 /tmp/x",
+            "find . -fprintf /tmp/x '%p'", "find . -okdir rm {} ;", "date -s 2020-01-01", "date --set=now",
+            "less +!id src/a.js", "more src/a.js", "man ls", "xargs rm", "awk 'BEGIN{system(\"id\")}'",
+            "sed 'e id' src/a.js", "tar --to-command=sh -xf a.tar", "tar --use-compress-program=sh -cf a.tar .",
+        ):
+            self.assertIsNone(self.v(bash(cmd, cwd=str(self.ws))), cmd)
+
     def test_empty_bash_denied(self):
         self.assertEqual(self.v(bash("   ")), ("deny", "empty_command"))
         self.assertEqual(self.v({"tool_name": "Bash", "tool_input": {}}), ("deny", "empty_command"))
@@ -436,6 +466,39 @@ class ServiceTests(unittest.TestCase):
         v = svc.decide("r_1", self.call("notes/a.txt"))  # no bus: still a verdict, still journaled
         self.assertEqual(v["source"], "unavailable")
         self.assertEqual(len(self.journal()), 1)
+
+    def test_record_unavailable_counts_unjudged_calls(self):
+        # Regression for honesty-run-judge-stats-miss-unjudged-calls: a tool call that never reached the
+        # judge (hook unreachable) must still raise the run's unavailable counter.
+        svc = self.service(ScriptedKimi())
+        self.register(svc)
+        svc.decide("r_1", self.call("src/game.js", "t1"))  # rule allow
+        svc.record_unavailable("r_1")  # hook could not reach the judge; the call ran unjudged
+        svc.record_unavailable("r_1")
+        st = svc.stats("r_1")
+        self.assertEqual((st["allowed"], st["unavailable"]), (3, 2))
+        svc.record_unavailable("r_1", allowed=False)
+        self.assertEqual(svc.stats("r_1")["denied"], 1)
+        svc.record_unavailable("")  # no run id: no-op
+
+    def test_prime_stats_restores_persisted_counters_on_resume(self):
+        # Regression for honesty-run-judge-stats-miss-unjudged-calls: a resumed run (fresh process, empty
+        # in-memory counters) restores the counts saved with run.json, then keeps counting from there.
+        svc = self.service(ScriptedKimi())
+        svc.prime_stats("r_1", {"allowed": 5, "denied": 1, "unavailable": 2, "rule": 3, "kimi": 2})
+        self.assertEqual(svc.stats("r_1"), {"allowed": 5, "denied": 1, "unavailable": 2, "cached": 0,
+                                            "rule": 3, "kimi": 2})
+        self.register(svc)  # register_context must keep the primed counters (setdefault)
+        svc.decide("r_1", self.call("src/game.js", "t1"))  # rule allow -> builds on the restored total
+        self.assertEqual((svc.stats("r_1")["allowed"], svc.stats("r_1")["rule"]), (6, 4))
+        # once counting has begun this process, prime_stats is a no-op (no double-count)
+        svc.prime_stats("r_1", {"allowed": 100})
+        self.assertEqual(svc.stats("r_1")["allowed"], 6)
+        # all-zero / non-dict counters never create or clobber an entry
+        svc.prime_stats("r_2", {"allowed": 0})
+        self.assertEqual(svc.stats("r_2"), svc._empty_stats())
+        svc.prime_stats("r_3", "garbage")
+        self.assertEqual(svc.stats("r_3"), svc._empty_stats())
 
     def test_concurrent_decisions(self):
         kimi = ScriptedKimi()

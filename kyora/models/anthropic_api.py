@@ -440,6 +440,10 @@ class AnthropicAPIEngine(CodeEngine):
             log.exception("judge.decide failed for %s", tool_name)
             self._emit(sink, JUDGE_UNAVAILABLE, {"reason": f"judge error: {type(exc).__name__}: {exc}; tool call ran unjudged",
                                                  "tool_name": tool_name, "tool_use_id": tool_use_id})
+            try:
+                self.judge.record_unavailable(job.run_id)  # the call ran unjudged; count it on the run
+            except Exception as exc2:  # noqa: BLE001
+                log.warning("judge.record_unavailable failed: %s", exc2)
             return None
 
     def _handle_tool(self, job: EngineJob, sink: EngineSink, block: Any, workspace: Path, run_dir: Path,

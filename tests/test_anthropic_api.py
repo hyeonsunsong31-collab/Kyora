@@ -123,11 +123,13 @@ def final(stop: str, content: list, model: str = "claude-fable-5-1", usage=(10, 
 class FakeJudge:
     """Denies writes (Write/Edit), allows everything else; records the calls."""
 
-    def __init__(self, deny=("Write",)):
+    def __init__(self, deny=("Write",), raise_on=()):
         self.deny = set(deny)
+        self.raise_on = set(raise_on)
         self.contexts: list[tuple[str, dict]] = []
         self.calls: list[tuple[str, dict]] = []
         self.forgotten: list[str] = []
+        self.unavailable: list[str] = []
         self._lock = threading.Lock()
 
     def register_context(self, run_id, ctx):
@@ -137,9 +139,14 @@ class FakeJudge:
     def decide(self, run_id, call):
         with self._lock:
             self.calls.append((run_id, dict(call)))
+        if call["tool_name"] in self.raise_on:
+            raise RuntimeError("judge boom")
         if call["tool_name"] in self.deny:
             return {"decision": "deny", "reason": "not in the plan", "source": "rule"}
         return {"decision": "allow", "reason": "ok", "source": "rule"}
+
+    def record_unavailable(self, run_id, *, allowed=True):
+        self.unavailable.append(run_id)
 
     def forget(self, run_id):
         self.forgotten.append(run_id)
@@ -350,6 +357,19 @@ class LoopTests(_Base):
         self.assertTrue(res.ok, res.error)
         self.assertEqual((self.ws / "src" / "game.js").read_text(encoding="utf-8"), "let x = 1;\n")
         self.assertEqual(res.permission_denials, [])
+
+    def test_judge_failure_counts_unavailable_and_runs_unjudged(self):
+        # Regression for honesty-run-judge-stats-miss-unjudged-calls: when the judge raises, the API engine
+        # fails open (the tool runs) AND counts the call on the run's unavailable counter.
+        turn1 = [block("tool_use", id="t1", name="bash", input={"command": "ls"})]
+        self.install([final("tool_use", turn1), final("end_turn", [block("text", text="ok")])])
+        judge = FakeJudge(deny=(), raise_on=("Bash",))
+        sink = ListSink()
+        res = self.engine(judge).run(self.job(), sink, threading.Event())
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(judge.unavailable, ["r_test"])  # the unjudged call is counted
+        unav = sink.of("judge.unavailable")
+        self.assertTrue(any(d.get("tool_name") == "Bash" for d in unav))
 
     def test_escape_path_rejected_without_judging(self):
         turn1 = [block("tool_use", id="t1", name="str_replace_based_edit_tool",

@@ -152,8 +152,11 @@ back to Claude; exit 1 = non-blocking error (the tool proceeds).
 
 Fail-open is visible, never silent: after each `tool_result` of a judged tool the
 engine asks `judge.has_verdict(run_id, tool_use_id)`; without a journaled verdict
-it emits `judge.unavailable{reason,tool_name,tool_use_id}`. It also emits
-`judge.unavailable` once at start when there is no judge or no server URL.
+it emits `judge.unavailable{reason,tool_name,tool_use_id}` **and** counts the call
+on the run via `judge.record_unavailable(run_id)`, so `run.judge.unavailable`
+matches the number of unjudged calls (the Messages-API engine does the same when
+`judge.decide` raises). It also emits `judge.unavailable` once at start when there
+is no judge or no server URL.
 
 What Claude sees for a block (CLI 2.1.300, real): an error `tool_result`
 `PreToolUse:Write hook error: ["<python>" "<KYORA_HOME>/bin/kyora_hook.py"]: Kyora judge (rule) denied Write: <reason>`,

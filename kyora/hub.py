@@ -890,7 +890,10 @@ class HubWorker:
                                   error=msg, duration_ms=int((time.monotonic() - started) * 1000))
             state = "failed"
         after = self._judge_stats(judge, job.run_id)
-        judge_delta = {k: after.get(k, 0) - before.get(k, 0) for k in after} if after else {}
+        # Per-job judge delta: the counts this job added on the Hub's local judge (including unjudged calls,
+        # counted via record_unavailable). The client folds it into run.judge, since the client's own judge
+        # never saw these verdicts. Non-negative ints only, so the client merge stays clean.
+        judge_delta = {k: max(0, int(after.get(k, 0)) - int(before.get(k, 0))) for k in after} if after else {}
         doc = self._result_doc(result, job, backend, judge_delta)
         error = result.error if (state != "done" or not result.ok) else None
         if state == "cancelled" and not error:

@@ -192,6 +192,11 @@ def run_engine(ctx: StageContext, kind: str, prompt: str) -> EngineResult:
     if kind == "fix" and cc.resume_for_fixes and ctx.last_engine:
         if ctx.last_engine.get("session_id") and ctx.last_engine.get("backend_name") == eng.name:
             resume = ctx.last_engine["session_id"]
+    if ctx.app.judge is not None:
+        try:  # resume: restore the counts saved with the run so the restart does not lose them
+            ctx.app.judge.prime_stats(ctx.run_id, ctx.run.judge)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("judge prime_stats failed: %s", exc)
     system_prompt = render_template("claude_system.md", threshold_pct=threshold_pct(ctx))
     job = EngineJob(
         run_id=ctx.run_id, workspace=ctx.workspace, prompt=prompt, system_prompt=system_prompt,
@@ -213,7 +218,15 @@ def run_engine(ctx: StageContext, kind: str, prompt: str) -> EngineResult:
         k: info.get(k) for k in ("ok", "backend", "active_model", "fallback_used", "num_turns", "duration_ms", "error")}})
     if ctx.app.judge is not None:
         try:
-            ctx.run.judge = {k: v for k, v in ctx.app.judge.stats(ctx.run_id).items()}
+            stats = {k: v for k, v in ctx.app.judge.stats(ctx.run_id).items()}
+            # Hub engines judge on the remote phone, so the local counters stay zero; fold in the judge
+            # delta the Hub reported in result.json (hub.py) so run.judge reflects the calls it judged.
+            hub_judge = (result.raw or {}).get("hub", {}).get("judge") if isinstance(result.raw, dict) else None
+            if isinstance(hub_judge, dict):
+                for k, v in hub_judge.items():
+                    if isinstance(v, (int, float)) and not isinstance(v, bool):
+                        stats[k] = stats.get(k, 0) + int(v)
+            ctx.run.judge = stats
         except Exception as exc:  # noqa: BLE001
             log.warning("judge stats failed: %s", exc)
     ctx.save_run()

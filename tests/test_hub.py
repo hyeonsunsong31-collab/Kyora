@@ -48,12 +48,21 @@ class FakeCodeEngine(CodeEngine):
         self.block = block
         self.jobs: list[EngineJob] = []
         self.started = threading.Event()
+        self.judge = None  # when set, the engine judges a couple of calls on the hub's judge, like Claude Code
 
     def availability(self) -> Availability:
         return Availability(True, "fake", "", {"version": "fake 1.0", "logged_in": True})
 
     def run(self, job: EngineJob, sink, cancel: threading.Event) -> EngineResult:
         self.jobs.append(job)
+        if self.judge is not None:
+            self.judge.register_context(job.run_id, dict(job.judge_context or {}))
+            self.judge.decide(job.run_id, {"tool_name": "Write", "tool_use_id": "jt1",
+                                           "tool_input": {"file_path": str(Path(job.workspace) / "index.html")}})
+            self.judge.decide(job.run_id, {"tool_name": "Bash", "tool_use_id": "jt2",
+                                           "tool_input": {"command": "git push"}})
+            self.judge.record_unavailable(job.run_id)  # a call the hook could not reach
+            self.judge.forget(job.run_id)
         sink.on_event(EngineEvent("engine.session", {"session_id": "sess-1", "model": "fake-model", "tools": ["Write"],
                                                      "permission_mode": "acceptEdits", "cwd": str(job.workspace),
                                                      "backend": "fake"}))
@@ -232,6 +241,22 @@ class HubRoundTripTests(unittest.TestCase):
         # the hub's own bus carries the events tagged with the job id
         hub_events = self.hub.app.bus.replay(0, run_id="r_round1", types=["engine.*"])
         self.assertTrue(hub_events and all(e.data.get("hub_job_id") for e in hub_events))
+
+    def test_judge_delta_reported_to_client(self):
+        # Regression for honesty-run-judge-stats-miss-unjudged-calls: the Hub's per-job judge delta (what its
+        # local judge counted, including an unjudged call) is carried back to the client on result.raw.
+        self.fake.judge = self.hub.app.judge
+        try:
+            ws = self._workspace()
+            result = self._client_engine().run(self._engine_job(ws, "r_judge1"), RecordingSink(), threading.Event())
+        finally:
+            self.fake.judge = None
+        self.assertTrue(result.ok, result.error)
+        delta = result.raw["hub"]["judge"]
+        self.assertEqual(delta.get("allowed"), 2)      # the Write (rule allow) + the unjudged call (fail-open)
+        self.assertEqual(delta.get("denied"), 1)       # git push (rule deny)
+        self.assertEqual(delta.get("rule"), 2)
+        self.assertEqual(delta.get("unavailable"), 1)
 
     def test_second_job_of_same_run_only_relays_its_own_events(self):
         ws = self._workspace()
