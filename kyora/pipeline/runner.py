@@ -195,6 +195,8 @@ class RunManager:
                 with self._lock:
                     if rid not in self._pending:
                         continue
+                    if self._stopping.is_set():
+                        return  # Kyora is stopping: the run stays queued; the next start marks it blocked
                     self._pending.remove(rid)
                     cancel = threading.Event()
                     self._running[rid] = cancel

@@ -216,8 +216,9 @@ no engine -> BLOCKED (resumable); no browser in browser_wait_s -> BLOCKED; excep
 Kyora stopping (App.stop -> RunManager.stop) -> BLOCKED "interrupted: Kyora stopped ..." (no rollback, resumable)
 ```
 Stopping Kyora is not a cancel: `RunManager.stop()` sets its stopping flag before the runs' cancel events, and a
-runner that sees both ends the run BLOCKED with its built work and iteration commits kept. Runs that a hard kill
-leaves in an active state are marked BLOCKED with the same reason on the next start.
+runner that sees both ends the run BLOCKED with its built work and iteration commits kept. A queued run is not
+started once the flag is set. Runs that a hard kill (or the stop) leaves in an active or `created` state are
+marked BLOCKED with the same reason on the next start.
 Lineage branches: a run works on `lineage/main` (first generation), on the head branch of its parent slide
 (modify), or on its own `lineage/<rid>`. A branch held by another unfinished run (prepared, not ended, no slide
 committed yet) is never shared: the new run (or an import) gets its own `lineage/<rid>` instead. `run.options.tip`

@@ -375,9 +375,9 @@ class ShutdownTests(_RunnerHome):
                     design_stage=lambda ctx: {}, build_stage=build, test_stage=test,
                     select_engine=lambda ctx: SimpleNamespace(name="claude_code"))
         p = self.store.create("Stop")
-        run = self.store.create_run(p.id, "generate", "make a game")
         rm = RunManager(self.app, workers=1)
         rm.start()
+        run = self.store.create_run(p.id, "generate", "make a game")
         rm.submit(run.id)
         self.assertTrue(waiting.wait(10))
         sm = self.store.slide_manager(p.id)
@@ -397,6 +397,27 @@ class ShutdownTests(_RunnerHome):
         rm2._recover_interrupted()
         self.assertEqual(self.store.get_run(run.id).state, "blocked")
         self.assertTrue(rm2.resume(run.id))
+
+    def test_a_run_waiting_for_the_project_lock_does_not_start_after_stop(self):
+        self._patch()  # any stage call fails the run
+        p = self.store.create("Queued at stop")
+        rm = RunManager(self.app, workers=1)
+        plock = rm._project_lock(p.id)
+        plock.acquire()  # another run of the project is executing
+        rm.start()
+        run = self.store.create_run(p.id, "generate", "make a game")
+        rm.submit(run.id)
+        for _ in range(200):  # until the worker took the run and waits for the project lock
+            if rm._queue.empty():
+                break
+            threading.Event().wait(0.01)
+        rm._stopping.set()
+        plock.release()
+        rm.stop()
+        self.assertEqual(self.store.get_run(run.id).state, "created")  # marked blocked on the next start
+        rm2 = RunManager(self.app, workers=1)
+        rm2._recover_interrupted()
+        self.assertEqual(self.store.get_run(run.id).state, "blocked")
 
 
 class BuildNarrationTests(_RunnerHome):

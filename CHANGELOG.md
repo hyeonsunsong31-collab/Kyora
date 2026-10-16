@@ -24,6 +24,8 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - **Stopping Kyora keeps runs resumable**: Ctrl+C (`App.stop()` / `RunManager.stop()`) used to cancel
   active runs, rolling back their built work. Runs now end `blocked` with the reason
   "interrupted: Kyora stopped ...", their work and iteration commits kept, and Resume continues them.
+  A queued run that was waiting for its project when Kyora stopped is no longer started during
+  shutdown; the next start marks it `blocked` (resumable).
 - **Honest build narration**: the presenter announces the build only after a code engine was
   selected, naming the real backend (Claude Code, the Anthropic API engine or Claude Code on the
   Kyora Hub) and the configured effort; it says "maximum effort" only when the effort is `max`, and
