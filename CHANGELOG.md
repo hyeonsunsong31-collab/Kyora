@@ -21,6 +21,9 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - **Cancelling a queued or blocked run no longer resets a running run's work**: a never-started
   run needs no rollback, and while another run of the project is executing the cancel only moves
   the cancelled run's own branch ref; it never resets, cleans or checks out the shared work tree.
+- **Stopping Kyora keeps runs resumable**: Ctrl+C (`App.stop()` / `RunManager.stop()`) used to cancel
+  active runs, rolling back their built work. Runs now end `blocked` with the reason
+  "interrupted: Kyora stopped ...", their work and iteration commits kept, and Resume continues them.
 
 ## 0.1.0 - 2026-10-15
 

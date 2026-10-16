@@ -356,6 +356,49 @@ class CancelTests(_RunnerHome):
         self.assertIsNone(sm.backend.branch_sha("lineage/main"))
 
 
+class ShutdownTests(_RunnerHome):
+    """Stopping Kyora interrupts runs (blocked, resumable, work kept); it never cancels them."""
+
+    def test_stop_blocks_a_running_run_without_rolling_it_back(self):
+        waiting = threading.Event()
+
+        def build(ctx):
+            (ctx.workspace / "index.html").write_text("<script>40 minutes of engine output</script>", encoding="utf-8")
+
+        def test(ctx, n):  # like collector.wait: blocks until results arrive or the run is cancelled
+            waiting.set()
+            while not ctx.cancel.wait(0.05):
+                pass
+            raise runner_module.RunCancelled()
+
+        self._patch(intake_stage=lambda ctx: {}, plan_stage=lambda ctx: {"title": "t", "acceptance_tests": []},
+                    design_stage=lambda ctx: {}, build_stage=build, test_stage=test,
+                    select_engine=lambda ctx: SimpleNamespace(name="claude_code"))
+        p = self.store.create("Stop")
+        run = self.store.create_run(p.id, "generate", "make a game")
+        rm = RunManager(self.app, workers=1)
+        rm.start()
+        rm.submit(run.id)
+        self.assertTrue(waiting.wait(10))
+        sm = self.store.slide_manager(p.id)
+        main = sm.backend.branch_sha("lineage/main")
+        self.assertIsNotNone(main)
+        rm.stop()
+        after = self.store.get_run(run.id)
+        self.assertEqual(after.state, "blocked")
+        self.assertTrue(after.blocked_reason.startswith("interrupted: Kyora stopped"))
+        self.assertEqual(sm.backend.branch_sha("lineage/main"), main)
+        self.assertTrue((sm.work_tree() / "index.html").is_file())
+        types = [e.type for e in self.bus.replay(0, run_id=run.id)]
+        self.assertIn("run.blocked", types)
+        self.assertNotIn("run.cancelled", types)
+        # after a restart the run is still resumable
+        rm2 = RunManager(self.app, workers=1)
+        rm2._recover_interrupted()
+        self.assertEqual(self.store.get_run(run.id).state, "blocked")
+        self.assertTrue(rm2.resume(run.id))
+
+
 class RunnerResumeTests(_RunnerHome):
     def test_resume_on_a_moved_branch_blocks_instead_of_testing_another_game(self):
         p, sm, run, sha = self._blocked_after_build()

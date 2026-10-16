@@ -10,6 +10,7 @@ once. ``Runner.execute`` drives one run::
     gate failed at the limit / 'stop'    -> finalize -> failed_gate (slide still committed)
     no engine / model unreachable / no browser -> blocked (resume continues at that stage)
     exception -> failed ; cancel -> cancelled (work tree rolled back)
+    Kyora stopping (RunManager.stop) -> blocked 'interrupted: Kyora stopped ...' (work kept, resumable)
 
 Each stage persists ``run.json`` and publishes ``run.state``, ``stage.started``
 and ``stage.finished``; per-stage model metrics are collected from the
@@ -36,6 +37,7 @@ from .stages import (
 log = logging.getLogger("kyora.runner")
 
 ACTIVE_STATES = ("intake", "plan", "awaiting_approval", "design", "build", "test", "gate", "review", "fix", "finalize")
+INTERRUPTED_REASON = "interrupted: Kyora stopped while this run was active; press Resume to continue"
 
 
 class RunManager:
@@ -64,7 +66,8 @@ class RunManager:
             self._threads.append(t)
 
     def stop(self, timeout: float = 5.0) -> None:
-        self._stopping.set()
+        """Stop the workers; running runs end 'blocked' (resumable) with their work kept, not cancelled."""
+        self._stopping.set()  # set first: a Runner that sees its cancel event checks it to tell stop from cancel
         with self._lock:
             for e in self._running.values():
                 e.set()
@@ -86,7 +89,7 @@ class RunManager:
             return
         for run in runs:
             if run.state in ACTIVE_STATES or run.state == "created":
-                reason = "interrupted: Kyora stopped while this run was active; press Resume to continue"
+                reason = INTERRUPTED_REASON
                 try:
                     store.set_state(run, "blocked", blocked_reason=reason)
                     self.app.bus.publish(ev.RUN_BLOCKED, {"reason": reason, "stage": run.state},
@@ -195,7 +198,7 @@ class RunManager:
                     self._running[rid] = cancel
                     approval = self._approvals.setdefault(rid, threading.Event())
                 try:
-                    Runner(self.app, self.app.store.get_run(rid), cancel, approval).execute()
+                    Runner(self.app, self.app.store.get_run(rid), cancel, approval, shutdown=self._stopping).execute()
                 except Exception as exc:  # noqa: BLE001 - execute() handles its own errors; this is a last resort
                     log.error("runner crashed for %s: %s\n%s", rid, exc, traceback.format_exc())
                 finally:
@@ -206,11 +209,13 @@ class RunManager:
 class Runner:
     """Executes one run through the state machine (see module docstring)."""
 
-    def __init__(self, app, run, cancel: threading.Event, approval: threading.Event | None = None):
+    def __init__(self, app, run, cancel: threading.Event, approval: threading.Event | None = None,
+                 shutdown: threading.Event | None = None):
         self.app = app
         self.run = run
         self.cancel = cancel
         self.approval = approval or threading.Event()
+        self.shutdown = shutdown or threading.Event()  # set with ``cancel`` when Kyora stops: interrupt, not cancel
         self.store = app.store
         self.bus = app.bus
         self.cfg = app.config
@@ -276,7 +281,8 @@ class Runner:
             return result
         finally:
             ms = round((time.monotonic() - started) * 1000, 1)
-            status = "done" if ok else ("cancelled" if self.cancel.is_set() else "blocked_or_failed")
+            cancelled = self.cancel.is_set() and not self.shutdown.is_set()
+            status = "done" if ok else ("cancelled" if cancelled else "blocked_or_failed")
             entry = self.run.stages.get(name) or {}
             entry.update({"status": status, "finished": now_iso(), "ms": ms})
             metrics = self._metrics_since(since)
@@ -326,7 +332,10 @@ class Runner:
             self._stage("design", lambda: design_stage(ctx))
             self._loop(ctx)
         except RunCancelled:
-            self._on_cancel()
+            if self.shutdown.is_set():
+                self._on_shutdown()
+            else:
+                self._on_cancel()
         except StageBlocked as b:
             stage = b.stage or self.run.state
             self._state("blocked", blocked_reason=b.reason, blocked_stage=stage)
@@ -420,5 +429,15 @@ class Runner:
             log.error("cannot record cancel of %s: %s", run.id, exc)
         self._publish(ev.RUN_CANCELLED, {})
 
+    def _on_shutdown(self) -> None:
+        """Kyora is stopping: keep the run's work (no rollback) and leave it resumable."""
+        stage = self.run.state
+        try:
+            self._state("blocked", blocked_reason=INTERRUPTED_REASON, blocked_stage=stage)
+        except Exception as exc:  # noqa: BLE001
+            log.error("cannot record interruption of %s: %s", self.run.id, exc)
+        self._publish(ev.RUN_BLOCKED, {"reason": INTERRUPTED_REASON, "stage": stage})
+        log.info("run %s interrupted at %s by shutdown", self.run.id, stage)
 
-__all__ = ["RunManager", "Runner", "ACTIVE_STATES"]
+
+__all__ = ["RunManager", "Runner", "ACTIVE_STATES", "INTERRUPTED_REASON"]

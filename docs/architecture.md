@@ -213,7 +213,11 @@ created->INTAKE->PLAN->[AWAITING_APPROVAL]->DESIGN->BUILD->TEST->GATE -ok-> FINA
 GATE fail & iteration<max_fix_iterations -> REVIEW(Kimi) -fix-> FIX(engine) -> TEST -> GATE
 GATE fail & iteration==max -> FINALIZE(below_threshold) -> FAILED_GATE (slide still committed)
 no engine -> BLOCKED (resumable); no browser in browser_wait_s -> BLOCKED; exception -> FAILED; cancel -> CANCELLED (tree reset)
+Kyora stopping (App.stop -> RunManager.stop) -> BLOCKED "interrupted: Kyora stopped ..." (no rollback, resumable)
 ```
+Stopping Kyora is not a cancel: `RunManager.stop()` sets its stopping flag before the runs' cancel events, and a
+runner that sees both ends the run BLOCKED with its built work and iteration commits kept. Runs that a hard kill
+leaves in an active state are marked BLOCKED with the same reason on the next start.
 Lineage branches: a run works on `lineage/main` (first generation), on the head branch of its parent slide
 (modify), or on its own `lineage/<rid>`. A branch held by another unfinished run (prepared, not ended, no slide
 committed yet) is never shared: the new run (or an import) gets its own `lineage/<rid>` instead. `run.options.tip`
