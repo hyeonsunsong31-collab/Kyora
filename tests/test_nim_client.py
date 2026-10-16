@@ -91,6 +91,18 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual("".join(d.text for d in deltas if d.kind == DELTA_CONTENT), content)
         self.assertEqual(res.message, {"role": "assistant", "content": content, "reasoning_content": reasoning})
 
+    def test_reasoning_sent_in_both_fields_is_taken_once(self):
+        # vLLM >= 0.11 repeats delta.reasoning as the deprecated delta.reasoning_content in every chunk.
+        reasoning = "Think A. Think B. Think C."
+        with MockNIM(lambda req: {"content": "Answer", "reasoning": reasoning, "reasoning_chunks": 3,
+                                  "reasoning_both": True}) as mock:
+            deltas = []
+            res = _client(mock).chat(MODEL, [{"role": "user", "content": "hi"}], on_delta=deltas.append)
+        self.assertEqual(res.reasoning, reasoning)
+        self.assertEqual("".join(d.text for d in deltas if d.kind == DELTA_REASONING), reasoning)
+        # Kimi echoes this message back as-is on the next turn, so it must hold the trace exactly once.
+        self.assertEqual(res.message, {"role": "assistant", "content": "Answer", "reasoning_content": reasoning})
+
     def test_tool_call_accumulation_across_chunks(self):
         args = {"title": "Sky Runner", "files": ["index.html", "src/game.js"], "notes": "x" * 120}
 

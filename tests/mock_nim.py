@@ -7,6 +7,7 @@ that emulates ``POST /v1/chat/completions`` (stream and non-stream) and
 ```
 {"content": str,                       # assistant text
  "reasoning": str,                     # optional; streamed via delta.reasoning_content AND delta.reasoning
+ "reasoning_both": bool,               # optional: every reasoning delta carries both keys (vLLM >= 0.11 style)
  "tool_calls": [{"id", "name", "arguments" (str or dict)}],   # optional
  "usage": {...} | None,                # optional; None = send no usage block at all
  "finish_reason": str,                 # optional (default stop / tool_calls)
@@ -103,7 +104,10 @@ def iter_stream_chunks(req: dict, spec: dict) -> Iterable[dict | str]:
     reasoning = spec.get("reasoning") or ""
     # Alternate the two field names the real gateways use so both parser paths are exercised.
     for i, part in enumerate(_split(reasoning, spec.get("reasoning_chunks") or _default_chunks(reasoning))):
-        yield chunk({"reasoning_content": part} if i % 2 == 0 else {"reasoning": part})
+        if spec.get("reasoning_both"):
+            yield chunk({"reasoning": part, "reasoning_content": part})
+        else:
+            yield chunk({"reasoning_content": part} if i % 2 == 0 else {"reasoning": part})
     content = spec.get("content") or ""
     for part in _split(content, spec.get("chunks") or _default_chunks(content)):
         yield chunk({"content": part})

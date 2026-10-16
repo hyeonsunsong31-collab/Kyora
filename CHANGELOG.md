@@ -2,6 +2,14 @@
 
 All notable changes to Kyora. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- NVIDIA streaming parser: a delta that carries both `reasoning_content` and `reasoning` (vLLM 0.11
+  and later sends one as a copy of the other) is now taken once, so the reasoning trace, the UI stream
+  and the assistant message Kimi K3 echoes back on the next turn are no longer doubled.
+
 ## 0.1.0 - 2026-10-15
 
 First release.
