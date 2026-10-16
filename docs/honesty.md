@@ -30,6 +30,12 @@ source.
   itself and never replays a canned game.
 * **Model failures are shown.** A 401, 429 or 5xx from NVIDIA is shown with the provider's message;
   the run fails or blocks instead of continuing on invented output.
+* **A failed engine call is not finished work.** When Claude Code (or the Hub, or the API engine)
+  ends a BUILD or FIX with an error and did not change a single file of the work tree, the run is
+  `blocked` with the engine's error (resumable); TEST and GATE never measure the unchanged parent
+  game as if the requested change had been made. When the engine changed files before failing, the
+  files are measured and the failure stays recorded in `run.json` (`extra.engine_failures`) and in
+  the project deck.
 * **The judge is real or visibly absent.** Each Write/Edit/Bash of Claude Code goes through a
   PreToolUse hook to `POST /api/judge`. Deterministic local rules answer the obvious cases (reads are
   allowed; path escapes, `sudo`, `git push`, writes into `.git/` are denied), repeated calls hit a

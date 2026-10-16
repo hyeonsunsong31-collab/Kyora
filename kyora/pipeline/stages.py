@@ -12,6 +12,7 @@ The orchestration (state machine, persistence, events) lives in
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -182,8 +183,32 @@ def select_engine(ctx: StageContext) -> CodeEngine:
     return eng
 
 
+def tree_fingerprint(root: Path) -> str:
+    """Content hash of the work tree (``.git`` excluded): tells whether the engine changed any file."""
+    h = hashlib.sha256()
+    root = Path(root)
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        rel_dir = Path(dirpath).relative_to(root)
+        dirnames[:] = sorted(d for d in dirnames if not (rel_dir == Path(".") and d == ".git"))
+        for name in sorted(filenames):
+            p = Path(dirpath) / name
+            h.update((rel_dir / name).as_posix().encode("utf-8", "surrogateescape") + b"\0")
+            try:
+                h.update(os.readlink(p).encode("utf-8", "surrogateescape") if p.is_symlink() else p.read_bytes())
+            except OSError as exc:
+                h.update(f"unreadable: {exc}".encode("utf-8", "replace"))
+            h.update(b"\0")
+    return h.hexdigest()
+
+
 def run_engine(ctx: StageContext, kind: str, prompt: str) -> EngineResult:
-    """Run the code engine once (build or fix) and record the result on the run."""
+    """Run the code engine once (build or fix) and record the result on the run.
+
+    An engine result that is not ok blocks the run (resumable) unless the engine
+    provably changed the work tree relative to the iteration base (the tree right
+    before the call): a refused or rate-limited engine must never let TEST/GATE
+    measure the unchanged parent game as if the requested change had been made.
+    """
     eng = ctx.engine or select_engine(ctx)
     ctx.engine = eng
     cc = ctx.cfg.claude_code
@@ -204,13 +229,21 @@ def run_engine(ctx: StageContext, kind: str, prompt: str) -> EngineResult:
                        "test_spec": [t["id"] for t in plan_tests(plan)], "plan_title": plan.get("title")},
     )
     ctx.publish(ev.STAGE_PROGRESS, {"stage": kind, "pct": 1, "message": f"{eng.name}: starting ({cc.model}, effort {cc.effort})"})
+    base = tree_fingerprint(ctx.workspace)
     result = eng.run(job, BusSink(ctx.bus, ctx.run_id, ctx.project_id), ctx.cancel)
+    changed = tree_fingerprint(ctx.workspace) != base
     info = result.to_dict()
     info["backend_name"] = eng.name
+    info["tree_changed"] = changed
     ctx.last_engine = info
     ctx.run.engine = info
     ctx.run.extra.setdefault("engine_runs", []).append({"kind": kind, "iteration": ctx.run.iteration, **{
-        k: info.get(k) for k in ("ok", "backend", "active_model", "fallback_used", "num_turns", "duration_ms", "error")}})
+        k: info.get(k) for k in ("ok", "backend", "active_model", "fallback_used", "num_turns", "duration_ms", "error",
+                                 "tree_changed")}})
+    if not result.ok and not (ctx.cancel.is_set() or result.error == "cancelled"):
+        ctx.run.extra.setdefault("engine_failures", []).append(
+            {"kind": kind, "iteration": ctx.run.iteration, "backend": eng.name,
+             "error": (result.error or "unknown error")[:500], "tree_changed": changed})
     if ctx.app.judge is not None:
         try:
             ctx.run.judge = {k: v for k, v in ctx.app.judge.stats(ctx.run_id).items()}
@@ -220,11 +253,14 @@ def run_engine(ctx: StageContext, kind: str, prompt: str) -> EngineResult:
     if ctx.cancel.is_set() or result.error == "cancelled":
         raise RunCancelled()
     if not result.ok:
-        if (ctx.workspace / "index.html").is_file():
-            ctx.publish(ev.STAGE_PROGRESS, {"stage": kind, "pct": 100, "message":
-                        f"engine ended with an error ({(result.error or '')[:200]}); measuring the files it produced"})
-        else:
+        if not (ctx.workspace / "index.html").is_file():
             raise StageBlocked(f"code engine ({eng.name}) failed without producing index.html: {result.error}", kind)
+        if not changed:
+            raise StageBlocked(f"code engine ({eng.name}) failed and changed no file in the work tree: "
+                               f"{(result.error or 'unknown error')[:400]}", kind)
+        ctx.publish(ev.STAGE_PROGRESS, {"stage": kind, "pct": 100, "message":
+                    f"engine ended with an error ({(result.error or '')[:200]}) after changing the work tree; "
+                    "measuring the files it produced"})
     return result
 
 

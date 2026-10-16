@@ -2,6 +2,16 @@
 
 All notable changes to Kyora. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- **A failed code-engine call no longer finishes a run.** When BUILD or FIX returns an error (usage
+  limit, HTTP 429, lost Hub contact, expired login) and the engine changed no file of the work tree
+  (content hash before and after the call), the run is `blocked` with the engine error and can be
+  resumed; before, a modify run measured the unchanged parent game and ended `complete` with a new
+  slide. Every failed call is recorded in `run.json` (`extra.engine_failures`, `tree_changed`).
+
 ## 0.1.0 - 2026-10-15
 
 First release.
