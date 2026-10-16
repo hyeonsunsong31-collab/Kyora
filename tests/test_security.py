@@ -187,6 +187,11 @@ class OriginAndContentTypeTests(AppServerCase):
             self.assertEqual(json.loads(data)["error"], "cross-origin request refused")
         names = [p["name"] for p in json.loads(self.main("GET", "/api/projects")[2])["projects"]]
         self.assertNotIn("x-origin", names)
+        # a game on the preview origin cannot PUT settings on the main origin either (cookies are per host)
+        status, _, _ = self.main_json("PUT", "/api/settings", {"settings": {"quality": {"min_pass_rate": 0.1}}},
+                                      {"Origin": f"http://127.0.0.1:{self.pport}"})
+        self.assertEqual(status, 403)
+        self.assertEqual(self.app.config.quality.min_pass_rate, 0.94)
 
     def test_own_origin_and_no_origin_are_accepted(self):
         for origin in (f"http://127.0.0.1:{self.port}", f"http://localhost:{self.port}", None):
