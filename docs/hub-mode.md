@@ -104,6 +104,16 @@ The client side (`HubClientEngine`) works like this:
   the network unencrypted. Use it only on a network you trust (home Wi-Fi, a phone
   hotspot), or tunnel it through a VPN such as WireGuard or Tailscale. Do not expose the
   hub port to the internet.
+- **Host names.** The hub answers only requests addressed to it: by IP address (the
+  pairing link uses the LAN IP), `localhost`, or its hostname, `<hostname>.local` and
+  FQDN. Any other name (a DNS rebinding attack, but also a VPN or router name such as
+  `mypc.lan`) gets `403 host not allowed`; add such names to `server.allowed_hosts` in
+  the hub's `settings.json`.
+- **Ports and firewall.** `/api/code-engine/*` is on the main port (8765). With
+  `hub.expose_ui`, phones that open the hub's UI also load game previews and the test
+  harness from the preview port (8766 by default, `server.preview_port`); allow both
+  ports for private networks in the PC firewall. A second Kyora started on a port that
+  is already in use stops with an error instead of sharing it.
 - **Uploads.** Every uploaded zip is validated before anything is written. Absolute
   paths, drive letters, `..`, `:`, symlink entries and anything that resolves outside the
   job directory are rejected, and entries inside `.git` are never written.
