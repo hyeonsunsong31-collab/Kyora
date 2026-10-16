@@ -167,9 +167,11 @@ UI. Guide: [`docs/tokkio-overlay.md`](docs/tokkio-overlay.md) and
 
 `kyora bench --list`, `kyora bench --tasks <ids> --dry-run` (estimate) and `kyora bench --tasks <ids>`
 run the **real** pipeline on fixed game tasks with bench-owned browser tests. It costs NVIDIA tokens
-and Claude usage, so it asks for confirmation (`--yes` to skip). A task passes at >= 94 % of its
-checks; the "certified" badge appears only from a measured run on your setup, shown with date,
-engine and model. This README contains no bench number on purpose. Rules:
+and Claude usage, so it asks for confirmation (`--yes` to skip). A task passes when >= 94 % of the
+bench's own tests pass and every required check passes (the threshold is fixed, whatever Settings
+say); the "certified" badge appears only from a measured run on your setup in which one engine/model
+served every engine call, shown with date, engine and model. This README contains no bench number on
+purpose. Rules:
 [`docs/bench.md`](docs/bench.md).
 
 ## Settings and keys

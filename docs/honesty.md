@@ -72,9 +72,12 @@ source.
    for at most `settings.quality.max_fix_iterations` (default 3) rounds. If the gate still fails,
    the slide is committed and labelled **below 94 % - not complete** (state `failed_gate`).
 2. **Kyora Bench certification threshold.** Kyora Bench runs the full pipeline on a fixed task set
-   with bench-owned browser tests. A task passes at >= 0.94; the "certified" badge is shown only
-   from a measured bench run on your own setup, with date, engine and model (rules:
-   [`bench.md`](bench.md)). The README embeds no bench number.
+   with bench-owned browser tests. A task passes when at least 94 % of **the bench's own tests** pass
+   (the engine's own tests and the tautological "test id is in the injected file" checks are not
+   scored) and every required check passes; the threshold is fixed at the task's rule, never below
+   0.94, whatever Settings > Quality gate says. The "certified" badge is shown only from a measured
+   bench run on your own setup in which one engine/model pair served every engine call, with date,
+   engine and model (rules: [`bench.md`](bench.md)). The README embeds no bench number.
 
 For scale, the models' own published scores are far from 94 on comparable agentic tasks:
 Nemotron-3-Ultra SWE-Bench Verified **71.9** (NVIDIA tech report), Kimi K3 Terminal-Bench 2.1

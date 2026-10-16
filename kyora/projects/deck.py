@@ -51,6 +51,26 @@ def attr(value: Any) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
 
+def _served_models(run: "Run | None") -> list[str]:
+    """Every model that served a code-engine call of ``run`` (``extra.engine_runs``), in order of first use."""
+    if run is None:
+        return []
+    calls = (getattr(run, "extra", None) or {}).get("engine_runs") or []
+    models = [c.get("active_model") for c in calls if isinstance(c, dict) and c.get("active_model")]
+    if not models and isinstance(run.engine, dict) and run.engine.get("active_model"):
+        models = [run.engine["active_model"]]
+    return list(dict.fromkeys(str(m) for m in models))
+
+
+def _run_engine(run: "Run | None") -> dict:
+    """The run's engine record with ``active_model`` naming every model that served it."""
+    eng = dict(run.engine) if run is not None and isinstance(run.engine, dict) else {}
+    models = _served_models(run)
+    if len(models) > 1:
+        eng["active_model"] = " + ".join(models)
+    return eng
+
+
 def _pct(rate: Any) -> str | None:
     try:
         return f"{float(rate) * 100:.1f}%"
@@ -334,12 +354,13 @@ class DeckBuilder:
                      f"{'passed' if ok else 'below threshold'} · threshold {esc(_threshold_pct(gate.get('threshold')))}</span>")
         else:
             badge = "<span class=\"badge none\">Gate: not measured</span>"
-        engine = (run.engine if run is not None and isinstance(run.engine, dict) else None) or \
+        engine = _run_engine(run) or \
                  ((slide or {}).get("engine") if isinstance((slide or {}).get("engine"), dict) else None) or {}
         eng_line = ""
         if engine.get("backend"):
+            model = engine.get("active_model")
             eng_line = (f"<p class=\"muted\">Code engine: {esc(_BACKEND_LABELS.get(engine.get('backend'), engine.get('backend')))}"
-                        + (f" · model {esc(engine.get('active_model'))}" if engine.get("active_model") else "")
+                        + (f" · {'models' if ' + ' in str(model) else 'model'} {esc(model)}" if model else "")
                         + (" (fallback)" if engine.get("fallback_used") else "") + "</p>")
         return (f"<section id=\"cover\" class=\"slide cover\"><p class=\"eyebrow\">Kyora project deck · {esc(version)}</p>"
                 f"<h1>{esc(p.name)}</h1><p class=\"subtitle\">{esc(title)}</p>{badge}"
@@ -411,11 +432,13 @@ class DeckBuilder:
 
     def _architecture(self, d: dict) -> str:
         run, slide, gate = d["run"], d["slide"], d["gate"]
-        engine = (run.engine if run is not None and isinstance(run.engine, dict) else {}) or \
+        engine = _run_engine(run) or \
                  ((slide or {}).get("engine") if isinstance((slide or {}).get("engine"), dict) else {}) or {}
         backend = engine.get("backend") if engine.get("backend") not in (None, "import") else "claude_code"
         engine_label = _BACKEND_LABELS.get(backend, str(backend))
-        model = engine.get("active_model") or engine.get("requested_model") or "model not resolved"
+        models = [m for m in str(engine.get("active_model") or "").split(" + ") if m]
+        model = (models[0] if len(models) == 1 else f"{len(models)} models (below)" if models
+                 else engine.get("requested_model") or "model not resolved")
         threshold = (gate or {}).get("threshold")
         if threshold is None and run is not None and isinstance(run.gate, dict):
             threshold = run.gate.get("threshold")
@@ -450,10 +473,12 @@ class DeckBuilder:
                    f"<text x=\"{(gx + bx + w) / 2:g}\" y=\"{y0 + h + 46}\" class=\"sys2\">below threshold: Kimi K3 review → fix</text>")
         svg.append(f"<text x=\"{bx + w / 2:g}\" y=\"{y0 - 14}\" class=\"sys2\">every tool call judged by Kimi K3</text>")
         svg.append("</svg>")
+        served = (f"<p class=\"muted\">Models that served the code engine for this version: {esc(', '.join(models))}.</p>"
+                  if len(models) > 1 else "")
         return ("<section id=\"architecture\" class=\"slide\"><h2>Architecture</h2>" + "".join(svg) +
                 "<p class=\"muted\">Fixed roles over their own APIs: Kimi K3 plans, judges and reviews; "
                 "NVIDIA Nemotron-3-Ultra writes the design; the code engine implements; tests run in a real "
-                "browser and Node; the gate decides from measured results.</p></section>")
+                "browser and Node; the gate decides from measured results.</p>" + served + "</section>")
 
     def _screenshots(self, d: dict) -> str:
         shots = d["screenshots"]
@@ -505,7 +530,7 @@ class DeckBuilder:
             run = pending["run"]
             final = run.gate.get("final") if isinstance(run.gate, dict) else None
             items.append(self._change_item(pending["number"], f"{pending['title']} ({pending['label']})", run.created_at,
-                                           final, run.engine, run.parent_slide))
+                                           final, _run_engine(run), run.parent_slide))
         body = ("<ol class=\"changelog\">" + "".join(items) + "</ol>") if items else _missing("No slides yet.")
         return f"<section id=\"changelog\" class=\"slide\"><h2>Changelog</h2>{body}</section>"
 

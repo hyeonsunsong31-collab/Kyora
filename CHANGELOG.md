@@ -24,6 +24,16 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - **An invalid Kimi K3 intake or review answer blocks the run** (resumable, like PLAN and DESIGN)
   instead of failing it; before, a twice-unparseable review after a long build ended the run
   `failed`, with no slide and no way to resume.
+- **Kyora Bench measures the bench, at the bench's threshold.** A bench run's gate is now scored on the
+  bench's own test ids (`passed / bench ids`, required checks still required); the tautological
+  `tests_present` checks of the injected test file and the engine's own Node tests no longer count, so
+  a task can no longer pass at "94 %" with 2 of 14 bench tests failing. The gate threshold of a bench
+  run is the task's `pass_rule.min_pass_rate` (never below 0.94) regardless of Settings, `task_passed`
+  also requires the recorded `pass_rate` and `threshold` to reach it, and `results.json` records the
+  threshold per task.
+- **One engine/model means every engine call.** Bench certification reads every entry of the run's
+  `extra.engine_runs` (BUILD and each FIX), so a task served by two models is mixed and blocks
+  certification; results list `served` pairs. Slides and the deck name every model that served a run.
 
 ## 0.1.0 - 2026-10-15
 

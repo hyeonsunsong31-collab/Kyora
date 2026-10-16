@@ -156,8 +156,36 @@ def plan_files(plan: dict) -> list[str]:
     return out
 
 
+def bench_options(ctx: StageContext) -> dict:
+    """``options.bench`` of a Kyora Bench run (the bench injected its own test file), else ``{}``."""
+    bench = (ctx.run.options or {}).get("bench") or {}
+    return bench if isinstance(bench, dict) and bench.get("tests_file") else {}
+
+
+def gate_threshold(ctx: StageContext) -> float:
+    """The gate threshold: Settings for normal runs; for bench runs the task's rule, never below 0.94."""
+    bench = bench_options(ctx)
+    if not bench:
+        return float(ctx.cfg.quality.min_pass_rate)
+    from ..bench.scoring import THRESHOLD
+    try:
+        rule = float(bench.get("min_pass_rate") or THRESHOLD)
+    except (TypeError, ValueError):
+        rule = THRESHOLD
+    return max(THRESHOLD, min(1.0, rule))  # Settings > Quality gate cannot lower a bench task's bar
+
+
 def threshold_pct(ctx: StageContext) -> str:
-    return f"{ctx.cfg.quality.min_pass_rate * 100:g}"
+    return f"{gate_threshold(ctx) * 100:g}"
+
+
+def served_models(run: Any) -> list[str]:
+    """Every model that served a code-engine call of ``run`` (``extra.engine_runs``), in order of first use."""
+    models = [e.get("active_model") for e in (run.extra or {}).get("engine_runs") or []
+              if isinstance(e, dict) and e.get("active_model")]
+    if not models and (run.engine or {}).get("active_model"):
+        models = [run.engine["active_model"]]
+    return list(dict.fromkeys(str(m) for m in models))
 
 
 # ----------------------------------------------------------------------------- engine selection
@@ -536,6 +564,8 @@ def test_stage(ctx: StageContext, n: int) -> tuple[list, list, list]:
     node = find_node()
     _block_unrunnable_node_tests(plan, node, "test")  # e.g. Node removed since PLAN: never loop fixes on them
     static = StaticChecker(ctx.workspace, plan, node).run()
+    if bench_options(ctx):  # the bench injected the test file: 'its ids are in its file' measures nothing
+        static = [c for c in static if not c.id.startswith("tests_present:")]
     atomic_write_json(ctx.iter_dir(n) / "static.json", [c.to_dict() for c in static])
     ctx.publish(ev.TEST_STATIC, {"iteration": n, "passed": sum(c.status == "pass" for c in static),
                                  "failed": sum(c.status == "fail" for c in static),
@@ -568,12 +598,14 @@ def test_stage(ctx: StageContext, n: int) -> tuple[list, list, list]:
 def gate_stage(ctx: StageContext, n: int, static: list, node: list, browser: list) -> dict:
     from .quality import QualityGate, merge_checks
     plan = ctx.read_artifact("plan") or {}
-    result = QualityGate(ctx.cfg.quality, plan).evaluate(merge_checks(static, node, browser))
+    # a bench run is scored on the bench's own test ids only (engine-written tests cannot dilute it)
+    scored = [t["id"] for t in plan_tests(plan)] if bench_options(ctx) else None
+    result = QualityGate(gate_threshold(ctx), plan, scored_ids=scored).evaluate(merge_checks(static, node, browser))
     full = result.to_dict()
     full["iteration"] = n
     atomic_write_json(ctx.iter_dir(n) / "gate.json", full)
     summary = {k: full.get(k) for k in ("threshold", "passed", "total", "pass_rate", "ok", "required_failures",
-                                        "missing_spec_tests")}
+                                        "missing_spec_tests", "scope")}
     summary["iteration"] = n
     ctx.run.gate["final"] = summary
     ctx.run.gate["threshold"] = summary["threshold"]
@@ -639,6 +671,11 @@ def finalize_stage(ctx: StageContext, gate: dict, ok: bool) -> dict:
         shots = [str(p) for p in collector.screenshots(ctx.run_id, int(gate.get("iteration", ctx.run.iteration)))]
     gate_summary = {k: gate.get(k) for k in ("threshold", "passed", "total", "pass_rate", "ok")}
     engine = {k: (ctx.run.engine or {}).get(k) for k in ("backend", "active_model", "fallback_used", "requested_model")}
+    models = served_models(ctx.run)
+    if len(models) > 1:  # the slide names every model that served this run, not only the last call's
+        engine["active_model"] = " + ".join(models)
+        engine["fallback_used"] = any(e.get("fallback_used") for e in ctx.run.extra.get("engine_runs") or []
+                                      if isinstance(e, dict))
     slide = ctx.slides.commit_slide(ctx.run, title, gate_summary, engine, shots)
     ctx.run.result_slide = slide["number"]
     ctx.save_run()
@@ -695,5 +732,5 @@ __all__ = [
     "StageBlocked", "RunCancelled", "StageContext", "render_template", "select_engine", "run_engine",
     "intake_stage", "plan_stage", "design_stage", "write_build_files", "build_stage", "fix_stage", "test_stage",
     "gate_stage", "load_gate", "review_stage", "finalize_stage", "show_view", "narrate", "plan_tests", "plan_files",
-    "NO_ENGINE_REASON", "NO_BROWSER_REASON",
+    "NO_ENGINE_REASON", "NO_BROWSER_REASON", "gate_threshold", "served_models", "tree_fingerprint",
 ]

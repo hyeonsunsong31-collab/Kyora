@@ -6,6 +6,8 @@ and the device test round are stubbed, so each test pins one pipeline decision.
 """
 from __future__ import annotations
 
+import json
+import shutil
 import tempfile
 import threading
 import unittest
@@ -18,7 +20,7 @@ import kyora.pipeline.runner as R
 import kyora.pipeline.stages as S
 from kyora.models.base import Availability, CodeEngine, EngineResult
 from kyora.pipeline.events import EventBus
-from kyora.pipeline.quality import Check
+from kyora.pipeline.quality import BrowserResultsCollector, Check
 from kyora.pipeline.stages import StageBlocked, StageContext, tree_fingerprint
 from kyora.projects.store import ProjectStore
 
@@ -38,13 +40,14 @@ class ScriptedEngine(CodeEngine):
         return Availability(True, self.name)
 
     def run(self, job, sink, cancel):
-        ok, error, files = self.steps.pop(0)
+        ok, error, files, *model = self.steps.pop(0)
         self.calls.append(job.kind)
         for rel, text in (files or {}).items():
             p = Path(job.workspace) / rel
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(text, encoding="utf-8")
-        return EngineResult(ok=ok, backend=self.name, requested_model=job.model, active_model="claude-opus-5-5",
+        return EngineResult(ok=ok, backend=self.name, requested_model=job.model,
+                            active_model=model[0] if model else "claude-opus-5-5",
                             error=error)
 
 
@@ -62,8 +65,9 @@ class RunnerHarness(unittest.TestCase):
         self.store = ProjectStore(base / "projects", base / "kyora.db")
         self.addCleanup(self.store.close)
         cc =SimpleNamespace(model="claude-opus-5-5", fallback_models=[], effort="max", max_turns=60, resume_for_fixes=True)
-        cfg = SimpleNamespace(quality=SimpleNamespace(min_pass_rate=0.94, max_fix_iterations=3,
-                                                      require_plan_approval=False), claude_code=cc)
+        cfg = SimpleNamespace(quality=SimpleNamespace(min_pass_rate=0.94, max_fix_iterations=3, browser_wait_s=1,
+                                                      require_plan_approval=False, auto_run_browser_tests=False),
+                              claude_code=cc)
         self.engine = None
         self.app = SimpleNamespace(store=self.store, bus=EventBus(None), config=cfg, judge=None, browser_results=None,
                                    tokkio=None, kimi=None, nemotron=None, engine=lambda: self.engine, home=base)
@@ -252,6 +256,99 @@ class NodeAvailabilityTests(RunnerHarness):
                 S.test_stage(ctx, 0)
         self.assertEqual(cm.exception.stage, "test")
         self.assertIn("at-02", cm.exception.reason)
+
+
+class ServedModelsTests(RunnerHarness):
+    def test_slide_names_every_model_that_served_the_run(self):
+        p = self.project_with_v1()
+
+        def tests(ctx, n):
+            status = "fail" if n == 0 else "pass"
+            return ([Check("s0", "static", "s", "pass")], [], [Check("at-01", "browser", "b", status)])
+        review = mock.patch.object(R, "review_stage", lambda ctx, n, gate: {"decision": "fix", "fix_instructions": "x"})
+        review.start()
+        self.addCleanup(review.stop)
+        with mock.patch.object(R, "test_stage", tests):
+            self.engine = ScriptedEngine([(True, None, {"index.html": "<canvas></canvas><b>2</b>"}, "claude-opus-5-5"),
+                                          (True, None, {"index.html": "<canvas></canvas><b>3</b>"}, "claude-fable-5-1")])
+            run = self.store.create_run(p.id, "modify", "add a pause menu", parent_slide=1)
+            run = self.execute(run.id)
+        self.assertEqual(run.state, "complete")
+        self.assertEqual(S.served_models(run), ["claude-opus-5-5", "claude-fable-5-1"])
+        slide = self.store.get(p.id).slides[-1]
+        self.assertEqual(slide["engine"]["active_model"], "claude-opus-5-5 + claude-fable-5-1")
+        html = (self.store.paths(p.id).repo / "kyora" / "deck.html").read_text(encoding="utf-8")
+        self.assertTrue("claude-opus-5-5" in html and "claude-fable-5-1" in html, "the deck must list both models")
+
+
+BENCH_TESTS = Path(S.__file__).resolve().parent.parent / "bench" / "tasks" / "b01-breakout.browser-tests.js"
+
+
+class BenchGateTests(RunnerHarness):
+    """A bench run is scored on the bench's own test ids at the task's rule, whatever Settings say."""
+
+    def bench_ctx(self, settings_threshold=0.5):
+        self.app.config.quality.min_pass_rate = settings_threshold  # Settings > Quality gate lowered
+        p = self.store.create("bench")
+        run = self.store.create_run(p.id, "generate", "breakout", options={
+            "bench": {"task_id": "b01-breakout", "tests_file": str(BENCH_TESTS), "min_pass_rate": 0.94}})
+        sm = self.store.slide_manager(p.id)
+        ctx = StageContext(app=self.app, run=run, project=p, run_dir=self.store.run_dir(run),
+                           workspace=sm.work_tree(), cancel=threading.Event(), slides=sm)
+        plan = S._apply_bench_contract(ctx, {"title": "Breakout", "acceptance_tests": []})
+        ctx.write_artifact("plan", plan)
+        ws = ctx.workspace
+        (ws / "src").mkdir(parents=True, exist_ok=True)
+        (ws / ".kyora").mkdir(exist_ok=True)
+        (ws / "tests").mkdir(exist_ok=True)
+        (ws / "index.html").write_text('<!doctype html><html><head><title>x</title></head><body><canvas></canvas>'
+                                       '<script src="src/game.js"></script></body></html>')
+        (ws / "src" / "game.js").write_text("window.Game = {};")
+        (ws / ".kyora" / "manifest.json").write_text(json.dumps(
+            {"entry": "index.html", "engine": "vanilla", "scripts": ["src/game.js"], "modules": [],
+             "tests": ["tests/browser-tests.js"], "version": 1}))
+        # the measured engine wrote 60 trivial Node tests of its own
+        (ws / "tests" / "logic-tests.mjs").write_text(
+            "import test from 'node:test';\n" + "".join(f"test('trivial {i}', () => {{}});\n" for i in range(60)))
+        return ctx, [t["id"] for t in plan["acceptance_tests"]]
+
+    def measure(self, ctx, ids, failing):
+        results = [{"id": i, "name": i, "status": "fail" if k < failing else "pass", "ms": 1,
+                    "error": "x" if k < failing else None} for k, i in enumerate(ids)]
+        payload = {"results": results, "syntax_checks": [{"file": "src/game.js", "ok": True, "method": "new Function"}]}
+        self.app.browser_results = SimpleNamespace(expect=lambda *a: None, wait=lambda *a: payload,
+                                                   to_checks=BrowserResultsCollector.to_checks,
+                                                   screenshots=lambda *a: [])
+        static, node, browser = S.test_stage(ctx, 0)
+        return S.gate_stage(ctx, 0, static, node, browser)
+
+    def test_two_failing_bench_tests_fail_the_gate(self):
+        ctx, ids = self.bench_ctx()
+        self.assertEqual(len(ids), 14)
+        gate = self.measure(ctx, ids, failing=2)
+        self.assertEqual((gate["passed"], gate["total"], gate["scope"]), (12, 14, "bench_tests"))
+        self.assertEqual(gate["threshold"], 0.94)
+        self.assertFalse(gate["ok"])
+        self.assertFalse(any(c["id"].startswith("tests_present:") for c in gate["checks"]))
+        self.assertEqual(ctx.run.gate["final"]["threshold"], 0.94)
+        self.assertEqual(S.threshold_pct(ctx), "94")
+
+    def test_all_bench_tests_passing_passes_with_the_task_threshold(self):
+        ctx, ids = self.bench_ctx()
+        gate = self.measure(ctx, ids, failing=0)
+        self.assertEqual((gate["passed"], gate["total"], gate["ok"], gate["threshold"]), (14, 14, True, 0.94))
+
+    def test_a_failing_required_check_still_fails_a_bench_gate(self):
+        ctx, ids = self.bench_ctx()
+        (ctx.workspace / ".kyora" / "manifest.json").unlink()
+        gate = self.measure(ctx, ids, failing=0)
+        self.assertFalse(gate["ok"])
+        self.assertIn("file_exists:.kyora/manifest.json", gate["required_failures"])
+
+    def test_normal_runs_keep_the_settings_threshold(self):
+        ctx = self.bench_ctx(settings_threshold=0.8)[0]
+        ctx.run.options.pop("bench")
+        self.assertEqual(S.gate_threshold(ctx), 0.8)
 
 
 class TreeFingerprintTests(unittest.TestCase):
