@@ -500,6 +500,7 @@ class _HTTPServer(ThreadingHTTPServer):
     """
     daemon_threads = True
     allow_reuse_address = True
+    allow_reuse_port = False  # never SO_REUSEPORT: it lets a second process share the port
 
     def server_bind(self):
         if IS_WINDOWS:

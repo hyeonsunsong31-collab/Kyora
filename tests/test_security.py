@@ -573,6 +573,8 @@ class ExclusiveBindTests(unittest.TestCase):
         calls, exclusive = self._bind_options(windows=False)
         self.assertIn((socket.SO_REUSEADDR, 1), calls)
         self.assertNotIn((exclusive, 1), calls)
+        if hasattr(socket, "SO_REUSEPORT"):
+            self.assertNotIn((socket.SO_REUSEPORT, 1), calls)  # would let a second process share the port
 
     def test_stdlib_server_class_is_not_mutated(self):
         from http.server import ThreadingHTTPServer
