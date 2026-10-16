@@ -215,7 +215,7 @@ class DeckBuilder:
                     out.append((int(m.group(1)), d))
         return sorted(out)
 
-    def _collect(self, slide_n: int | None) -> dict:
+    def _collect(self, slide_n: int | None, pending_run: "Run | None" = None) -> dict:
         project = self._refresh()
         slides = sorted((dict(s) for s in project.slides), key=lambda s: int(s.get("number") or 0))
         data: dict[str, Any] = {"project": project, "slide": None, "run": None, "pending": None}
@@ -227,7 +227,8 @@ class DeckBuilder:
             data["run"] = self._run(slide.get("run_id"))
             data["slides"] = [s for s in slides if int(s.get("number") or 0) <= int(slide_n)]
         else:
-            run = self._latest_run()
+            # FINALIZE passes its own run: the newest-created run may be another one still queued
+            run = pending_run if pending_run is not None else self._latest_run()
             data["slides"] = slides
             if run is not None and run.result_slide is None and run.state not in _NOT_PENDING:
                 # FINALIZE writes the deck into the work tree right before the slide is committed
@@ -527,9 +528,13 @@ class DeckBuilder:
         return f"<section id=\"honesty\" class=\"slide end\"><footer class=\"honesty\"><p>{esc(HONESTY_TEXT)}</p></footer></section>"
 
     # ------------------------------------------------------------------ public
-    def build(self, slide_n: int | None = None) -> str:
-        """Return the deck as one standalone HTML document (no external requests)."""
-        d = self._collect(slide_n)
+    def build(self, slide_n: int | None = None, run: "Run | None" = None) -> str:
+        """Return the deck as one standalone HTML document (no external requests).
+
+        ``run`` is the run being finalized (its slide is not committed yet); without it
+        and without ``slide_n`` the project's newest run or current slide is shown.
+        """
+        d = self._collect(slide_n, run)
         p = d["project"]
         sections = [self._cover(d), self._concept(d), self._design(d), self._architecture(d), self._screenshots(d),
                     self._tests(d), self._changelog(d), self._honesty()]
@@ -543,10 +548,10 @@ class DeckBuilder:
                 + "\n".join(sections) +
                 f"</main><p class=\"hint\">← → switch sections · print for PDF</p><script>{_JS}</script></body></html>\n")
 
-    def write_into_workspace(self, workspace: Path | str, slide_n: int | None = None) -> Path:
-        """Write the deck to ``<workspace>/kyora/deck.html`` and return the path."""
+    def write_into_workspace(self, workspace: Path | str, slide_n: int | None = None, run: "Run | None" = None) -> Path:
+        """Write the deck to ``<workspace>/kyora/deck.html`` and return the path (``run``: see :meth:`build`)."""
         out = Path(workspace) / "kyora" / "deck.html"
-        atomic_write_text(out, self.build(slide_n))
+        atomic_write_text(out, self.build(slide_n, run))
         return out
 
 

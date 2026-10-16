@@ -150,6 +150,20 @@ class FailedEngineTests(RunnerHarness):
         self.assertEqual(run.extra["engine_failures"][0]["kind"], "fix")
 
 
+class DeckRunTests(RunnerHarness):
+    def test_finalize_deck_describes_the_finalizing_run_not_a_queued_one(self):
+        p = self.store.create("demo")
+        self.engine = ScriptedEngine([(True, None, {"index.html": "<canvas></canvas><script>alpha</script>"})])
+        a = self.store.create_run(p.id, "generate", "ALPHA prompt: a space shooter")
+        # the user queued another run meanwhile; it waits for the project lock in state 'created'
+        self.store.create_run(p.id, "modify", "BRAVO prompt: make the ship red")
+        run = self.execute(a.id)
+        self.assertEqual(run.state, "complete")
+        html = (self.store.paths(p.id).repo / "kyora" / "deck.html").read_text(encoding="utf-8")
+        self.assertTrue("Sky Runner" in html and "100.0%" in html, "the deck does not describe the finalizing run")
+        self.assertFalse("BRAVO" in html, "the deck describes the queued run")
+
+
 class NodeAvailabilityTests(RunnerHarness):
     """Without Node a kind 'node' acceptance test can never report: Kimi is told, and such a plan blocks."""
 

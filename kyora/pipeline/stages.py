@@ -624,7 +624,7 @@ def finalize_stage(ctx: StageContext, gate: dict, ok: bool) -> dict:
     else:
         title = str(plan.get("title") or "Generated game")
     try:
-        DeckBuilder(ctx.project_id, ctx.app.store).write_into_workspace(ctx.workspace)
+        DeckBuilder(ctx.project_id, ctx.app.store).write_into_workspace(ctx.workspace, run=ctx.run)
     except Exception as exc:  # noqa: BLE001 - the deck must not lose the slide
         log.warning("deck build failed: %s", exc)
     shots = []

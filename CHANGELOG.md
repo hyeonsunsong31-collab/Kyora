@@ -19,6 +19,8 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   the device that runs TEST; without Node only browser acceptance tests are accepted (one repair
   round, then the run blocks), and a plan with Node tests blocks at PLAN or TEST with an explicit
   reason instead of spending every fix iteration on tests that can never report.
+- **The deck in a slide describes that slide's run.** FINALIZE passes the finalizing run to the deck
+  builder; before, a run queued for the same project (state `created`) was shown as "this build".
 
 ## 0.1.0 - 2026-10-15
 
