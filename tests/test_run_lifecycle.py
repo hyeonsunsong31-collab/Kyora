@@ -4,10 +4,16 @@ from __future__ import annotations
 import io
 import os
 import tempfile
+import threading
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
+import kyora.pipeline.runner as runner_module
+from kyora.pipeline.events import EventBus
+from kyora.pipeline.runner import Runner
 from kyora.projects.slides import git_available
 from kyora.projects.store import ProjectStore
 
@@ -112,6 +118,188 @@ class GitIgnoredFilesTests(_IgnoredFilesScenario, _Home):
 
 class SnapshotIgnoredFilesTests(_IgnoredFilesScenario, _Home):
     vcs = "snapshot"
+
+
+# ----------------------------------------------------------------------------- lineage branches
+def _files(wt: Path) -> list[str]:
+    return sorted(p.relative_to(wt).as_posix() for p in wt.rglob("*") if p.is_file() and ".git" not in p.parts)
+
+
+class _LineageScenario:
+    """No two unfinished runs share a branch; resume restores the run's own commit; rollback owns its tip."""
+
+    def _blocked_first_generation(self, text: str = "GAME A"):
+        store: ProjectStore = self.store  # type: ignore[attr-defined]
+        p = store.create("Lineage")
+        sm = store.slide_manager(p.id)
+        a = store.create_run(p.id, "generate", "game A")
+        self.assertEqual(sm.prepare_run(a)["branch"], "lineage/main")
+        (sm.work_tree() / "index.html").write_text(text, encoding="utf-8")
+        a_sha = sm.commit_iteration(a, 0, None)
+        store.set_state(a, "blocked", blocked_reason="no browser")
+        return store, p, sm, a, a_sha
+
+    def test_generation_does_not_reuse_main_held_by_a_blocked_run(self):
+        store, p, sm, a, a_sha = self._blocked_first_generation()
+        wt = sm.work_tree()
+        b = store.create_run(p.id, "generate", "game B")
+        info = sm.prepare_run(b)
+        self.assertEqual(info["branch"], f"lineage/{b.id}")
+        self.assertIsNone(info["base_sha"])
+        self.assertEqual(_files(wt), [])
+        (wt / "index.html").write_text("GAME B", encoding="utf-8")
+        sm.commit_iteration(b, 0, None)
+        s1 = sm.commit_slide(b, "Game B", None, None)
+        store.set_state(b, "complete")
+        self.assertEqual(sm.backend.branch_sha("lineage/main"), a_sha)
+        # resuming A tests A's game, not B's
+        sm.prepare_run(store.get_run(a.id))
+        self.assertEqual(sm.backend.current_branch(), "lineage/main")
+        self.assertEqual((wt / "index.html").read_text(encoding="utf-8"), "GAME A")
+        # cancelling A only removes A's own commits; B's slide branch stays
+        self.assertTrue(sm.rollback_working_tree(store.get_run(a.id)))
+        self.assertIsNone(sm.backend.branch_sha("lineage/main"))
+        self.assertEqual(sm.backend.branch_sha(s1["branch"]), s1["sha"])
+
+    def test_modify_of_a_head_held_by_a_blocked_run_gets_its_own_branch(self):
+        store: ProjectStore = self.store  # type: ignore[attr-defined]
+        p = store.create("Modify")
+        sm = store.slide_manager(p.id)
+        wt = sm.work_tree()
+        g = store.create_run(p.id, "generate", "game")
+        sm.prepare_run(g)
+        (wt / "index.html").write_text("v1", encoding="utf-8")
+        v1 = sm.commit_slide(g, "v1", None, None)
+        store.set_state(g, "complete")
+        a = store.create_run(p.id, "modify", "make it blue", parent_slide=1)
+        self.assertEqual(sm.prepare_run(a)["branch"], "lineage/main")
+        store.set_state(a, "blocked", blocked_reason="Kimi K3 request failed (HTTP 503)")
+        b = store.create_run(p.id, "modify", "add sound", parent_slide=1)
+        info_b = sm.prepare_run(b)
+        self.assertEqual(info_b["branch"], f"lineage/{b.id}")
+        self.assertEqual(info_b["base_sha"], v1["sha"])
+        (wt / "index.html").write_text("v1 + sound (B)", encoding="utf-8")
+        sm.commit_iteration(b, 0, None)
+        sm.commit_slide(b, "v2 sound", None, None)
+        store.set_state(b, "complete")
+        sm.prepare_run(store.get_run(a.id))
+        self.assertEqual((wt / "index.html").read_text(encoding="utf-8"), "v1")
+        self.assertEqual(sm.backend.branch_sha("lineage/main"), v1["sha"])
+
+    def test_resume_restores_the_runs_last_commit(self):
+        store, p, sm, a, a_sha = self._blocked_first_generation()
+        wt = sm.work_tree()
+        (wt / "index.html").write_text("half-written fix", encoding="utf-8")
+        (wt / "junk.js").write_text("junk", encoding="utf-8")
+        info = sm.prepare_run(store.get_run(a.id))
+        self.assertEqual(info["branch"], "lineage/main")
+        self.assertEqual(_files(wt), ["index.html"])
+        self.assertEqual((wt / "index.html").read_text(encoding="utf-8"), "GAME A")
+        self.assertEqual(sm.backend.head(), a_sha)
+
+    def test_resume_refuses_a_branch_that_moved_and_rollback_leaves_it(self):
+        from kyora.projects.slides import LineageMoved
+        store, p, sm, a, a_sha = self._blocked_first_generation()
+        wt = sm.work_tree()
+        (wt / "index.html").write_text("someone else's commit", encoding="utf-8")
+        other = sm.backend.commit("not run A")
+        with self.assertRaises(LineageMoved):
+            sm.prepare_run(store.get_run(a.id))
+        self.assertFalse(sm.rollback_working_tree(store.get_run(a.id)))
+        self.assertEqual(sm.backend.branch_sha("lineage/main"), other)
+        self.assertEqual((wt / "index.html").read_text(encoding="utf-8"), "someone else's commit")
+
+    def test_import_does_not_commit_onto_a_blocked_runs_branch(self):
+        store, p, sm, a, a_sha = self._blocked_first_generation()
+        slide, _ = sm.import_zip(_zip({"index.html": "<canvas></canvas>"}), "game.zip")
+        self.assertTrue(slide["branch"].startswith("lineage/import-"))
+        self.assertEqual(sm.backend.branch_sha("lineage/main"), a_sha)
+        sm.prepare_run(store.get_run(a.id))
+        self.assertEqual((sm.work_tree() / "index.html").read_text(encoding="utf-8"), "GAME A")
+
+    def test_rollback_without_touching_the_tree_moves_only_the_runs_branch(self):
+        store, p, sm, a, a_sha = self._blocked_first_generation()
+        wt = sm.work_tree()
+        b = store.create_run(p.id, "generate", "game B")
+        sm.prepare_run(b)
+        (wt / "index.html").write_text("B building", encoding="utf-8")
+        self.assertTrue(sm.rollback_working_tree(store.get_run(a.id), touch_tree=False))
+        self.assertIsNone(sm.backend.branch_sha("lineage/main"))
+        self.assertEqual(sm.backend.current_branch(), f"lineage/{b.id}")
+        self.assertEqual((wt / "index.html").read_text(encoding="utf-8"), "B building")
+        # a run whose branch is checked out is not rolled back without the tree
+        self.assertFalse(sm.rollback_working_tree(store.get_run(b.id), touch_tree=False))
+        self.assertEqual((wt / "index.html").read_text(encoding="utf-8"), "B building")
+
+
+@unittest.skipUnless(git_available(), "git is not installed")
+class GitLineageTests(_LineageScenario, _Home):
+    vcs = "git"
+
+
+class SnapshotLineageTests(_LineageScenario, _Home):
+    vcs = "snapshot"
+
+
+# ----------------------------------------------------------------------------- run manager / runner
+def _fail_stage(*_a, **_k):
+    raise AssertionError("stage must not run")
+
+
+class _RunnerHome(_Home):
+    """A real store and event bus with stubbed stages (see ``_patch``)."""
+
+    vcs = "git" if git_available() else "snapshot"
+
+    def setUp(self):
+        super().setUp()
+        cfg = SimpleNamespace(quality=SimpleNamespace(min_pass_rate=0.94, max_fix_iterations=3),
+                              claude_code=SimpleNamespace(effort="max"))
+        self.bus = EventBus(None)
+        self.app = SimpleNamespace(store=self.store, bus=self.bus, config=cfg, tokkio=None, nemotron=None, judge=None)
+        self.narrations: list[str] = []
+
+    def tearDown(self):
+        self.bus.close()
+        super().tearDown()
+
+    def _patch(self, **stages):
+        names = ("intake_stage", "plan_stage", "design_stage", "build_stage", "fix_stage", "test_stage", "gate_stage",
+                 "review_stage", "finalize_stage", "select_engine")
+        values = {n: stages.get(n, _fail_stage) for n in names if hasattr(runner_module, n)}
+        values["narrate"] = lambda ctx, text: self.narrations.append(text)
+        values["show_view"] = lambda *a, **k: None
+        p = mock.patch.multiple(runner_module, **values)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _blocked_after_build(self, text: str = "BUILT"):
+        """A first generation that built and committed iteration 0, then blocked at TEST."""
+        p = self.store.create("Runs")
+        sm = self.store.slide_manager(p.id)
+        run = self.store.create_run(p.id, "generate", "a game")
+        sm.prepare_run(run)
+        (sm.work_tree() / "index.html").write_text(text, encoding="utf-8")
+        sha = sm.commit_iteration(run, 0, None)
+        run.iterations.append({"n": 0, "kind": "build", "commit": sha, "built": True})
+        for st in ("intake", "plan", "design"):
+            run.stages[st] = {"status": "done"}
+        self.store.set_state(run, "blocked", blocked_reason="no browser")
+        return p, sm, run, sha
+
+
+class RunnerResumeTests(_RunnerHome):
+    def test_resume_on_a_moved_branch_blocks_instead_of_testing_another_game(self):
+        p, sm, run, sha = self._blocked_after_build()
+        (sm.work_tree() / "index.html").write_text("ANOTHER GAME", encoding="utf-8")
+        other = sm.backend.commit("someone else")
+        self._patch()
+        self.store.set_state(run, "created", blocked_reason=None)  # what RunManager.resume does
+        Runner(self.app, self.store.get_run(run.id), threading.Event()).execute()
+        after = self.store.get_run(run.id)
+        self.assertEqual(after.state, "blocked")
+        self.assertIn("moved", after.blocked_reason)
+        self.assertEqual(sm.backend.branch_sha("lineage/main"), other)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,13 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   the snapshot backend always did; the gate measured them, so the saved slide now matches the
   measured game. Resets and checkouts also remove ignored leftovers, so a cancelled run's ignored
   files cannot reach the next slide.
+- **Unfinished runs no longer share a lineage branch**: a run whose branch (`lineage/main` for a
+  first generation, or the head branch of the parent slide) is held by another unfinished run, or
+  an import in that situation, gets its own `lineage/<rid>` branch. Each run records the commit it
+  last left on its branch (`options.tip`); resume restores exactly that commit and blocks with a
+  clear reason when the branch moved on, so a resumed run never tests or commits another run's game.
+  Rollback only resets a branch whose tip is still the run's own commit, so cancelling an older run
+  can no longer delete the branch that holds a newer slide.
 
 ## 0.1.0 - 2026-10-15
 

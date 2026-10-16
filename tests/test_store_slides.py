@@ -363,6 +363,7 @@ class _SlidesScenario:
         _copy_fixture(sm.work_tree())
         sm.commit_iteration(r, 1, None)
         sm.rollback_working_tree(r)
+        store.set_state(r, "cancelled")  # as RunManager.cancel does; an unfinished run keeps its branch
         self.assertEqual([x.name for x in sm.work_tree().iterdir() if x.name != ".git"], [])
         self.assertIsNone(sm.backend.head())
         # the next generate starts cleanly on lineage/main

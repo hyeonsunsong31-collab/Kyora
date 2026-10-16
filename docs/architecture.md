@@ -214,6 +214,13 @@ GATE fail & iteration<max_fix_iterations -> REVIEW(Kimi) -fix-> FIX(engine) -> T
 GATE fail & iteration==max -> FINALIZE(below_threshold) -> FAILED_GATE (slide still committed)
 no engine -> BLOCKED (resumable); no browser in browser_wait_s -> BLOCKED; exception -> FAILED; cancel -> CANCELLED (tree reset)
 ```
+Lineage branches: a run works on `lineage/main` (first generation), on the head branch of its parent slide
+(modify), or on its own `lineage/<rid>`. A branch held by another unfinished run (prepared, not ended, no slide
+committed yet) is never shared: the new run (or an import) gets its own `lineage/<rid>` instead. `run.options.tip`
+records the commit the run last left on its branch (its base until its first commit). Resume restores exactly
+that commit (forced checkout, untracked and ignored leftovers removed); when the branch no longer points there the
+run BLOCKS with a reason instead of testing someone else's game. Rollback only resets a branch whose tip is still
+the run's own commit.
 Gate: total = counted checks (static non-skipped + browser + node); pass_rate = passed/total; ok iff pass_rate >= min_pass_rate
 AND required checks pass (index.html exists, html well-formed, js syntax, manifest valid) AND every plan acceptance id present in results.
 

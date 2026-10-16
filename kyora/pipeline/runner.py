@@ -24,6 +24,7 @@ import time
 import traceback
 from typing import Any, Callable
 
+from ..projects.slides import LineageMoved
 from ..util.fs import atomic_write_text
 from ..util.ids import now_iso
 from . import events as ev
@@ -301,7 +302,10 @@ class Runner:
             ctx = StageContext(app=self.app, run=run, project=project, run_dir=self.store.run_dir(run),
                                workspace=slides.work_tree(), cancel=self.cancel, slides=slides, approval=self.approval)
             self._ctx = ctx
-            slides.prepare_run(run)  # before intake: a fresh generation clears the tree, an import fills it
+            try:  # before intake: a fresh generation clears the tree; a resume restores the run's last commit
+                slides.prepare_run(run)
+            except LineageMoved as exc:
+                raise StageBlocked(str(exc), "prepare") from None
             run.gate["threshold"] = float(self.cfg.quality.min_pass_rate)
             self.store.save_run(run)
             self._publish(ev.RUN_STATE, {"state": run.state, "iteration": run.iteration, "started": True})
