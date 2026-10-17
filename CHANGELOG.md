@@ -88,6 +88,13 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   local rules allow planned files, standard game paths and read-only commands (and deny escapes and
   destructive commands), a per-run cache repeats Kimi verdicts, Kimi K3 decides the rest, and Read,
   Glob and Grep are not judged. The Judge card also counts verdicts by rule, cache and Kimi K3.
+- **Gate, engine and effort labels come from the run.** The stage chart's Gate node and fix-loop
+  label use the run's recorded threshold (they always said 94 %), Build/Fix and the code-engine tile
+  name the run's backend (Claude Code, Anthropic API, via the Hub) and recorded effort (the tile
+  always said "effort max"), and the prompt help and Honesty card show the configured effort and
+  gate from Settings. The engine call records its effort in `run.json` (`engine.effort`) and announces
+  `backend`/`effort` in its first `stage.progress`. A bench run records the bench threshold from the
+  start, and the gate narration and Tokkio slide view name the gate the run applied, not Settings.
 
 ## 0.1.0 - 2026-10-15
 

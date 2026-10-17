@@ -162,6 +162,12 @@ These are deliberate, visible design rules rather than copy choices:
   Self-check measured them.
 - **Resolved model, not requested model.** The Claude tile and run chips show the model the
   engine actually used, and flag "fallback from ..." when it differs.
+- **Labels from the run, not from constants.** The stage chart's Gate node and fix-loop label, the
+  gauge and the gate texts use the threshold the run recorded (`run.gate.threshold`, the gate
+  result's `threshold`); Build/Fix and the code-engine tile name the run's backend (`engine.session`,
+  `run.engine.backend`) and its recorded effort (`run.engine.effort`, the BUILD/FIX
+  `stage.progress{backend, effort}`). Texts about the next run (prompt help, Honesty card) show the
+  configured Settings values. No label says "94 %", "effort max" or "Claude Code" unless the run did.
 - **No badge without a measurement.** A slide shows a green gate badge only when its gate
   passed at or above the threshold; otherwise "below 94%" with the measured rate, or "no gate"
   for imports. The Bench certified badge and the large pass-rate number appear only when the

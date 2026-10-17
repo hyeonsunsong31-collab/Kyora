@@ -1,7 +1,8 @@
 /* Measured model metrics: tiles + sparklines.
    Values come only from model.metrics (Nemotron / Kimi) and engine.* events (Claude Code).
    Unknown values render as "-". Nothing is estimated here; when the backend reports
-   tokens_source != "usage" the tile says so. */
+   tokens_source != "usage" the tile says so. The code-engine tile is named after the run's recorded
+   backend and effort. */
 (function () {
   'use strict';
   const K = (window.Kyora = window.Kyora || {});
@@ -9,7 +10,7 @@
   const SYSTEMS = [
     { key: 'nemotron', name: 'Nemotron-3-Ultra', role: 'design director', match: /nemotron/i },
     { key: 'kimi', name: 'Kimi K3', role: 'planner + judge', match: /kimi/i },
-    { key: 'claude', name: 'Claude Code', role: 'code engine (effort max)', match: /claude|anthropic|hub/i }
+    { key: 'claude', name: 'Claude Code', role: 'code engine', match: /claude|anthropic|hub/i }
   ];
 
   function esc(s) {
@@ -21,7 +22,7 @@
     SYSTEMS.forEach((s) => {
       m[s.key] = { model: null, tps: null, ttft_ms: null, total_ms: null, prompt_tokens: null, completion_tokens: null,
         tokens_source: null, history: [], calls: 0, busy: false, error: null, turns: null, cost_usd: null, duration_ms: null,
-        fallback_used: false, requested: null, backend: null, last_at: null };
+        fallback_used: false, requested: null, backend: null, effort: null, last_at: null };
     });
     return m;
   }
@@ -62,7 +63,7 @@
     }
     if (t.indexOf('engine.') === 0) {
       const m = metrics.claude;
-      if (t === 'engine.session') { m.busy = true; m.model = d.model || m.model; m.backend = d.backend || m.backend; m.error = null; }
+      if (t === 'engine.session') { m.busy = true; m.model = d.model || m.model; m.backend = d.backend || m.backend; m.effort = d.effort || m.effort; m.error = null; }
       if (t === 'engine.model_resolved') { m.model = d.active || m.model; m.requested = d.requested || m.requested; m.fallback_used = !!d.fallback_used; }
       if (t === 'engine.result') {
         m.busy = false; m.calls += 1; m.last_at = ev.ts || Date.now() / 1000;
@@ -111,10 +112,16 @@
     return '<svg class="spark" viewBox="0 0 ' + w + ' ' + h + '" aria-hidden="true"><path class="spark-area" d="' + area + '"/><path d="' + d + '"/></svg>';
   }
 
-  function renderTiles(metrics) {
+  /* engine: the run's recorded engine info ({backend, effort}) from run.json / engine events, optional. */
+  function renderTiles(metrics, engine) {
+    engine = engine || {};
     return SYSTEMS.map((s) => {
       const m = metrics[s.key];
       const isClaude = s.key === 'claude';
+      const backend = isClaude ? (m.backend || engine.backend || '') : '';
+      const effort = isClaude ? (engine.effort || m.effort || '') : '';
+      const name = isClaude && backend && K.engineLabel ? K.engineLabel(backend) : s.name;
+      const role = isClaude && effort ? s.role + ' · effort ' + effort : s.role;
       const big = isClaude
         ? (m.turns != null ? fmtNum(m.turns, 0) + '<small>turns</small>' : '-<small>turns</small>')
         : (fmtNum(m.tps) + '<small>tok/s</small>');
@@ -129,7 +136,7 @@
       foot.push('<span>' + (m.calls ? m.calls + (isClaude ? ' session' : ' call') + (m.calls > 1 ? 's' : '') : 'no calls yet') + '</span>');
       return (
         '<article class="tile" data-sys="' + s.key + '" aria-label="' + esc(s.name) + ' metrics">' +
-        '<div class="tile-head"><span class="tile-name">' + esc(s.name) + '</span><span class="tile-role">' + esc(s.role) + '</span></div>' +
+        '<div class="tile-head"><span class="tile-name">' + esc(name) + '</span><span class="tile-role">' + esc(role) + '</span></div>' +
         '<div class="tile-model" title="' + esc(m.model || '') + '">' + esc(m.model || (isClaude ? 'model resolved at session start' : 'model not called yet')) + '</div>' +
         '<div class="tile-main"><div class="tile-big">' + big + '</div>' + (isClaude ? '' : sparkline(m.history)) + '</div>' +
         '<div class="tile-stats">' + stats.map((p) => '<div>' + esc(p[0]) + '<b>' + esc(p[1]) + '</b></div>').join('') + '</div>' +

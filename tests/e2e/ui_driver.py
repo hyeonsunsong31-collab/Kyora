@@ -64,6 +64,9 @@ def scripted_events(run_id: str) -> list[tuple[str, dict]]:
     # build (Claude Code + judge)
     add("run.state", {"state": "build", "iteration": 1})
     add("stage.started", {"stage": "build"})
+    # the run's recorded engine and effort (differ from the Settings defaults on purpose)
+    add("stage.progress", {"stage": "build", "pct": 1, "message": "claude_code: starting (claude-fable-5-1, effort high)",
+                           "backend": "claude_code", "effort": "high"})
     add("engine.session", {"session_id": "smoke-session", "model": "claude-opus-5-5", "tools": ["Read", "Write"],
                            "permission_mode": "acceptEdits", "cwd": "/tmp/work", "backend": "claude_code"})
     add("engine.model_resolved", {"requested": "claude-fable-5-1", "active": "claude-opus-5-5", "fallback_used": True})
@@ -86,7 +89,8 @@ def scripted_events(run_id: str) -> list[tuple[str, dict]]:
     add("stage.progress", {"stage": "test", "pct": 40, "message": "static + node checks"})
     add("stage.finished", {"stage": "test", "ok": True, "ms": 30500})
     add("stage.started", {"stage": "gate"})
-    add("gate.result", {"threshold": 0.94, "passed": 47, "total": 50, "pass_rate": 0.94, "ok": True,
+    # the run's gate threshold (0.9) differs from the Settings default (0.94) on purpose
+    add("gate.result", {"threshold": 0.9, "passed": 47, "total": 50, "pass_rate": 0.94, "ok": True,
                         "required_failures": []})
     add("stage.finished", {"stage": "gate", "ok": True, "ms": 12})
     # finalize (left running on purpose so the chart shows a running stage)

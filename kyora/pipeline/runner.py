@@ -31,7 +31,7 @@ from ..util.ids import now_iso
 from . import events as ev
 from .stages import (
     RunCancelled, StageBlocked, StageContext, build_stage, design_stage, finalize_stage, fix_stage, gate_stage,
-    intake_stage, load_gate, narrate, plan_stage, review_stage, select_engine, show_view, test_stage,
+    gate_threshold, intake_stage, load_gate, narrate, plan_stage, review_stage, select_engine, show_view, test_stage,
 )
 
 log = logging.getLogger("kyora.runner")
@@ -40,6 +40,14 @@ ACTIVE_STATES = ("intake", "plan", "awaiting_approval", "design", "build", "test
 INTERRUPTED_REASON = "interrupted: Kyora stopped while this run was active; press Resume to continue"
 _ENGINE_LABELS = {"claude_code": "Claude Code", "anthropic_api": "The Anthropic API engine",
                   "hub": "Claude Code on the Kyora Hub"}
+
+
+def _gate_pct(ctx: StageContext, gate: dict) -> str:
+    """The gate percentage a run really applied: the measured gate's threshold, else the run's (never Settings)."""
+    thr = gate.get("threshold") if isinstance(gate, dict) else None
+    if not isinstance(thr, (int, float)) or isinstance(thr, bool):
+        thr = gate_threshold(ctx)
+    return f"{float(thr) * 100:g}"
 
 
 class RunManager:
@@ -324,7 +332,7 @@ class Runner:
                 slides.prepare_run(run)
             except LineageMoved as exc:
                 raise StageBlocked(str(exc), "prepare") from None
-            run.gate["threshold"] = float(self.cfg.quality.min_pass_rate)
+            run.gate["threshold"] = gate_threshold(ctx)  # the threshold this run's gate applies (bench: the task's)
             self.store.save_run(run)
             self._publish(ev.RUN_STATE, {"state": run.state, "iteration": run.iteration, "started": True})
 
@@ -389,7 +397,7 @@ class Runner:
                 self.store.save_run(run)
                 pct = f"{(gate.get('pass_rate') or 0) * 100:.1f}"
                 narrate(ctx, f"Iteration {n} passed {gate.get('passed')} of {gate.get('total')} checks, {pct} percent; "
-                             f"the gate is {q.min_pass_rate * 100:g} percent and it {'passed' if gate.get('ok') else 'did not pass'}.")
+                             f"the gate is {_gate_pct(ctx, gate)} percent and it {'passed' if gate.get('ok') else 'did not pass'}.")
             if gate.get("ok"):
                 self._finish(ctx, gate, ok=True)
                 return
@@ -426,7 +434,7 @@ class Runner:
         self._state(final_state, **fields)
         self._publish(ev.RUN_COMPLETED, {"slide": slide["number"], "state": final_state, "gate_ok": ok,
                                          "pass_rate": gate.get("pass_rate"), "threshold": gate.get("threshold")})
-        show_view(ctx, f"Slide v{slide['number']} {'passed' if ok else 'is below'} the {self.cfg.quality.min_pass_rate * 100:g}% gate",
+        show_view(ctx, f"Slide v{slide['number']} {'passed' if ok else 'is below'} the {_gate_pct(ctx, gate)}% gate",
                   buttons=[("kyora:open_preview", "Open preview"), ("kyora:download", "Download ZIP")])
         narrate(ctx, f"Slide version {slide['number']} is saved; it {'passed' if ok else 'did not pass'} the quality gate.")
 

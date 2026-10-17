@@ -16,8 +16,14 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+
+import kyora.pipeline.runner as runner_module
+from kyora.pipeline.runner import Runner
+from tests.test_run_lifecycle import _RunnerHome  # shared runner harness (defines no tests of its own)
 
 REPO = Path(__file__).resolve().parents[1]
 WEB = REPO / "kyora" / "web"
@@ -80,6 +86,88 @@ class JudgeWordingTests(unittest.TestCase):
         self.assertIn("if (d.source === 'rule') ctx.judge.rule += 1;", app)
         self.assertIn("else if (d.source === 'cache') ctx.judge.cached += 1;", app)
         self.assertIn("else if (d.source === 'kimi') ctx.judge.kimi += 1;", app)
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class RunLabelRenderTests(unittest.TestCase):
+    """Gate, engine and effort labels are rendered from the run, not from fixed strings."""
+
+    def test_pipeline_chart_uses_the_run_threshold_and_backend(self):
+        out = run_node(["js/pipeline-chart.js"], """{
+            wide: K.renderPipelineChart({ gate: { status: 'done' } }, { width: 900, threshold: 0.8, backend: 'hub:claude_code' }),
+            narrow: K.renderPipelineChart({}, { width: 320, threshold: 0.825 }),
+            unknown: K.renderPipelineChart({}, { width: 900 }) }""")
+        self.assertIn("&gt;= 80 %", out["wide"])
+        self.assertIn(">below 80 %<", out["wide"])
+        self.assertIn("Claude Code (Hub)", out["wide"])
+        self.assertNotIn("94", out["wide"])
+        self.assertNotIn("94", out["narrow"])
+        # no recorded threshold or backend: no invented number, no engine name
+        self.assertNotIn("94", out["unknown"])
+        self.assertIn(">below threshold<", out["unknown"])
+        self.assertIn("code engine", out["unknown"])
+        self.assertNotIn("Claude Code", out["unknown"])
+
+    def test_engine_tile_names_the_recorded_backend_and_effort(self):
+        out = run_node(["js/pipeline-chart.js", "js/metrics.js"], """{
+            api: K.metrics.renderTiles(K.metrics.emptyMetrics(), { backend: 'anthropic_api', effort: 'high' }),
+            none: K.metrics.renderTiles(K.metrics.emptyMetrics(), null) }""")
+        self.assertIn('<span class="tile-name">Anthropic API</span>', out["api"])
+        self.assertIn('<span class="tile-role">code engine · effort high</span>', out["api"])
+        self.assertNotIn("effort max", out["api"])
+        self.assertIn('<span class="tile-role">code engine</span>', out["none"])
+        self.assertNotIn("effort", out["none"])
+
+    def test_static_texts_do_not_hard_code_gate_or_effort(self):
+        html = (WEB / "index.html").read_text(encoding="utf-8")
+        for fixed in ("at effort max", "<code>--effort max</code>", "94 % is a gate", "at least 94 % of its counted"):
+            self.assertNotIn(fixed, html)
+        self.assertGreaterEqual(html.count('data-setting-label="effort"'), 2)
+        self.assertIn('data-setting-label="gate"', html)
+        app = (WEB / "js" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("threshold: gateThreshold(ctx), backend:", app)
+        self.assertIn("K.metrics.renderTiles(ctx ? ctx.metrics : K.metrics.emptyMetrics(), ctx ? ctx.engine : null)", app)
+
+
+BENCH_TESTS = REPO / "kyora" / "bench" / "tasks" / "b01-breakout.browser-tests.js"
+
+
+class RunnerGateTextTests(_RunnerHome):
+    """Narration and the Tokkio view name the gate the run applied (a bench task's 94 %), not Settings."""
+
+    def test_bench_run_texts_and_recorded_threshold_use_the_run_gate(self):
+        self.app.config.quality.min_pass_rate = 0.5  # Settings lowered; a bench run still gates at 0.94
+        seen: dict = {}
+        views: list[str] = []
+
+        def build(ctx):
+            seen["threshold_at_build"] = ctx.run.gate.get("threshold")
+            (ctx.workspace / "index.html").write_text("game", encoding="utf-8")
+
+        def gate(ctx, n, *_a):
+            thr = runner_module.gate_threshold(ctx)
+            return {"threshold": thr, "passed": 19, "total": 20, "pass_rate": 0.95, "ok": True}
+
+        self._patch(intake_stage=lambda ctx: {}, plan_stage=lambda ctx: {"title": "t", "acceptance_tests": []},
+                    design_stage=lambda ctx: {}, build_stage=build, select_engine=lambda ctx: SimpleNamespace(name="claude_code"),
+                    test_stage=lambda ctx, n: ({}, {}, {}), gate_stage=gate,
+                    finalize_stage=lambda ctx, g, ok: {"number": 1})
+        runner_module.show_view = lambda ctx, title, **k: views.append(title)  # restored by _patch's cleanup
+        p = self.store.create("Bench labels")
+        run = self.store.create_run(p.id, "generate", "a game", options={
+            "bench": {"task_id": "b01-breakout", "tests_file": str(BENCH_TESTS), "min_pass_rate": 0.94}})
+        Runner(self.app, run, threading.Event()).execute()
+        self.assertEqual(self.store.get_run(run.id).state, "complete")
+        self.assertEqual(seen["threshold_at_build"], 0.94)
+        gate_lines = [t for t in self.narrations if "the gate is" in t]
+        self.assertEqual(len(gate_lines), 1)
+        self.assertIn("95.0 percent; the gate is 94 percent and it passed", gate_lines[0])
+        self.assertEqual(views[-1], "Slide v1 passed the 94% gate")
+
+    def test_texts_never_read_the_settings_threshold(self):
+        src = (REPO / "kyora" / "pipeline" / "runner.py").read_text(encoding="utf-8")
+        self.assertNotIn("min_pass_rate * 100", src)
+        self.assertNotIn("float(self.cfg.quality.min_pass_rate)", src)
 
 
 if __name__ == "__main__":

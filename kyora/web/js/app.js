@@ -1004,6 +1004,8 @@
         const patch = { pct: d.pct != null ? d.pct : cur.pct, message: d.message != null ? d.message : cur.message };
         if (cur.status !== 'blocked') patch.status = 'running';
         setStage(ctx, d.stage, patch);
+        // BUILD/FIX announce the engine they start with: {backend, effort} (recorded labels, not settings)
+        if (d.effort || d.backend) ctx.engine = Object.assign({}, ctx.engine, { effort: d.effort || ctx.engine.effort, backend: ctx.engine.backend || d.backend });
         break;
       }
       case 'stage.finished': {
@@ -1039,7 +1041,7 @@
         out.push(line(ev, 'error', 'errors', 'model', sysName(d.role, d.model) + ': ' + (d.error || 'error') + (d.status ? ' (HTTP ' + d.status + ')' : '')));
         break;
       case 'engine.session':
-        ctx.engine = Object.assign({}, ctx.engine, { backend: d.backend || ctx.engine.backend, model: d.model || ctx.engine.model, session_id: d.session_id });
+        ctx.engine = Object.assign({}, ctx.engine, { backend: d.backend || ctx.engine.backend, model: d.model || ctx.engine.model, session_id: d.session_id, effort: d.effort || ctx.engine.effort });
         out.push(line(ev, 'system', 'engine', 'session', 'session ' + (d.backend || 'engine') + (d.model ? ' · ' + d.model : '') + (d.permission_mode ? ' · ' + d.permission_mode : '')));
         break;
       case 'engine.model_resolved':
@@ -1341,7 +1343,7 @@
     renderGate(ctx);
     renderJudge(ctx);
     const tiles = $('#metric-tiles');
-    if (tiles) tiles.innerHTML = K.metrics.renderTiles(ctx ? ctx.metrics : K.metrics.emptyMetrics());
+    if (tiles) tiles.innerHTML = K.metrics.renderTiles(ctx ? ctx.metrics : K.metrics.emptyMetrics(), ctx ? ctx.engine : null);
     renderControls(ctx);
     renderNotice(ctx);
     renderNavBadge(ctx);
@@ -1381,16 +1383,25 @@
     if (!w) return; // hidden view: rendered when shown
     lastChartWidth = w;
     const stages = ctx ? ctx.stages : {};
-    host.innerHTML = K.renderPipelineChart(stages, { width: w });
+    host.innerHTML = K.renderPipelineChart(stages, { width: w, threshold: gateThreshold(ctx), backend: ctx && ctx.engine ? ctx.engine.backend : '' });
     const summary = STAGE_IDS.map((id) => id + ' ' + ((stages[id] && stages[id].status) || 'idle')).join(', ');
     host.setAttribute('aria-label', 'Pipeline stage chart: ' + summary);
+  }
+
+  /* The gate threshold shown for a run: its measured gate, else the threshold the run recorded when it
+     started (run.gate.threshold); Settings only before a run recorded one. Chart and gauge share it. */
+  function gateThreshold(ctx) {
+    const g = ctx && ctx.gate;
+    if (g && typeof g.threshold === 'number') return g.threshold;
+    if (ctx && typeof ctx.threshold === 'number') return ctx.threshold;
+    return minPassRate();
   }
 
   function renderGate(ctx) {
     const host = $('#gate-gauge');
     if (!host) return;
     const g = ctx && ctx.gate;
-    const thr = (g && typeof g.threshold === 'number') ? g.threshold : (ctx && typeof ctx.threshold === 'number' ? ctx.threshold : minPassRate());
+    const thr = gateThreshold(ctx);
     let meta;
     if (g) {
       meta = '<div><b>' + esc(g.passed != null ? g.passed : '-') + ' / ' + esc(g.total != null ? g.total : '-') + '</b> counted checks passed</div>' +
@@ -1674,7 +1685,16 @@
     if (has('kind')) renderKind();
     if (has('attachments') || has('project')) renderImportZip();
     if (has('runs') || has('runId')) { renderRecentRuns(); renderRunSelect(); }
-    if (has('settings')) schedulePipeline();
+    if (has('settings')) { renderConfiguredLabels(); schedulePipeline(); }
+  }
+
+  /* Static texts that name the gate threshold or effort show the configured values from Settings. */
+  function renderConfiguredLabels() {
+    const effort = settingValue('claude_code.effort', null);
+    const thr = settingValue('quality.min_pass_rate', null);
+    const pct = typeof thr === 'number' ? (K.thresholdPct ? K.thresholdPct(thr) : String(Math.round(thr * 100))) + ' %' : null;
+    $$('[data-setting-label="effort"]').forEach((n) => { n.textContent = typeof effort === 'string' && effort ? effort : '-'; });
+    $$('[data-setting-label="gate"]').forEach((n) => { n.textContent = pct || '-'; });
   }
 
   /* Public API for the view modules. */

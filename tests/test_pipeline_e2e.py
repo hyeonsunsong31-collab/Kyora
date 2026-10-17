@@ -179,6 +179,12 @@ class PipelineE2E(unittest.TestCase):
         self.assertLess(hist.index("intake"), hist.index("plan"))
         self.assertLess(hist.index("build"), hist.index("gate"))
         self.assertEqual(run.engine["backend"], "fake")
+        # the effort the engine ran with is recorded (UI labels read it, not today's Settings)
+        self.assertEqual(run.engine["effort"], self.app.config.claude_code.effort)
+        starts = [e.data for e in self.app.bus.replay(0, run_id=rid, types=["stage.progress"])
+                  if e.data.get("stage") == "build" and e.data.get("effort")]
+        self.assertTrue(starts, "BUILD announces its backend and effort")
+        self.assertEqual((starts[0]["backend"], starts[0]["effort"]), ("fake", self.app.config.claude_code.effort))
         self.assertIn("kimi", run.stages["intake"].get("metrics", {}))
         self.assertIn("nemotron", run.stages["design"].get("metrics", {}))
         status, raw = self.api("GET", f"/api/projects/{pid}/slides/1/download")

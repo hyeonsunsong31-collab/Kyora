@@ -8,7 +8,7 @@
 // modules may be missing), every tab shows its section, the capability strip + engine banner
 // match /api/status, the settings form masks secrets, the hub-link hash flow updates
 // /api/settings, and after the driver publishes a scripted run the chart, metric tiles, gate
-// gauge (94) and judge counters (1 allowed / 1 denied; 1 by rule, 1 by Kimi K3) reflect it, and that game previews load
+// gauge (94, run threshold 90 %), engine labels (effort high) and judge counters (1 allowed / 1 denied; 1 by rule, 1 by Kimi K3) reflect it, and that game previews load
 // from the separate preview origin (which serves no API).
 // Optional: KYORA_SMOKE_SHOTS=<dir> saves a screenshot of every view.
 import { spawn, execSync } from 'node:child_process';
@@ -232,6 +232,12 @@ async function checkPipeline(page, label) {
       stages: st,
       kimi: big('kimi'), nemotron: big('nemotron'), claude: big('claude'),
       claudeModel: (document.querySelector('.tile[data-sys="claude"] .tile-model') || {}).textContent || '',
+      claudeName: (document.querySelector('.tile[data-sys="claude"] .tile-name') || {}).textContent || '',
+      claudeRole: (document.querySelector('.tile[data-sys="claude"] .tile-role') || {}).textContent || '',
+      gateUnit: Array.from(document.querySelectorAll('#gate-gauge .g-unit')).map((n) => n.textContent).join(' '),
+      chartText: (document.getElementById('pipe-chart') || {}).textContent || '',
+      loopLabel: (document.querySelector('#pipe-chart .pc-loop-label') || {}).textContent || '',
+      settingLabels: Array.from(document.querySelectorAll('[data-setting-label]')).map((n) => n.getAttribute('data-setting-label') + '=' + n.textContent),
       gauge: (document.querySelector('#gate-gauge .g-num') || {}).textContent || '',
       allowed: counter('allowed'), denied: counter('denied'), unavailable: counter('unavailable'),
       byRule: counter('rule'), cached: counter('cached'), byKimi: counter('kimi'),
@@ -248,6 +254,15 @@ async function checkPipeline(page, label) {
   assert(/31/.test(r.claude), `[${label}] Claude tile shows "${r.claude}"`);
   assert(/claude-opus-5-5/.test(r.claudeModel), `[${label}] Claude tile model "${r.claudeModel}"`);
   assert(/94/.test(r.gauge), `[${label}] gauge shows "${r.gauge}"`);
+  // labels come from the run's recorded threshold (0.9), backend and effort (high), not from 94 % / max
+  assert(/gate 90 %/.test(r.gateUnit), `[${label}] gauge threshold label "${r.gateUnit}"`);
+  assert(!/94 %/.test(r.chartText), `[${label}] chart still names a fixed 94 % gate: "${r.chartText.slice(0, 160)}"`);
+  if (r.loopLabel !== 'fix loop') { // horizontal layout (wide chart): stage and loop labels are drawn
+    assert(r.loopLabel === 'below 90 %', `[${label}] loop label "${r.loopLabel}"`);
+    assert(/>= 90 %/.test(r.chartText), `[${label}] gate node label missing in "${r.chartText.slice(0, 200)}"`);
+  }
+  assert(r.claudeName === 'Claude Code' && /effort high/.test(r.claudeRole) && !/max/.test(r.claudeRole), `[${label}] engine tile "${r.claudeName}" / "${r.claudeRole}"`);
+  assert(r.settingLabels.length >= 3 && r.settingLabels.every((t) => /^effort=max$|^gate=94 %$/.test(t)), `[${label}] Settings labels ${r.settingLabels.join(', ')}`);
   assert(r.allowed === '1' && r.denied === '1' && r.unavailable === '0', `[${label}] judge counters ${r.allowed}/${r.denied}/${r.unavailable}`);
   assert(r.byRule === '1' && r.cached === '0' && r.byKimi === '1', `[${label}] judge sources rule/cache/kimi ${r.byRule}/${r.cached}/${r.byKimi}`);
   assert(!/every tool call/i.test(r.judgeHead) && /local rules/.test(r.judgeHead), `[${label}] judge card heading "${r.judgeHead}"`);
