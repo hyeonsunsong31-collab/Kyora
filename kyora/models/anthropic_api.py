@@ -61,6 +61,54 @@ NO_KEY_REASON = "no ANTHROPIC_API_KEY (the default engine is the Claude Code CLI
 NO_PACKAGE_REASON = "anthropic package not installed (pip install anthropic)"
 _MODEL_SUFFIX_RE = re.compile(r"(?:\[[^\]]*\])+$")
 _MODEL_DATE_RE = re.compile(r"-\d{8}$")
+GIT_BASH_ENV = "CLAUDE_CODE_GIT_BASH_PATH"  # the variable Claude Code itself reads on Windows
+NO_SHELL = "Error: no POSIX shell (bash or sh) found on this device"
+NO_SHELL_WINDOWS = ("Error: no POSIX shell found on this Windows device: install Git for Windows (Git Bash) or set "
+                    f"{GIT_BASH_ENV} to its bash.exe (WSL's bash.exe in System32 is never used)")
+
+
+def _is_wsl_launcher(path: str | Path, environ: Mapping[str, str]) -> bool:
+    """``bash.exe``/``sh.exe`` under ``%SystemRoot%`` (System32: the WSL launcher) or a WindowsApps alias."""
+    p = os.path.normcase(os.path.abspath(str(path)))
+    root = os.path.normcase(os.path.abspath(environ.get("SystemRoot") or environ.get("windir") or r"C:\Windows"))
+    try:
+        if os.path.commonpath([p, root]) == root:
+            return True
+    except ValueError:  # different drives
+        pass
+    parts = [s.lower() for s in Path(p).parts]
+    return any(a == "microsoft" and b == "windowsapps" for a, b in zip(parts, parts[1:]))
+
+
+def find_posix_shell(*, windows: bool | None = None, environ: Mapping[str, str] | None = None) -> str | None:
+    """The shell for the ``bash`` tool. On Windows that is Git Bash, as Claude Code uses: ``CLAUDE_CODE_GIT_BASH_PATH``,
+    then the ``bash.exe`` next to ``git.exe`` (``<Git>\\cmd\\git.exe`` -> ``<Git>\\bin\\bash.exe``), then ``bash``/``sh``
+    on PATH and the default install folders - never System32's ``bash.exe``, which runs the command inside WSL."""
+    windows = os.name == "nt" if windows is None else windows
+    environ = os.environ if environ is None else environ
+    if not windows:
+        shell = which("bash") or which("sh")
+        if shell is None and Path("/bin/sh").exists():
+            shell = "/bin/sh"
+        return shell
+    candidates: list[str | Path] = []
+    if environ.get(GIT_BASH_ENV):
+        candidates.append(environ[GIT_BASH_ENV])
+    git = which("git")
+    if git:
+        g = Path(git)
+        for root in (g.parent.parent, g.parent.parent.parent):  # cmd\git.exe, bin\git.exe, mingw64\bin\git.exe
+            candidates += [root / "bin" / "bash.exe", root / "usr" / "bin" / "bash.exe"]
+    candidates += [which("bash"), which("sh")]
+    for var in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
+        if environ.get(var):
+            candidates.append(Path(environ[var]) / "Git" / "bin" / "bash.exe")
+    if environ.get("LOCALAPPDATA"):
+        candidates.append(Path(environ["LOCALAPPDATA"]) / "Programs" / "Git" / "bin" / "bash.exe")
+    for c in candidates:
+        if c and Path(c).is_file() and not _is_wsl_launcher(c, environ):
+            return str(c)
+    return None
 
 ENGINE_NOTE = """
 
@@ -252,9 +300,7 @@ class AnthropicAPIEngine(CodeEngine):
     # ------------------------------------------------------------------ tools
     @staticmethod
     def _shell_argv(command: str) -> list[str] | None:
-        shell = which("bash") or which("sh")
-        if shell is None and os.name != "nt" and Path("/bin/sh").exists():
-            shell = "/bin/sh"
+        shell = find_posix_shell()
         return [shell, "-c", command] if shell else None
 
     def _bash(self, command: str, workspace: Path | str, extra_env: Mapping | None = None,
@@ -262,7 +308,7 @@ class AnthropicAPIEngine(CodeEngine):
         """Run ``command`` in ``workspace`` with a scrubbed environment; returns ``(output, is_error)``."""
         argv = self._shell_argv(command)
         if argv is None:
-            return "Error: no POSIX shell (bash or sh) found on this device", True
+            return (NO_SHELL_WINDOWS if os.name == "nt" else NO_SHELL), True
         try:
             rc, out, err = run_cmd(argv, cwd=Path(workspace), env=scrubbed_env(extra_env), timeout=timeout_s)
         except OSError as exc:

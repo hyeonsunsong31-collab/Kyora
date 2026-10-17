@@ -46,7 +46,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\kyora.ps1 serve 
   adds `--open` for `serve` (`--no-open` suppresses it), passes every other argument through and exits
   with Kyora's exit code.
 * Claude Code on Windows uses Git Bash for its Bash tool; if it cannot find `bash.exe`, set
-  `CLAUDE_CODE_GIT_BASH_PATH`.
+  `CLAUDE_CODE_GIT_BASH_PATH`. The optional Messages-API engine's `bash` tool finds Git Bash the same
+  way: `CLAUDE_CODE_GIT_BASH_PATH`, then the `bash.exe` next to `git.exe` (`<Git>\cmd\git.exe` ->
+  `<Git>\bin\bash.exe`), then `bash`/`sh` on PATH and `%ProgramFiles%\Git\bin\bash.exe`. It never uses
+  the WSL launcher `%SystemRoot%\System32\bash.exe` (or a WindowsApps alias), which would run the command
+  inside the Linux distro; without Git Bash every `bash` call returns an error that says so.
 * If `claude` resolves to the npm shim `claude.cmd` (`npm install -g @anthropic-ai/claude-code`),
   Windows runs it through `cmd.exe`, which cuts an argument at its first line break and expands `%`.
   Kyora therefore sends every prompt to a `.cmd`/`.bat` shim on stdin, passes the system prompt only

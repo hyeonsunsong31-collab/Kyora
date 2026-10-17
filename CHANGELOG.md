@@ -105,6 +105,11 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - Self-check no longer fails (exit status 1) on a Termux phone or an `install.ps1 -SkipClaude` PC whose
   linked Hub is the selected, reachable code engine: a missing Claude Code CLI is then reported as SKIP
   ("not needed: the selected code engine is hub"). With no engine at all it still fails.
+- Windows, Messages-API engine: the `bash` tool took the first `bash` on PATH, which is WSL's
+  `System32\bash.exe` (commands ran inside the Linux distro, with the C:/ workspace path meaningless
+  there), or found none with Git for Windows' default PATH. It now uses Git Bash
+  (`CLAUDE_CODE_GIT_BASH_PATH`, the `bash.exe` next to `git.exe`, PATH, `%ProgramFiles%\Git`), never a
+  `bash.exe` under `%SystemRoot%` or WindowsApps, and says "install Git for Windows" when there is none.
 
 ## 0.1.0 - 2026-10-15
 

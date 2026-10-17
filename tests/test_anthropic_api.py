@@ -602,5 +602,62 @@ class ToolTests(_Base):
             eng._editor(self.ws, "undo_edit", "src/a.js")
 
 
+class WindowsShellTests(unittest.TestCase):
+    """``find_posix_shell(windows=True)`` on a fake Windows layout (POSIX paths stand in for C:\\...)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.sysroot = self.root / "Windows"
+        self.wsl = self._file(self.sysroot / "System32" / "bash.exe")  # the WSL launcher, first on PATH
+        self.git_exe = self._file(self.root / "Program Files" / "Git" / "cmd" / "git.exe")
+        self.git_bash = self.root / "Program Files" / "Git" / "bin" / "bash.exe"
+        self.env = {"SystemRoot": str(self.sysroot)}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _file(p: Path) -> Path:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"")
+        return p
+
+    def _find(self, path: dict[str, Path]):
+        from kyora.models import anthropic_api
+        with mock.patch.object(anthropic_api, "which", lambda name: str(path[name]) if name in path else None):
+            return anthropic_api.find_posix_shell(windows=True, environ=self.env)
+
+    def test_git_bash_next_to_git_never_system32_bash(self):
+        self._file(self.git_bash)
+        self.assertEqual(self._find({"bash": self.wsl, "git": self.git_exe}), str(self.git_bash))
+        # git.exe in <Git>\mingw64\bin resolves to the same Git Bash
+        self.assertEqual(self._find({"bash": self.wsl, "git": self.root / "Program Files" / "Git" / "mingw64" / "bin" /
+                                     "git.exe"}), str(self.git_bash))
+
+    def test_claude_code_git_bash_path_wins(self):
+        custom = self._file(self.root / "tools" / "PortableGit" / "bin" / "bash.exe")
+        self._file(self.git_bash)
+        self.env["CLAUDE_CODE_GIT_BASH_PATH"] = str(custom)
+        self.assertEqual(self._find({"bash": self.wsl, "git": self.git_exe}), str(custom))
+
+    def test_only_wsl_bash_means_no_shell(self):
+        apps = self._file(self.root / "Users" / "me" / "AppData" / "Local" / "Microsoft" / "WindowsApps" / "bash.exe")
+        self.assertIsNone(self._find({"bash": self.wsl, "sh": apps, "git": self.git_exe}))
+        from kyora.models import anthropic_api
+        with mock.patch.object(anthropic_api, "find_posix_shell", lambda: None), \
+                mock.patch.object(anthropic_api.os, "name", "nt"):
+            out, is_error = AnthropicAPIEngine._bash(SimpleNamespace(_shell_argv=AnthropicAPIEngine._shell_argv),
+                                                     "ls", self.root)
+        self.assertTrue(is_error)
+        self.assertIn("Git for Windows", out)
+        self.assertIn("CLAUDE_CODE_GIT_BASH_PATH", out)
+
+    def test_default_install_folder_and_program_files_env(self):
+        self._file(self.git_bash)
+        self.env["ProgramFiles"] = str(self.root / "Program Files")
+        self.assertEqual(self._find({"bash": self.wsl}), str(self.git_bash))  # git not on PATH (Git\cmd missing)
+
+
 if __name__ == "__main__":
     unittest.main()
