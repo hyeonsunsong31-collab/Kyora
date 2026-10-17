@@ -1,7 +1,8 @@
 /* Slides: the project's version strip from GET /api/projects/{id}/slides. Every generation or
    modification is a tagged commit (slide/vN); cards show number, title, date, the measured gate
-   badge, engine/model and lineage connectors (branches on their own row). Actions: Preview,
-   Stack/Branch (prefills Studio), Download ZIP, Deck. Import ZIP -> POST /api/projects/{id}/import. */
+   badge, engine/model (a warning chip when an engine call of the run failed) and lineage
+   connectors (branches on their own row). Actions: Preview, Stack/Branch (prefills Studio),
+   Download ZIP, Deck. Import ZIP -> POST /api/projects/{id}/import. */
 (function () {
   'use strict';
   const K = (window.Kyora = window.Kyora || {});
@@ -77,6 +78,19 @@
     return '<span class="badge" data-tone="warn" title="Not complete: ' + U().esc(counts) + ', threshold ' + Math.round(thr * 100) + ' % plus required checks">below ' + Math.round(thr * 100) + '% · ' + U().esc(pct) + '</span>';
   }
 
+  /* A code-engine call of the slide's run failed (engine.ok false, engine.engine_errors): the gate badge
+     stays the measured result, this chip says the engine reported an error. */
+  function engineErrorChip(eng) {
+    const errs = eng && Array.isArray(eng.engine_errors) ? eng.engine_errors.filter((f) => f && typeof f === 'object') : [];
+    if (!eng || (eng.ok !== false && !errs.length)) return '';
+    const lines = errs.map((f) => (f.kind || 'engine') + (f.iteration != null ? ' (iteration ' + f.iteration + ')' : '') +
+      (f.backend ? ', ' + f.backend : '') + ': ' + (f.error || 'unknown error') +
+      (f.tree_changed ? ' - its files were measured' : ' - no file changed'));
+    const title = 'The code engine reported an error during this build' + (lines.length ? ':\n' + lines.join('\n') : '.') +
+      '\nThe gate badge is what was measured on the committed files.';
+    return '<span class="chip sc-engine-error" data-tone="warn" title="' + U().esc(title) + '">engine reported an error during this build</span>';
+  }
+
   const ICONS = {
     play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5l12 7-12 7z"/></svg>',
     branch: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-11 7"/></svg>',
@@ -99,6 +113,7 @@
       '<div class="sc-body"><div class="sc-title" title="' + U().esc(s.title || '') + '">' + U().esc(s.title || s.tag || ('Slide ' + n)) + '</div>' +
       '<div class="sc-meta">' + U().esc(U().fmtDate(s.created_at)) + (s.run_id ? ' · ' + U().esc(s.run_id) : '') + '</div>' +
       '<div class="sc-meta" title="' + U().esc(engText) + '">' + (engText ? U().esc(engText) + (eng.fallback_used ? ' (fallback)' : '') : 'engine: -') + '</div>' +
+      engineErrorChip(eng) +
       '<div class="sc-meta">' + U().esc(parent) + (s.tag ? ' · ' + U().esc(s.tag) : '') + (s.sha ? ' @ ' + U().esc(String(s.sha).slice(0, 7)) : '') + '</div></div>' +
       '<div class="sc-spacer"></div>' +
       '<div class="sc-actions">' +
@@ -252,5 +267,5 @@
     render();
   }
 
-  (K.modules = K.modules || {}).slides = { init, refresh, render, onEvent, layout, gateBadge };
+  (K.modules = K.modules || {}).slides = { init, refresh, render, onEvent, layout, gateBadge, engineErrorChip, cardHtml };
 })();

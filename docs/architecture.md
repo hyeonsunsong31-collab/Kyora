@@ -156,6 +156,10 @@ Types and payloads:
             "screenshots":["runs/r_01/iter-1/screenshots/start.png"]}],
  "current_slide":1}
 ```
+When a code-engine call of the slide's run failed, the slide's `engine` also carries `"ok":false` and
+`"engine_errors":[{"kind","iteration","backend","error","tree_changed"}]` (from `run.extra.engine_failures`);
+the gate stays the measured result and the slide card shows a warning chip.
+
 `run.json`
 ```json
 {"id":"r_01","project_id":"p_8f2a1c","kind":"generate|modify","parent_slide":null,"prompt":"...","attachment_ids":["a_01"],

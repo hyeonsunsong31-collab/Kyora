@@ -708,6 +708,12 @@ def finalize_stage(ctx: StageContext, gate: dict, ok: bool) -> dict:
         engine["active_model"] = " + ".join(models)
         engine["fallback_used"] = any(e.get("fallback_used") for e in ctx.run.extra.get("engine_runs") or []
                                       if isinstance(e, dict))
+    # a failed engine call is never hidden: the slide keeps the measured gate (and its state) but says so
+    errors = [{k: f.get(k) for k in ("kind", "iteration", "backend", "error", "tree_changed")}
+              for f in ctx.run.extra.get("engine_failures") or [] if isinstance(f, dict)]
+    engine["ok"] = not errors
+    if errors:
+        engine["engine_errors"] = errors
     slide = ctx.slides.commit_slide(ctx.run, title, gate_summary, engine, shots)
     ctx.run.result_slide = slide["number"]
     ctx.save_run()

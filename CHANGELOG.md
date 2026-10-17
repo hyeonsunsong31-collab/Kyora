@@ -185,6 +185,11 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   read every non-symlink entry, so a named pipe (or socket/device) an engine left behind blocked the run
   thread forever. It now `lstat`s each entry, reads only regular files, counts other entries by type and
   size, and skips the directories the gate never measures (`.git`, `node_modules`, `__pycache__`) at any depth.
+- **A slide never hides a failed engine call.** When a code-engine call failed but had changed files that
+  then passed the gate, the slide looked like a clean build. Its `engine` now carries `ok: false` and
+  `engine_errors` (kind, iteration, backend, error, whether files changed; from `run.extra.engine_failures`),
+  also in the tag meta, and the slide card shows a warning chip "engine reported an error during this build"
+  with the errors in its tooltip. The run stays `complete` and the gate badge keeps the measured result.
 
 ## 0.1.0 - 2026-10-15
 
