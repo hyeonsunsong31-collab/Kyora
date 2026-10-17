@@ -261,5 +261,50 @@ class RouteTests(_Base):
         self.assertIn("boom", missing["error"])
 
 
+class ActionsRouteTests(unittest.TestCase):
+    """``POST /api/actions`` answers the Tokkio overlay with absolute URLs it can show."""
+
+    def setUp(self):
+        from kyora.pipeline.routes import register_routes as register_pipeline_routes
+        runs = {"r_live": SimpleNamespace(id="r_live", project_id="p_1", result_slide=None, iteration=1,
+                                          extra={"runner_url": "/runner/p_1/run-r_live?auto=1&post=1"})}
+        store = SimpleNamespace(get_run=runs.get, get=lambda pid: SimpleNamespace(current_slide=3))
+        self.published = []
+        bus = SimpleNamespace(publish=lambda *a, **k: self.published.append(a))
+        self.app = SimpleNamespace(store=store, bus=bus, missing={}, server_url="http://127.0.0.1:8765",
+                                   preview_url="http://127.0.0.1:8766", preview_port=8766)
+        self.router = Router()
+        register_pipeline_routes(self.router, self.app)
+
+    def post(self, body: dict, host: str = "192.168.1.20:8765") -> dict:
+        from kyora.server import Request
+        route, params, _ = self.router.match("POST", "/api/actions")
+        req = Request("POST", "/api/actions", {}, {"host": host, "content-type": "application/json"},
+                      json.dumps(body).encode(), "192.168.1.50")
+        resp = route.handler(req, params)
+        self.assertEqual(resp.status, 200)
+        return json.loads(resp.body)
+
+    def test_urls_are_absolute_on_the_host_the_caller_used(self):
+        self.assertEqual(self.post({"action": "open_preview", "project_id": "p_1"})["url"],
+                         "http://192.168.1.20:8766/preview/p_1/v3/index.html")  # game files: the preview origin
+        self.assertEqual(self.post({"action": "kyora:open_preview", "run_id": "r_live"})["url"],
+                         "http://192.168.1.20:8766/preview/p_1/run-r_live/index.html")
+        self.assertEqual(self.post({"action": "download", "project_id": "p_1"})["url"],
+                         "http://192.168.1.20:8765/api/projects/p_1/slides/3/download")  # the API: the main origin
+        self.assertEqual(self.post({"action": "run_tests", "run_id": "r_live"})["url"],
+                         "http://192.168.1.20:8766/runner/p_1/run-r_live?auto=1&post=1")
+        self.assertEqual(self.post({"action": "run_tests", "project_id": "p_1"})["url"],
+                         "http://192.168.1.20:8766/runner/p_1/v3?auto=1&post=1")
+        self.assertEqual(self.post({"action": "open_preview", "project_id": "p_1"}, host="[fe80::1]:8765")["url"],
+                         "http://[fe80::1]:8766/preview/p_1/v3/index.html")
+        # no Host header: Kyora's own URLs
+        from kyora.server import Request
+        route, params, _ = self.router.match("POST", "/api/actions")
+        resp = route.handler(Request("POST", "/api/actions", {}, {"content-type": "application/json"},
+                                     b'{"action": "download", "project_id": "p_1"}', "127.0.0.1"), params)
+        self.assertEqual(json.loads(resp.body)["url"], "http://127.0.0.1:8765/api/projects/p_1/slides/3/download")
+
+
 if __name__ == "__main__":
     unittest.main()

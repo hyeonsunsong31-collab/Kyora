@@ -22,7 +22,17 @@ In Kyora it is the **presenter and custom-view output channel**:
 | `tokkio.narration {text}` | the avatar says `text` (verbatim, through the normal TTS/Audio2Face path) |
 | `tokkio.view {title, preview_url, screenshot_b64?, stages, buttons}` | a custom view in the Tokkio UI: header, preview link, screenshot, stage table, buttons |
 | `tokkio.clear` | the custom view is hidden |
-| button `kyora:<action>` pressed in the Tokkio UI | `POST /api/actions {action, run_id, project_id}` to Kyora |
+| button `kyora:<action>` pressed in the Tokkio UI | `POST /api/actions {action, run_id, project_id}` to Kyora; the `{"url"}` it answers is added to the view as `<button label>: <url>` |
+
+Links in the view are absolute and name the Kyora host the cluster reaches (`KyoraProcessor.events_url`):
+previews and the test harness live on Kyora's separate preview listener (`server.preview_port`, by
+default the main port + 1), so `/api/actions` answers `http://<host the overlay used>:<preview_port>/preview/...`
+for **Open preview** and `http://<host>:<port>/api/projects/<id>/slides/<n>/download` for **Download ZIP**,
+and the overlay replaces a `127.0.0.1` that Kyora reports for itself by the `events_url` host. The Tokkio
+UI cannot open a tab on the viewer's device; open the link from a browser on the same network. Like the
+rest of Kyora, previews and the ZIP need that browser's Kyora session (the `kyora_token` cookie set by
+Kyora's link or QR code; a cookie covers both ports of the host) unless it runs on the Kyora PC itself.
+Allow both ports in the PC's firewall.
 
 Tokkio is **not** a UI generator and is not part of the code path. Game UI is produced by Kyora's
 pipeline: Nemotron-3-Ultra writes the UI spec, tokens and copy; Claude Code implements real
@@ -50,6 +60,11 @@ deployed, the Presenter panel shows **"Tokkio not deployed"** and every other fe
   Kubernetes secrets are **non-empty**, so `OPENAI_API_KEY` must be set even though the overlay keeps
   `llm_processor: "NvidiaLLMService"` and never calls OpenAI. `NVIDIA_API_KEY` can be the same NVIDIA
   API Catalog key Kyora uses (it serves `nvidia/nemotron-3-ultra-550b-a55b` to the avatar's LLM).
+  The overlay's `bot.kyora.py` builds that real-time LLM with reasoning **off**
+  (`chat_template_kwargs.enable_thinking=false`, sent through the OpenAI SDK's `extra_body`, and
+  `temperature 0.2`, NVIDIA's settings for reasoning off): Nemotron-3-Ultra reasons by default, and
+  the Tokkio LLM service speaks only `delta.content`, so with reasoning on the avatar would stay silent
+  for the whole reasoning trace after the filler phrase was cancelled.
 * A Linux workstation for the one-click scripts (they use bash, OpenTofu/Terraform and Ansible;
   `install-pre-requisites.sh` installs what they need).
 

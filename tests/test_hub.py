@@ -506,6 +506,35 @@ class HubStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             fallback_unzip(link.getvalue(), dest)
 
+    def test_fallback_unzip_refuses_dotgit_aliases(self):
+        # NTFS maps GIT~1 (8.3 short name), GI7EBA~1 and ".git" + trailing dots/spaces onto .git.
+        dest = Path(self.tmp.name) / "alias"
+        (dest / ".git").mkdir(parents=True)
+        (dest / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+        for name in ("GIT~1/config", "git~1/hooks/pre-commit", "a/Gi7EbA~3/config", ".git./config", ".Git /config"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                fallback_unzip(_zip({"ok.txt": b"1", name: b"[filter]"}), dest, replace=True)
+        self.assertEqual(sorted(p.name for p in dest.iterdir()), [".git"])
+        self.assertEqual((dest / ".git" / "config").read_text(encoding="utf-8"), "[core]\n")
+        if hasattr(os, "symlink"):  # stands in for resolve() expanding an existing short name on Windows
+            try:
+                os.symlink(dest / ".git", dest / "alias", target_is_directory=True)
+            except OSError:
+                pass
+            else:
+                with self.assertRaises(ValueError):
+                    fallback_unzip(_zip({"alias/config": b"[filter]"}), dest)
+                self.assertEqual((dest / ".git" / "config").read_text(encoding="utf-8"), "[core]\n")
+        from types import SimpleNamespace
+        from unittest import mock
+
+        import kyora.hub as hub_mod
+        with mock.patch.object(hub_mod, "os", SimpleNamespace(name="nt")):
+            for name in ("index.html.", "src /game.js"):
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    hub_mod._check_entry_name(name)
+            self.assertEqual(hub_mod._check_entry_name("src/game.js"), ("src/game.js", False))
+
     def test_zip_tree_exclusions(self):
         src = Path(self.tmp.name) / "src"
         for rel in ("index.html", ".git/HEAD", "node_modules/a/b.js", "cache/c.bin", "src/cache/lru.js",

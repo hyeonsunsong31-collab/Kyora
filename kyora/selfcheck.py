@@ -41,6 +41,7 @@ NO_ENGINE = ("no code engine: install Claude Code and run claude login, or link 
              "or add ANTHROPIC_API_KEY + pip install anthropic")
 TOKKIO_NOT_DEPLOYED = "Tokkio not deployed (tokkio.ui_url empty) - see docs/tokkio-overlay.md"
 KIMI_EFFORT_HINT = "set kimi.effort_field to extra_body in Settings"
+KIMI_EFFORT_HINT_TOP = "set kimi.effort_field back to top_level in Settings"
 LABELS: dict[str, str] = {
     "python": "Python", "platform": "Platform", "git": "git", "node": "Node.js", "playwright": "Playwright (optional)",
     "claude_cli": "Claude Code CLI", "claude_auth": "Claude Code login", "claude_model": "Claude Code model",
@@ -73,6 +74,19 @@ def _excerpt(text: Any, n: int = 300) -> str:
 
 def _gb(n: float) -> str:
     return f"{n / 1024 ** 3:.1f} GB"
+
+
+def _effort_sent(extra: Any, prefix: str = "") -> str:
+    """The body field that carries the reasoning effort, as sent: ``reasoning_effort=max`` or
+    ``chat_template_kwargs.reasoning_effort=low``; the whole ``extra`` when no such field is in it."""
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            if key == "reasoning_effort" and not isinstance(value, dict):
+                return f"{prefix}{key}={value}"
+            found = _effort_sent(value, f"{prefix}{key}.") if isinstance(value, dict) else ""
+            if found:
+                return found
+    return "" if prefix else _excerpt(extra, 120)
 
 
 class _Probe:
@@ -117,6 +131,7 @@ class SelfCheck:
             results.update(self._execute(phase1))
             # the engine choice reuses the availability results cached by phase 1
             results.update(self._execute([_Probe(("engine_selected",), self._p_engine_selected, 60.0)]))
+            self._claude_not_needed(results)
             items = [results[i] for i in ORDER if i in results]
             summary = {s: sum(1 for it in items if it["status"] == s) for s in STATUSES}
             overall = "fail" if summary["fail"] else "warn" if summary["warn"] else "ok"
@@ -211,6 +226,19 @@ class SelfCheck:
 
     def _missing(self, name: str, default: str) -> str:
         return (getattr(self.app, "missing", None) or {}).get(name, default)
+
+    def _claude_not_needed(self, results: dict[str, dict]) -> None:
+        """A missing Claude Code CLI is no failure while another engine (a linked Hub on Termux or a
+        ``install.ps1 -SkipClaude`` PC, or the Messages API) is the selected one; no engine at all is
+        reported by ``engine_selected``."""
+        cli, sel = results.get("claude_cli"), results.get("engine_selected")
+        if not cli or not sel or cli["status"] != "fail" or sel["status"] != "ok":
+            return
+        backend = (sel.get("measured") or {}).get("backend") or ""
+        if not backend or backend == getattr(getattr(self.app, "claude_engine", None), "name", "claude_code"):
+            return
+        results["claude_cli"] = item("claude_cli", "skip", f"{cli['detail']}; not needed: the selected code engine "
+                                     f"is {backend}", {**cli["measured"], "not_needed_for": backend})
 
     # ------------------------------------------------------------------ local probes
     def _p_python(self) -> dict:
@@ -419,6 +447,7 @@ class SelfCheck:
             check = self._kimi_effort_check(client, model)
             if check is not None:
                 measured["effort_check"] = check["status"]
+                measured["effort_sent"] = check["sent"]
                 detail += f"; {check['note']}"
                 if check["status"] == "failed":
                     status = "warn"
@@ -428,8 +457,11 @@ class SelfCheck:
             detail += "; reasoning_content seen" if measured.get("reasoning_seen") else \
                 "; no reasoning_content in the 1-token reply"
         if any("reasoning_effort" in e for e in errors):
-            detail += f" - {KIMI_EFFORT_HINT}"
-            measured["hint"] = KIMI_EFFORT_HINT
+            # Never suggest the mode that was just rejected.
+            hint = KIMI_EFFORT_HINT_TOP if getattr(getattr(self.app, "kimi", None), "effort_field",
+                                                   "top_level") == "extra_body" else KIMI_EFFORT_HINT
+            detail += f" - {hint}"
+            measured["hint"] = hint
         return item("kimi", status, detail, measured)
 
     def _kimi_effort_check(self, client, model: str) -> dict | None:
@@ -446,16 +478,20 @@ class SelfCheck:
         if not extra:
             return None
         field = getattr(kimi, "effort_field", "top_level")
+        sent = _effort_sent(extra)
         try:
             res = chat(model, [{"role": "user", "content": "ping"}], stream=False, max_tokens=1, extra=extra,
                        timeout_s=self.model_timeout_s)
         except Exception as exc:  # noqa: BLE001 - reported in the item, never raised
             status = getattr(exc, "status", None)
             msg = str(exc)
-            return {"status": "failed", "error": msg, "reasoning_seen": None,
-                    "note": f"chat with reasoning_effort ({field}) failed"
+            return {"status": "failed", "error": msg, "reasoning_seen": None, "field": field, "sent": sent,
+                    "note": f"chat with {sent} ({field}) failed"
                             f"{f' (HTTP {status})' if status else ''}: {_excerpt(msg, 300)}"}
-        return {"status": "ok", "error": "", "note": f"reasoning_effort accepted ({field})",
+        # Accepted means the gateway answered 200 to a body carrying exactly ``sent``; a 1-token reply
+        # cannot show whether the effort was applied.
+        return {"status": "ok", "error": "", "field": field, "sent": sent,
+                "note": f"request with {sent} accepted ({field})",
                 "reasoning_seen": bool(getattr(res, "reasoning", ""))}
 
     # ------------------------------------------------------------------ engines

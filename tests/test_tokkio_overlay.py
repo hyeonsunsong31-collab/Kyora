@@ -112,6 +112,23 @@ class OverlayBotTests(unittest.TestCase):
     def test_bot_compiles(self):
         compile(KYORA_BOT.read_text(encoding="utf-8"), str(KYORA_BOT), "exec")
 
+    def test_realtime_nemotron_runs_with_reasoning_off(self):
+        # Nemotron-3-Ultra reasons by default, and the Tokkio LLM mixin speaks only delta.content: with reasoning on
+        # the avatar stays silent for the whole trace. pipecat 0.0.68 passes InputParams.extra to the OpenAI SDK's
+        # create(), so chat_template_kwargs must travel inside extra_body.
+        import ast
+        calls = [n for n in ast.walk(ast.parse(KYORA_BOT.read_text(encoding="utf-8")))
+                 if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "TokkioNvidiaLLMService"]
+        self.assertEqual(len(calls), 1)
+        kw = {k.arg: k.value for k in calls[0].keywords}
+        self.assertIn("params", kw, "the NvidiaLLMService avatar LLM is built without InputParams")
+        params = kw["params"]
+        self.assertEqual(ast.unparse(params.func), "TokkioNvidiaLLMService.InputParams")
+        pkw = {k.arg: k.value for k in params.keywords}
+        self.assertEqual(ast.literal_eval(pkw["temperature"]), 0.2)
+        self.assertEqual(ast.literal_eval(pkw["extra"]),
+                         {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}})
+
     def test_readme_diff_is_current(self):
         readme = (OVERLAY / "README.md").read_text(encoding="utf-8")
         m = re.search(r"```diff\n(.*?)```", readme, re.S)
@@ -447,6 +464,53 @@ class KyoraProcessorTests(unittest.TestCase):
         self.assertEqual(proc.created[0][1], {"action": "approve", "run_id": "r_9", "project_id": "p_9"})
         self.assertEqual(len(proc.pushed), 2, "button frames pass through unchanged")
         self.assertNotIn("Authorization", proc._headers())
+
+    def test_resolve_kyora_url(self):
+        f = self.kp.resolve_kyora_url
+        base = "http://10.0.0.2:8765"
+        # Kyora names itself 127.0.0.1 when it listens on every interface; the preview listener keeps its port
+        self.assertEqual(f("http://127.0.0.1:8766/preview/p/run-r/index.html", base),
+                         "http://10.0.0.2:8766/preview/p/run-r/index.html")
+        self.assertEqual(f("http://localhost:8765/api/projects/p/slides/2/download?x=1", base),
+                         "http://10.0.0.2:8765/api/projects/p/slides/2/download?x=1")
+        self.assertEqual(f("/preview/p/v3/index.html", base), "http://10.0.0.2:8765/preview/p/v3/index.html")
+        self.assertEqual(f("http://192.168.1.20:8766/preview/p/v3/", base), "http://192.168.1.20:8766/preview/p/v3/")
+        self.assertEqual(f("http://127.0.0.1:8766/p", "http://[fd00::2]:8765"), "http://[fd00::2]:8766/p")
+        self.assertEqual(f("http://127.0.0.1:8766/p", "http://127.0.0.1:8765"), "http://127.0.0.1:8766/p")
+        self.assertEqual(f("", base), "")
+
+    def test_view_shows_reachable_preview_and_the_url_a_button_returns(self):
+        kp = self.kp
+        proc = kp.KyoraProcessor("http://10.0.0.2:8765", "tok")
+        answers = {"open_preview": (200, '{"url": "http://127.0.0.1:8766/preview/p_1/v3/index.html"}'),
+                   "download": (200, '{"url": "http://10.0.0.2:8765/api/projects/p_1/slides/3/download"}'),
+                   "run_tests": (400, '{"error": "no slide or run to test yet"}')}
+
+        async def fake_post(url, payload):
+            self.assertEqual(url, "http://10.0.0.2:8765/api/actions")
+            return answers[payload["action"]]
+        proc._http_post = fake_post
+
+        def texts(frame):
+            return [b.text for b in frame.blocks if type(b).__name__ == "TextBlock"]
+
+        async def scenario():
+            await proc.handle_event("tokkio.view", {
+                "title": "Slide v3 passed", "preview_url": "http://127.0.0.1:8766/preview/p_1/run-r_1/index.html",
+                "buttons": [{"id": "kyora:open_preview", "text": "Open preview"},
+                            {"id": "kyora:download", "text": "Download ZIP"}]}, "r_1", "p_1")
+            await proc._post_action({"action": "open_preview", "run_id": "r_1", "project_id": "p_1"})
+            await proc._post_action({"action": "download", "run_id": "r_1", "project_id": "p_1"})
+            await proc._post_action({"action": "run_tests", "run_id": "r_1", "project_id": "p_1"})
+        asyncio.run(scenario())
+        frames = [f for f, _ in proc.pushed]
+        self.assertEqual([type(f).__name__ for f in frames], ["StartCustomViewFrame"] * 3, "a rejected action shows nothing")
+        self.assertEqual(texts(frames[0]), ["Preview: http://10.0.0.2:8766/preview/p_1/run-r_1/index.html"])
+        self.assertEqual(texts(frames[1]), ["Open preview: http://10.0.0.2:8766/preview/p_1/v3/index.html",
+                                            "Preview: http://10.0.0.2:8766/preview/p_1/run-r_1/index.html"])
+        self.assertEqual(texts(frames[2])[0], "Download ZIP: http://10.0.0.2:8765/api/projects/p_1/slides/3/download")
+        self.assertEqual(frames[2].blocks[-1].buttons[1].id, "kyora:download", "the buttons stay usable")
+        self.assertEqual(proc.stats["actions"], 2)
 
     def test_narrate_and_views_can_be_switched_off(self):
         proc = self.kp.KyoraProcessor("http://h:8765", "", narrate=False, show_views=False)

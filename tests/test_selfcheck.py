@@ -23,7 +23,7 @@ from kyora.models.base import Availability
 from kyora.models.tokkio import Tokkio
 from kyora.pipeline.events import EventBus
 from kyora.selfcheck import (
-    ISH_CLAUDE, KIMI_EFFORT_HINT, NO_ENGINE, NODE_MISSING, ORDER, TOKKIO_NOT_DEPLOYED, SelfCheck, _Probe,
+    ISH_CLAUDE, KIMI_EFFORT_HINT, KIMI_EFFORT_HINT_TOP, NO_ENGINE, NODE_MISSING, ORDER, TOKKIO_NOT_DEPLOYED, SelfCheck, _Probe,
     register_routes,
 )
 from kyora.server import KyoraServer, Router
@@ -256,6 +256,28 @@ class ReportTests(_Base):
         self.assertEqual(it["status"], "ok")
         self.assertEqual(it["measured"]["effort_check"], "ok")
         self.assertTrue(it["measured"]["reasoning_seen"])
+        self.assertEqual(it["measured"]["effort_sent"], "reasoning_effort=max")
+        self.assertIn("request with reasoning_effort=max accepted (top_level)", it["detail"])
+
+    def test_kimi_effort_check_reports_extra_body_field_actually_sent(self):
+        # The real Kimi wrapper builds the body; self-check must name what it put on the wire.
+        from kyora.config import KimiCfg
+        from kyora.models.kimi import Kimi
+        kimi = Kimi(object(), "moonshotai/kimi-k3", KimiCfg(reasoning_effort="high", judge_reasoning_effort="low",
+                                                         effort_field="extra_body"), None)
+        nim = FakeNIM()
+        it = self.by_id(SelfCheck(self.make_app(nim_kimi=nim, kimi=kimi)).run(probe_models=True))["kimi"]
+        self.assertEqual(nim.chats[0]["extra"], {"chat_template_kwargs": {"reasoning_effort": "high"}})
+        self.assertNotIn("extra_body", nim.chats[0]["extra"])
+        self.assertEqual(it["measured"]["effort_sent"], "chat_template_kwargs.reasoning_effort=high")
+        self.assertIn("request with chat_template_kwargs.reasoning_effort=high accepted (extra_body)", it["detail"])
+        # When that form is rejected too, the hint must not point back at the mode that just failed.
+        rejected = FakeStatusError('HTTP 400: {"detail":"chat_template_kwargs.reasoning_effort not permitted"}', 400)
+        it = self.by_id(SelfCheck(self.make_app(nim_kimi=FakeNIM(chat_exc=rejected), kimi=kimi))
+                        .run(probe_models=True))["kimi"]
+        self.assertEqual(it["status"], "warn")
+        self.assertIn(KIMI_EFFORT_HINT_TOP, it["detail"])
+        self.assertNotIn(KIMI_EFFORT_HINT, it["detail"])
 
     def test_no_engine_fail_message(self):
         app = self.make_app(engine=lambda: None)
@@ -293,6 +315,30 @@ class ReportTests(_Base):
         self.assertIn("not logged in", items["claude_auth"]["detail"])
         self.assertEqual(items["claude_model"]["status"], "skip")
         self.assertEqual(logged_out.probe_calls, [])
+
+    def test_missing_cli_is_not_a_failure_when_a_hub_is_the_selected_engine(self):
+        # Termux (no Android build of Claude Code) or a Windows PC installed with -SkipClaude, linked to a Hub.
+        missing_cli = SimpleNamespace(name="claude_code", availability=lambda: Availability(
+            False, "claude_code", "'claude' not found on PATH (install Claude Code and run 'claude auth login')",
+            {"command": ["claude"]}))
+        hub = FakeHub()
+        for platform in ({"kind": "termux", "system": "linux", "machine": "aarch64", "is_ish": False},
+                         {"kind": "windows", "system": "windows", "machine": "AMD64", "is_ish": False}):
+            app = self.make_app(platform=platform, claude_engine=missing_cli, engine=lambda: hub)
+            report = SelfCheck(app).run(probe_models=False)
+            items = self.by_id(report)
+            self.assertEqual(items["engine_selected"]["status"], "ok")
+            self.assertEqual(items["hub"]["status"], "ok")
+            self.assertEqual(items["claude_cli"]["status"], "skip", items["claude_cli"]["detail"])
+            self.assertIn("not found on PATH", items["claude_cli"]["detail"])
+            self.assertIn("not needed: the selected code engine is hub", items["claude_cli"]["detail"])
+            self.assertEqual(report["summary"]["fail"], 0, [it for it in report["items"] if it["status"] == "fail"])
+            self.assertNotEqual(report["overall"], "fail")
+        # without any engine the missing CLI still fails, next to engine_selected
+        items = self.by_id(SelfCheck(self.make_app(claude_engine=missing_cli, engine=lambda: None))
+                           .run(probe_models=False))
+        self.assertEqual(items["claude_cli"]["status"], "fail")
+        self.assertEqual(items["engine_selected"]["status"], "fail")
 
     def test_probe_claude_fallback_note(self):
         claude = FakeClaude(probe={"ok": True, "requested": "claude-fable-5-1", "active": "claude-opus-5-5",

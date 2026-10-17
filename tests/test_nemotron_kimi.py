@@ -240,8 +240,13 @@ class KimiCoreTests(_MockCase):
         conv.add_user("hi")
         self.kimi(effort_field="extra_body").think(conv)
         req = self.mock.last_request
-        self.assertEqual(req["extra_body"], {"reasoning_effort": "max"})
+        # The OpenAI SDK merges extra_body into the top level, so no server reads a literal "extra_body" key:
+        # the effort travels as the top-level chat-template keyword instead.
+        self.assertNotIn("extra_body", req)
+        self.assertEqual(req["chat_template_kwargs"], {"reasoning_effort": "max"})
         self.assertNotIn("reasoning_effort", req)
+        self.kimi(effort_field="extra_body", judge_reasoning_effort="low").think(conv, effort="low")
+        self.assertEqual(self.mock.last_request["chat_template_kwargs"], {"reasoning_effort": "low"})
         self.assertEqual((req["temperature"], req["top_p"]), (1.0, 1.0))
 
     def test_conversation_echoes_complete_assistant_message(self):

@@ -471,12 +471,15 @@ class NIMClient:
                         acc.content.append(content)
                         got_text = True
                         _emit(on_delta, Delta(DELTA_CONTENT, content))
-                    for key in ("reasoning_content", "reasoning"):
-                        reasoning = delta.get(key)
-                        if isinstance(reasoning, str) and reasoning:
-                            acc.reasoning.append(reasoning)
-                            got_text = True
-                            _emit(on_delta, Delta(DELTA_REASONING, reasoning))
+                    # One reasoning field per delta: vLLM >= 0.11 sends the deprecated reasoning_content as a
+                    # copy of reasoning, so taking both would double the trace (and Kimi's echoed message).
+                    reasoning = delta.get("reasoning_content")
+                    if not isinstance(reasoning, str) or not reasoning:
+                        reasoning = delta.get("reasoning")
+                    if isinstance(reasoning, str) and reasoning:
+                        acc.reasoning.append(reasoning)
+                        got_text = True
+                        _emit(on_delta, Delta(DELTA_REASONING, reasoning))
                     for tc in delta.get("tool_calls") or []:
                         if isinstance(tc, Mapping):
                             frag, partial = acc.add_tool_fragment(tc)

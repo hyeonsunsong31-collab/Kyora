@@ -32,6 +32,10 @@ MAX_TOTAL_DEFAULT = 512 * 1024 * 1024
 MAX_FILES_DEFAULT = 20000
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+# Names NTFS maps onto ".git": its 8.3 short name GIT~<n> (and git's hashed form GI7EBA~<n>) and ".git" with
+# trailing dots or spaces, which Win32 strips. Git itself refuses them (core.protectNTFS), but archive entries
+# are written by Python, so they are refused on every platform (a ZIP made anywhere may be imported on Windows).
+_DOTGIT_ALIAS_RE = re.compile(r"^(?:\.git[. ]+|(?:git|gi7eba)~\d+[. ]*)$", re.IGNORECASE)
 # Junk that archivers add and that must not decide the "single top-level folder" question.
 _JUNK_PREFIXES = ("__MACOSX/",)
 _JUNK_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini"}
@@ -159,11 +163,19 @@ def _normalise_name(raw: str) -> tuple[str, bool]:
     parts = [p for p in name.split("/") if p not in ("", ".")]
     if any(p == ".." for p in parts):
         raise UnsafeZipError(f"'..' component in archive path: {raw!r}")
+    if any(_DOTGIT_ALIAS_RE.match(p) for p in parts):
+        raise UnsafeZipError(f"archive path aliases .git on Windows (8.3 name or trailing dot/space): {raw!r}")
     if os.name == "nt":
         for p in parts:
-            if p.split(".")[0].upper() in _WIN_RESERVED or p.endswith((" ", ".")):
+            if p.split(".")[0].upper() in _WIN_RESERVED:
                 raise UnsafeZipError(f"reserved Windows file name in archive: {raw!r}")
+            if p.endswith((" ", ".")):  # Win32 strips them, so the entry would land on another name
+                raise UnsafeZipError(f"archive path component ends in a dot or space: {raw!r}")
     return "/".join(parts), is_dir
+
+
+def _in_dotgit(rel: Path) -> bool:
+    return any(p.lower() == ".git" for p in rel.parts)
 
 
 def _is_junk(name: str) -> bool:
@@ -203,9 +215,11 @@ def _plan(zf: zipfile.ZipFile, dest: Path, *, max_total: int, max_files: int, st
             continue
         target = (dest_resolved / name).resolve()
         try:
-            target.relative_to(dest_resolved)
+            rel = target.relative_to(dest_resolved)
         except ValueError:
             raise UnsafeZipError(f"entry resolves outside the destination: {info.filename!r}") from None
+        if _in_dotgit(rel):  # resolve() expands a short name such as GIT~1 that already exists
+            raise UnsafeZipError(f"entry resolves into a .git directory: {info.filename!r}")
         if target == dest_resolved:
             continue
         if not is_dir:
@@ -251,9 +265,11 @@ def _extract(zf: zipfile.ZipFile, dest: Path, plan: list[tuple[zipfile.ZipInfo, 
         target.parent.mkdir(parents=True, exist_ok=True)
         # Re-check after directories were created: an existing symlink in dest must not redirect writes.
         try:
-            target.parent.resolve().relative_to(dest_resolved)
+            rel = target.parent.resolve().relative_to(dest_resolved)
         except ValueError:
             raise UnsafeZipError(f"entry resolves outside the destination: {info.filename!r}") from None
+        if _in_dotgit(rel):
+            raise UnsafeZipError(f"entry resolves into a .git directory: {info.filename!r}")
         if target.is_symlink():
             target.unlink()
         with zf.open(info, "r") as src, open(target, "wb") as dst:
@@ -285,7 +301,8 @@ def unzip_safe(data_or_path: bytes | Path | str | BinaryIO, dest: Path | str, *,
     drive letters, ``..`` components, symlink entries (``external_attr`` mode
     ``0o120000``), ``:`` in names and anything resolving outside ``dest``; also
     enforces ``max_files`` and ``max_total`` (declared *and* actual bytes).
-    Entries inside ``.git`` directories are skipped. With ``replace=True`` the
+    Entries inside ``.git`` directories are skipped; names that alias ``.git``
+    on NTFS (``GIT~1``, ``.git.``) and entries resolving into it are rejected. With ``replace=True`` the
     existing contents of ``dest`` are deleted first, except top-level names in
     ``keep``. Nothing is written when validation fails. Returns the extracted
     file paths (POSIX, relative to ``dest``) in archive order.

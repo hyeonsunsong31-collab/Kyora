@@ -46,7 +46,27 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\kyora.ps1 serve 
   adds `--open` for `serve` (`--no-open` suppresses it), passes every other argument through and exits
   with Kyora's exit code.
 * Claude Code on Windows uses Git Bash for its Bash tool; if it cannot find `bash.exe`, set
-  `CLAUDE_CODE_GIT_BASH_PATH`.
+  `CLAUDE_CODE_GIT_BASH_PATH`. The optional Messages-API engine's `bash` tool finds Git Bash the same
+  way: `CLAUDE_CODE_GIT_BASH_PATH`, then the `bash.exe` next to `git.exe` (`<Git>\cmd\git.exe` ->
+  `<Git>\bin\bash.exe`), then `bash`/`sh` on PATH and `%ProgramFiles%\Git\bin\bash.exe`. It never uses
+  the WSL launcher `%SystemRoot%\System32\bash.exe` (or a WindowsApps alias), which would run the command
+  inside the Linux distro; without Git Bash every `bash` call returns an error that says so.
+* If `claude` resolves to the npm shim `claude.cmd` (`npm install -g @anthropic-ai/claude-code`),
+  Windows runs it through `cmd.exe`, which cuts an argument at its first line break and expands `%`.
+  Kyora therefore sends every prompt to a `.cmd`/`.bat` shim on stdin, passes the system prompt only
+  with `--append-system-prompt-file` (no inline retry for CLIs that lack that flag: update Claude Code),
+  and refuses to start the shim when any other argument contains a line break, `%`, `"`, `&`, `|`,
+  `<`, `>` or `^` (for example a `KYORA_HOME` path or `claude_code.extra_args`). The native
+  `claude.exe` (winget or the official installer) has none of these limits.
+* NTFS reaches `.git` also through its 8.3 short name (`GIT~1`) and through `.git` with trailing dots
+  or spaces. A game ZIP import, a slide import and a Hub workspace or result therefore refuse any path
+  component like `GIT~<n>`, `GI7EBA~<n>` or `.git.` (any case, on every platform) and any entry that
+  resolves into a `.git` directory; on Windows they also refuse a component that ends in a dot or a
+  space (Windows strips it, so the entry would land on another name) and reserved names such as `CON`.
+* Line endings: `.gitattributes` keeps `*.sh`, `*.py`, `*.mjs` and `*.js` LF in every checkout (also with
+  Git for Windows' default `core.autocrlf=true`), checks `*.ps1` out with CRLF (PowerShell reads both)
+  and never converts `vendor/**`, so a folder cloned on Windows and copied to Termux or iSH still starts,
+  and a release built from it keeps the vendored tree byte-identical to `vendor/VENDOR.md`.
 * To reach the PC from a phone, allow Python through Windows Defender Firewall on private networks
   when Windows asks (first `kyora hub`).
 
@@ -71,6 +91,10 @@ sh launchers/kyora-termux.sh --hub        # Hub mode (only useful if Claude Code
   proot-distro Ubuntu, wired up with Settings -> `claude_code.command` (a command that runs `claude`
   inside the distro; Kyora's workspace path must be visible at the same path there). Without any
   engine, BUILD is BLOCKED.
+* Self-check reports a missing `claude` as SKIP ("not needed: the selected code engine is hub") while a
+  linked Hub (or the Messages-API engine) is the selected engine, so `kyora-termux.sh selfcheck` exits 0
+  on a correctly linked phone (the same holds on a PC installed with `install.ps1 -SkipClaude`). With no
+  engine at all both `Claude Code CLI` and `Selected code engine` stay FAIL.
 * Android may stop Termux in the background; `termux-wake-lock` keeps it alive during long runs.
 
 ## iOS / iPadOS (iSH)

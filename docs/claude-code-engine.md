@@ -51,7 +51,11 @@ pipe carrying the prompt, see below), its own process group.
   with `-` gets a leading space so it is not parsed as an option. A prompt longer
   than `PROMPT_ARGV_LIMIT` (24 000 characters; Windows command lines are limited
   to 32 K) is written to the child's stdin instead and `-p` is followed directly
-  by `--model`.
+  by `--model`. When the resolved command is a `.cmd`/`.bat` shim (Windows npm
+  install, run through `cmd.exe`), every prompt goes through stdin, the system
+  prompt only through `--append-system-prompt-file`, and an attempt whose other
+  arguments contain a line break, `%`, `"`, `&`, `|`, `<`, `>` or `^` is not
+  started (`engine.error` names the argument); see `docs/platforms.md`.
 * `--fallback-model` lists the models after the current one in
   `[job.model] + job.fallback_models` (duplicates and empties dropped).
 * Paths in argv and in the settings file use forward slashes.

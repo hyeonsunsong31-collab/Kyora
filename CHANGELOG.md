@@ -36,6 +36,11 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   `kyora serve`/`hub --host <lan-ip>` no longer makes every tool call 403 at the route and run unjudged;
   the hook now also fails **closed** (blocks the tool) on a 401/403, which means the server rejected the
   token, not that the judge is down.
+- Windows ZIP import could write into `.git` through its 8.3 short name: an entry `GIT~1/config` (with a
+  `[filter]` driver) reached `<repo>\.git\config` and ran at the next `git add -A`. Game ZIP imports and
+  the Hub's unzip now refuse components that alias `.git` (`GIT~<n>`, `GI7EBA~<n>`, `.git` with trailing
+  dots or spaces, any case) and entries that resolve into a `.git` directory; on Windows also any
+  component ending in a dot or space.
 
 ### Fixed
 
@@ -107,6 +112,39 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   the tool has run, so it is journaled as `late` (and still seeds the cache) but is not counted and its
   `tool_use_id` is not registered. The call is counted as unavailable, as the documented guarantee
   requires; before, such a verdict was recorded as the deciding `deny`/`allow` with `unavailable: 0`.
+- NVIDIA streaming parser: a delta that carries both `reasoning_content` and `reasoning` (vLLM 0.11
+  and later sends one as a copy of the other) is now taken once, so the reasoning trace, the UI stream
+  and the assistant message Kimi K3 echoes back on the next turn are no longer doubled.
+- `kimi.effort_field = extra_body` sent a literal `"extra_body"` key that no server reads (the OpenAI
+  SDK merges `extra_body` into the top level), so the effort was silently dropped. It now sends the
+  top-level `chat_template_kwargs.reasoning_effort`. Self-check names the field and value it sent
+  (`measured.effort_sent`) and no longer suggests the mode that was just rejected.
+- Windows npm install (`claude.cmd`): the prompt went into argv, where `cmd.exe` cut it at the first
+  line break and dropped every later flag (stream-json, `--tools`, `--settings` with the judge hook).
+  A `.cmd`/`.bat` shim now always gets the prompt on stdin and the system prompt only as a file, and
+  an attempt is refused with a clear error when another argument holds characters `cmd.exe` mangles.
+- A clone made with Git for Windows' default `core.autocrlf=true` checked the launchers out with CRLF, so
+  `sh launchers/kyora-ish.sh` / `kyora-termux.sh` stopped at `set -eu\r` on a phone, and a release built
+  from it changed 615 vendored files. `.gitattributes` now keeps `*.sh`, `*.py`, `*.mjs` and `*.js` LF,
+  checks `*.ps1` out as CRLF and marks `vendor/**` `-text` (no conversion).
+- Self-check no longer fails (exit status 1) on a Termux phone or an `install.ps1 -SkipClaude` PC whose
+  linked Hub is the selected, reachable code engine: a missing Claude Code CLI is then reported as SKIP
+  ("not needed: the selected code engine is hub"). With no engine at all it still fails.
+- Windows, Messages-API engine: the `bash` tool took the first `bash` on PATH, which is WSL's
+  `System32\bash.exe` (commands ran inside the Linux distro, with the C:/ workspace path meaningless
+  there), or found none with Git for Windows' default PATH. It now uses Git Bash
+  (`CLAUDE_CODE_GIT_BASH_PATH`, the `bash.exe` next to `git.exe`, PATH, `%ProgramFiles%\Git`), never a
+  `bash.exe` under `%SystemRoot%` or WindowsApps, and says "install Git for Windows" when there is none.
+- Tokkio overlay: the avatar's real-time Nemotron-3-Ultra LLM ran with reasoning on (the model's
+  default), and the Tokkio LLM service speaks only `delta.content`, so the avatar stayed silent for the
+  whole reasoning trace. `bot.kyora.py` now builds it with `temperature 0.2` and
+  `chat_template_kwargs.enable_thinking=false` (through the OpenAI SDK's `extra_body`).
+- Tokkio overlay links: the custom view showed preview URLs as Kyora reported them (`127.0.0.1` or a
+  Kyora-relative path, which mean nothing on the cluster or the kiosk), and **Open preview** / **Download
+  ZIP** did nothing because the overlay dropped the URL `POST /api/actions` returned. `/api/actions` now
+  answers absolute URLs under the host the caller used (previews and the harness on the preview listener,
+  the ZIP on the main one), the overlay rewrites a loopback host to its `events_url` host, and a pressed
+  button adds `<label>: <url>` to the view.
 
 ## 0.1.0 - 2026-10-15
 

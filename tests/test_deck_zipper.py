@@ -85,6 +85,54 @@ class ZipperTests(unittest.TestCase):
         self._assert_rejected(_zip(ok, symlinks={"link": "/etc/passwd"}))
         self._assert_rejected(b"not a zip at all")
 
+    def test_dotgit_aliases_rejected(self):
+        # NTFS reaches .git through its 8.3 short name GIT~1 (or git's hashed GI7EBA~1) and through ".git"
+        # with trailing dots or spaces. Python writes the entries, so git's own protection never applies:
+        # GIT~1/config with a [filter] driver would run code at the next "git add -A".
+        ok = {"ok.txt": "fine"}
+        evil = '[filter "x"]\n\tclean = evil\n'
+        for name in ("GIT~1/config", "git~1/hooks/pre-commit", "game/Git~2/config", "GI7EBA~1/config",
+                     ".git./config", ".GIT /config", "git~1./config"):
+            with self.subTest(name=name):
+                self._assert_rejected(_zip({**ok, name: evil}))
+                ws = self.base / "alias-ws"
+                (ws / ".git").mkdir(parents=True, exist_ok=True)
+                (ws / "keep.txt").write_text("keep", encoding="utf-8")
+                with self.assertRaises(UnsafeZipError):
+                    import_game_zip(_zip({"index.html": "x", name: evil}), ws)
+                self.assertTrue((ws / "keep.txt").is_file(), "nothing may change on rejection")
+        # names that only look alike stay importable
+        written = unzip_safe(_zip({"git~notes.txt": "a", "legit~1.js": "b", "GIT~1.JS": "c", ".gitignore": "d",
+                                   ".github/ci.yml": "e"}), self.base / "fine")
+        self.assertEqual(sorted(written), [".github/ci.yml", ".gitignore", "GIT~1.JS", "git~notes.txt", "legit~1.js"])
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "needs symlinks")
+    def test_entry_resolving_into_existing_dotgit_is_rejected(self):
+        # On Windows resolve() expands an existing short name (GIT~1 -> .git); a symlink stands in for that here.
+        ws = self.base / "ws-link"
+        (ws / ".git").mkdir(parents=True)
+        (ws / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+        try:
+            os.symlink(ws / ".git", ws / "alias", target_is_directory=True)
+        except OSError:
+            self.skipTest("cannot create symlinks here")
+        with self.assertRaises(UnsafeZipError):
+            unzip_safe(_zip({"alias/config": "[filter]"}), ws)
+        self.assertEqual((ws / ".git" / "config").read_text(encoding="utf-8"), "[core]\n")
+
+    def test_windows_trailing_dot_or_space_rejected(self):
+        # Win32 strips trailing dots and spaces, so "index.html." would land on index.html (or ".git." on .git).
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from kyora.projects import zipper
+        with mock.patch.object(zipper, "os", SimpleNamespace(name="nt")):
+            for name in ("index.html.", "src /game.js", "a/b. /c.js", "x/CON.txt"):
+                with self.subTest(name=name), self.assertRaises(UnsafeZipError):
+                    zipper._normalise_name(name)
+            self.assertEqual(zipper._normalise_name("src/game.js"), ("src/game.js", False))
+        self.assertEqual(zipper._normalise_name("index.html."), ("index.html.", False))  # harmless on POSIX
+
     def test_limits(self):
         with self.assertRaises(UnsafeZipError):
             unzip_safe(_zip({f"f{i}.txt": "x" for i in range(5)}), self.base / "d1", max_files=4)

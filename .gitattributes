@@ -1,3 +1,16 @@
+# Line endings. Git for Windows defaults to core.autocrlf=true, which would check scripts out with CRLF:
+# POSIX sh then stops at "set -eu\r" (Termux, iSH), and a release built from that clone ships them so.
+# Everything that sh, Python or Node reads keeps LF on every checkout.
+*.sh text eol=lf
+*.py text eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
+launchers/*.sh text eol=lf
+# PowerShell 5.1 and 7 read LF and CRLF alike; scripts/ps1_lint.py only requires one style per file.
+*.ps1 text eol=crlf
+# The vendored Tokkio tree is declared unmodified (vendor/VENDOR.md lists every file's sha256): no
+# line-ending conversion at all, whatever core.autocrlf says.
+vendor/** -text
 dist/*.zip binary
 *.png binary
 *.gif binary

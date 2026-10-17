@@ -32,8 +32,8 @@ from types import SimpleNamespace
 from kyora.config import DEFAULT_SETTINGS, ClaudeCodeCfg
 from kyora.models.base import EngineEvent, EngineJob
 from kyora.models.claude_code import (
-    ALLOWED_TOOLS, HOOK_TIMEOUT_S, PROMPT_ARGV_LIMIT, ClaudeCodeEngine, _Attempt, primary_model_from_usage,
-    same_model, summarize_tool_input,
+    ALLOWED_TOOLS, HOOK_TIMEOUT_S, PROMPT_ARGV_LIMIT, ClaudeCodeEngine, _Attempt, cmd_shim_unsafe_args,
+    primary_model_from_usage, same_model, summarize_tool_input,
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "stream_json"
@@ -531,6 +531,33 @@ class ArgvAndSettingsTests(TempHomeMixin, unittest.TestCase):
         exact = make_job(self.ws, prompt="y" * PROMPT_ARGV_LIMIT)
         self.assertFalse(self.engine.prompt_via_stdin(exact))
         self.assertEqual(self.engine.build_argv(exact, self.run_dir)[2], "y" * PROMPT_ARGV_LIMIT)
+
+    def test_cmd_shim_never_gets_free_text_in_argv(self):
+        # Windows runs claude.cmd through cmd.exe: a multi-line prompt in argv would be cut at the first line
+        # break and drop every later flag (stream-json, --tools, --settings with the judge hook).
+        prompt = 'Build the game "Tom & Jerry" at 100%\nUse <canvas> | no deps ^_^'
+        job = make_job(self.ws, prompt=prompt)
+        for cfg_cmd, compat in ((["claude"], {"cmd_shim": True}),
+                                (["C:/Users/me/AppData/Roaming/npm/claude.CMD"], None),
+                                (["claude.bat"], None)):
+            argv = ClaudeCodeEngine(make_cfg(cfg_cmd), self.home, None).build_argv(job, self.run_dir, compat)
+            self.assertEqual(argv[1:3], ["-p", "--model"])
+            self.assertNotIn(prompt, argv)
+            self.assertIn("--settings", argv)
+            self.assertIn("--append-system-prompt-file", argv)
+            # the inline system prompt fallback is never used for a shim
+            argv = ClaudeCodeEngine(make_cfg(cfg_cmd), self.home, None).build_argv(
+                job, self.run_dir, {**(compat or {}), "append_system_prompt_file": False})
+            self.assertNotIn("--append-system-prompt", argv)
+            self.assertIn("--append-system-prompt-file", argv)
+        self.assertTrue(self.engine.prompt_via_stdin(job, "C:/npm/claude.cmd"))
+        self.assertFalse(self.engine.prompt_via_stdin(job, "C:/Program Files/claude/claude.exe"))
+        self.assertEqual(self.engine.build_argv(job, self.run_dir)[2], prompt)  # a real executable keeps argv
+        self.assertIsNone(ClaudeCodeEngine.compat_retry_decision(
+            "error: unknown option '--append-system-prompt-file'", {"cmd_shim": True}))
+        self.assertEqual(cmd_shim_unsafe_args(["claude.cmd", "-p", "--settings", "C:/Users/a%b/s.json", "x\ny"]),
+                         ["C:/Users/a%b/s.json", "x\ny"])
+        self.assertEqual(cmd_shim_unsafe_args(["claude.exe", "-p", "a & b\n"]), [])
 
     def test_prompt_starting_with_dash_is_not_parsed_as_option(self):
         argv = self.engine.build_argv(make_job(self.ws, prompt="--help me"), self.run_dir)
@@ -1107,6 +1134,30 @@ class RunWithFakeCLITests(TempHomeMixin, unittest.TestCase):
         self.assertEqual(inv["stdin_len"], len(prompt))
         self.assertNotIn(prompt, inv["argv"])
         self.assertEqual(res.result_text, f"done; prompt_len={len(prompt)}")
+
+    @unittest.skipIf(os.name == "nt", "a POSIX script named claude.cmd stands in for the npm shim")
+    def test_cmd_shim_gets_multiline_prompt_on_stdin(self):
+        shim = self.tmp / "npm" / "claude.cmd"
+        shim.parent.mkdir()
+        shim.write_text(f'#!/bin/sh\nexec "{PY}" "{self.fake}" "$@"\n', encoding="utf-8")
+        shim.chmod(0o755)
+        prompt = 'Build the game "Sky Runner" in this directory.\n\nTom & Jerry chase at 100% speed.'
+        eng = ClaudeCodeEngine(make_cfg([str(shim)]), self.home, SimpleNamespace(server_url="", judge=None))
+        res, _ = self.run_job(eng, self.job("ok", prompt=prompt))
+        self.assertTrue(res.ok, res.error)
+        inv = self.invocations()[0]
+        self.assertEqual(inv["stdin_len"], len(prompt))
+        self.assertNotIn(prompt, inv["argv"])
+        self.assertEqual(inv["argv"][:2], ["-p", "--model"])
+        self.assertIn("--settings", inv["argv"])
+        # an argument cmd.exe would mangle is refused before anything starts
+        bad = ClaudeCodeEngine(make_cfg([str(shim)], extra_args=["--add-dir", "C:/Tom&Jerry"]), self.home,
+                               SimpleNamespace(server_url="", judge=None))
+        res, sink = self.run_job(bad, self.job("ok", prompt=prompt))
+        self.assertFalse(res.ok)
+        self.assertIn("cmd.exe", res.error)
+        self.assertIn("C:/Tom&Jerry", res.error)
+        self.assertEqual(len(self.invocations()), 1)
 
     def test_cancel(self):
         eng = self.engine()

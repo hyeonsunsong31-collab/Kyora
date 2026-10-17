@@ -339,5 +339,47 @@ class PowerShellLauncherRunTests(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+@unittest.skipIf(shutil.which("git") is None, "git not installed")
+class LineEndingTests(unittest.TestCase):
+    """The repository's .gitattributes against a Windows-default checkout (core.autocrlf=true)."""
+
+    SAMPLES = ["launchers/kyora-ish.sh", "launchers/install-termux.sh", "launchers/kyora.ps1", "kyora/__main__.py",
+               "kyora/web/js/app.js", "tests/e2e/ui_smoke.mjs",
+               "vendor/tokkio-5.0.0-ga/scripts/debug/capture_debug_info.sh",
+               "vendor/tokkio-5.0.0-ga/local-dev-workflow/config.py", "vendor/VENDOR.md"]
+
+    def _git(self, cwd: Path, *args: str) -> None:
+        r = _run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "init.defaultBranch=main",
+                  "-c", "core.hooksPath=/dev/null", *args], cwd=str(cwd))
+        self.assertEqual(r.returncode, 0, r.stderr.decode("utf-8", "replace"))
+
+    def test_autocrlf_checkout_keeps_scripts_lf_and_vendor_byte_identical(self):
+        tmp = Path(tempfile.mkdtemp(prefix="kyora-eol-"))
+        try:
+            original = {}
+            shutil.copy2(REPO / ".gitattributes", tmp / ".gitattributes")
+            for rel in self.SAMPLES:
+                (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
+                original[rel] = (REPO / rel).read_bytes().replace(b"\r\n", b"\n")  # as stored in the index
+                (tmp / rel).write_bytes(original[rel])
+            self._git(tmp, "init", "-q")
+            self._git(tmp, "-c", "core.autocrlf=false", "add", "-A")
+            self._git(tmp, "-c", "core.autocrlf=false", "commit", "-q", "-m", "x")
+            for rel in self.SAMPLES:
+                (tmp / rel).unlink()
+            self._git(tmp, "-c", "core.autocrlf=true", "checkout", "--", ".")
+            for rel in self.SAMPLES:
+                data = (tmp / rel).read_bytes()
+                if rel.endswith(".ps1"):
+                    self.assertEqual(data.count(b"\r\n"), data.count(b"\n"), rel)  # one style: CRLF
+                    self.assertEqual(LINT.lint_text(data, rel), [], rel)
+                    continue
+                # sh would stop at "set -eu\r"; the vendored tree must match VENDOR.md byte for byte
+                self.assertFalse(b"\r" in data, f"{rel} was checked out with CR bytes")
+                self.assertTrue(data == original[rel], f"{rel} differs from the committed bytes")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
