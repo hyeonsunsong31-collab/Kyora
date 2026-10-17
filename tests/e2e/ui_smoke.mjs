@@ -8,7 +8,8 @@
 // modules may be missing), every tab shows its section, the capability strip + engine banner
 // match /api/status, the settings form masks secrets, the hub-link hash flow updates
 // /api/settings, and after the driver publishes a scripted run the chart, metric tiles, gate
-// gauge (94, run threshold 90 %), engine labels (effort high) and judge counters (1 allowed / 1 denied; 1 by rule, 1 by Kimi K3) reflect it, and that game previews load
+// gauge (94, run threshold 90 %), engine labels (effort high) and judge counters (3 allowed / 1 denied / 2 unavailable, one of them an engine-detected
+// unjudged call; 1 by rule, 1 by Kimi K3) reflect it, and that game previews load
 // from the separate preview origin (which serves no API).
 // Optional: KYORA_SMOKE_SHOTS=<dir> saves a screenshot of every view.
 import { spawn, execSync } from 'node:child_process';
@@ -265,7 +266,9 @@ async function checkPipeline(page, label) {
   assert(r.claudeName === 'Claude Code' && /effort high/.test(r.claudeRole) && !/max/.test(r.claudeRole), `[${label}] engine tile "${r.claudeName}" / "${r.claudeRole}"`);
   assert(r.claudeCost && /^API-equiv\. est\.~\$1\.003/.test(r.claudeCost.text) && /list prices/.test(r.claudeCost.title), `[${label}] engine cost not labelled as an estimate: ${JSON.stringify(r.claudeCost)}`);
   assert(r.settingLabels.length >= 3 && r.settingLabels.every((t) => /^effort=max$|^gate=94 %$/.test(t)), `[${label}] Settings labels ${r.settingLabels.join(', ')}`);
-  assert(r.allowed === '1' && r.denied === '1' && r.unavailable === '0', `[${label}] judge counters ${r.allowed}/${r.denied}/${r.unavailable}`);
+  // allowed: the Kimi allow, the judge's own unavailable allow (its judge.verdict) and the engine-detected
+  // unjudged call (judge.unavailable with ran_unjudged, no verdict) - as the server's record_unavailable counts
+  assert(r.allowed === '3' && r.denied === '1' && r.unavailable === '2', `[${label}] judge counters ${r.allowed}/${r.denied}/${r.unavailable}`);
   assert(r.byRule === '1' && r.cached === '0' && r.byKimi === '1', `[${label}] judge sources rule/cache/kimi ${r.byRule}/${r.cached}/${r.byKimi}`);
   assert(!/every tool call/i.test(r.judgeHead) && /local rules/.test(r.judgeHead), `[${label}] judge card heading "${r.judgeHead}"`);
   assert(r.iter === 'iteration 1', `[${label}] iteration counter "${r.iter}"`);
@@ -379,7 +382,7 @@ async function runViewport(browser, driver, opts) {
     driver.send('PUBLISH');
     await driver.waitLine(/^PUBLISHED r_demo /, 15000);
   }
-  await check(`[${label}] pipeline reflects the scripted run (chart, tiles, gauge 94, judge 1/1)`, () => checkPipeline(page, label));
+  await check(`[${label}] pipeline reflects the scripted run (chart, tiles, gauge 94, judge 3/1/2)`, () => checkPipeline(page, label));
   await shot(page, `${label}-pipeline-run`);
   await check(`[${label}] presenter, slides, preview, bench and self-check degrade gracefully`, () => checkOtherViews(page, label, publish));
   await check(`[${label}] game previews come from the separate preview origin`, () => checkPreviewOrigin(page, label));

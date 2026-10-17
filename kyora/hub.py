@@ -1366,6 +1366,8 @@ class HubClientEngine(CodeEngine):
                 return  # another hub job of the same run
             if env["type"] == "engine.session" and data.get("backend"):
                 data["backend"] = f"hub:{data['backend']}"
+            # Everything else is relayed unchanged, including judge.unavailable's ran_unjudged flag: the Hub
+            # counted that call allowed + unavailable in the judge delta, and the client's UI counts it the same.
             self._emit(sink, EngineEvent(str(env["type"]), data))
 
         last_doc: dict | None = None

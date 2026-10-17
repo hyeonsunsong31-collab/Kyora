@@ -1084,6 +1084,10 @@
         break;
       case 'judge.unavailable':
         ctx.judge.unavailable += 1;
+        // An engine-detected unjudged call (ran_unjudged) is counted allowed + unavailable on the server
+        // (record_unavailable) and gets no judge.verdict; the judge's own unavailable path is followed by a
+        // judge.verdict (source 'unavailable') that already counts the allow.
+        if (d.ran_unjudged === true) ctx.judge.allowed += 1;
         out.push(line(ev, 'judge', 'judge', 'judge', 'judge unavailable: ' + (d.reason || 'no reason given') + ' (tool call allowed, fail-open)', 'warn'));
         break;
       case 'test.static':

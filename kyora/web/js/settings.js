@@ -38,7 +38,7 @@
     { title: 'Kimi K3', hint: 'planner + judge', fields: [
       { s: 'settings', p: 'kimi.reasoning_effort', label: 'Reasoning effort', type: 'select', options: KIMI_EFFORTS },
       { s: 'settings', p: 'kimi.judge_reasoning_effort', label: 'Judge reasoning effort', type: 'select', options: KIMI_EFFORTS },
-      { s: 'settings', p: 'kimi.effort_field', label: 'Effort field', type: 'select', options: ['top_level', 'extra_body'], help: 'Switch to extra_body if the gateway rejects a top-level reasoning_effort (Self-check shows the error).' }
+      { s: 'settings', p: 'kimi.effort_field', label: 'Effort field', type: 'select', options: ['top_level', 'extra_body'], help: 'Switch to extra_body if the gateway rejects a top-level reasoning_effort (Self-check shows the error). extra_body sends chat_template_kwargs.reasoning_effort, which Kimi K3 is not documented to read: best-effort, the model may ignore it.' }
     ] },
     { title: 'Nemotron-3-Ultra', hint: 'design director', fields: [
       { s: 'settings', p: 'nemotron.thinking_for_design', label: 'Thinking mode for design documents', type: 'bool' }

@@ -909,9 +909,11 @@ class ClaudeCodeEngine(CodeEngine):
             log.warning("judge.has_verdict failed: %s", exc)
             return
         if not has:
+            # ran_unjudged: this call is counted allowed + unavailable (record_unavailable), so the UI counts
+            # it as allowed too; JudgeService's own judge.unavailable is followed by a judge.verdict instead.
             self._emit(sink, EngineEvent(JUDGE_UNAVAILABLE, {
                 "reason": f"no judge verdict recorded for {name} ({tid}): the hook could not reach the judge, the call ran unjudged",
-                "tool_name": name, "tool_use_id": tid}))
+                "tool_name": name, "tool_use_id": tid, "ran_unjudged": True}))
             try:
                 judge.record_unavailable(job.run_id)  # the call ran unjudged; count it on the run
             except Exception as exc:  # noqa: BLE001

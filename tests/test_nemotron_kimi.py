@@ -14,7 +14,8 @@ from pathlib import Path
 
 from kyora.config import KimiCfg, NemotronCfg
 from kyora.models.kimi import (
-    DEFAULT_CONSTRAINTS, GATE_NOT_PASSED_REASON, MAX_INTAKE_IMAGES, Kimi, KimiConversation, apply_gate_guard,
+    DEFAULT_CONSTRAINTS, EXTRA_BODY_EFFORT_NOTE, GATE_NOT_PASSED_REASON, MAX_INTAKE_IMAGES, Kimi, KimiConversation,
+    apply_gate_guard,
     build_intake_content, normalize_intake, normalize_plan, normalize_review, normalize_rel_path, normalize_verdict,
     truncate_strings, unwrap_payload,
 )
@@ -248,6 +249,27 @@ class KimiCoreTests(_MockCase):
         self.kimi(effort_field="extra_body", judge_reasoning_effort="low").think(conv, effort="low")
         self.assertEqual(self.mock.last_request["chat_template_kwargs"], {"reasoning_effort": "low"})
         self.assertEqual((req["temperature"], req["top_p"]), (1.0, 1.0))
+
+    def test_effort_events_never_claim_extra_body_effort_applied(self):
+        # Kimi K3's template is not documented to read chat_template_kwargs.reasoning_effort: model.request /
+        # model.metrics name the field sent and mark the extra_body mode best-effort, never "applied".
+        self.handler = lambda req: {"content": "ok"}
+        conv = KimiConversation()
+        conv.add_user("hi")
+        self.kimi(effort_field="extra_body").think(conv, run_id="r_eb", purpose="probe")
+        for type_ in ("model.request", "model.metrics"):
+            data = self.events(type_, "r_eb")[0].data
+            self.assertEqual(data["effort_sent"], "chat_template_kwargs.reasoning_effort=max", type_)
+            self.assertIs(data["effort_best_effort"], True, type_)
+            self.assertEqual(data["effort_note"], EXTRA_BODY_EFFORT_NOTE, type_)
+            self.assertIn("may ignore", data["effort_note"])
+            self.assertEqual((data["role"], data["model"], data["purpose"]), ("kimi", KIMI_MODEL, "probe"))
+            self.assertNotIn("applied", json.dumps(data))
+        self.kimi().think(conv, run_id="r_tl", effort="low")
+        data = self.events("model.request", "r_tl")[0].data
+        self.assertEqual(data["effort_sent"], "reasoning_effort=low")
+        self.assertNotIn("effort_best_effort", data)
+        self.assertNotIn("effort_note", data)
 
     def test_conversation_echoes_complete_assistant_message(self):
         def handler(req):

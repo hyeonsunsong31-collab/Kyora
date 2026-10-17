@@ -192,7 +192,7 @@ class RuleTests(unittest.TestCase):
                     "git tag -l 'slide/*'", "git remote -v", "find . -name '*.js'", "wc -l src/*.js",
                     "python3 -m py_compile tool.py", "ls 2>&1", "grep -rn TODO src 2>/dev/null", "cd src && ls",
                     "head -n 20 src/game.js; tail -n 5 src/game.js", "env", "printenv PATH", "sort -u list.txt",
-                    "uniq -c data.txt", "tree -L 2"):
+                    "uniq -c data.txt", "tree -L 2", "rg -n pat src", "rg --no-search-zip pat", "rg -i zed"):
             self.assertEqual(self.v(bash(cmd, cwd=str(self.ws))), ("allow", "read_only_command"), cmd)
 
     def test_commands_that_only_look_read_only_defer(self):
@@ -222,6 +222,8 @@ class RuleTests(unittest.TestCase):
         # program or write a file must leave the read-only class (defer to Kimi).
         for cmd in (
             "rg --pre=sh pat src", "rg --pre sh pat src", "rg --hostname-bin /tmp/h pat",
+            "rg -z pat", "rg --search-zip pat src", "rg -nz pat", "rg -zn pat", "rg -n -i -z pat src",
+            "rg pat src --search-zip", "rg -C2 -iz pat",
             "sort --compress-program=sh big.txt", "sort -S 1 --compress-program=sh big.txt",
             "sort -o out.txt in.txt", "node --check src/a.js --require ./evil.cjs",
             "node -c --require=./evil.cjs src/a.js", "node -c -e \"require('cp').execSync('id')\"",

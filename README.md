@@ -200,8 +200,9 @@ port + 1, i.e. 8766; `kyora serve --preview-port N`), `server.allowed_hosts` (`[
 `claude_code.timeout_s` (3600), `claude_code.command` (e.g. a wrapper for a proot-distro install) and
 `claude_code.extra_args` (both edited only in `settings.json`, never over HTTP; restart Kyora after a
 change), `kimi.reasoning_effort` / `kimi.judge_reasoning_effort` (`max`),
-`kimi.effort_field` (`top_level` sends `reasoning_effort`; `extra_body` sends
-`chat_template_kwargs.reasoning_effort`, the top-level field an OpenAI SDK `extra_body` would carry),
+`kimi.effort_field` (`top_level` sends `reasoning_effort`, Kimi K3's documented control; `extra_body` sends
+`chat_template_kwargs.reasoning_effort`, the top-level field an OpenAI SDK `extra_body` would carry, which
+Kimi K3's template is not documented to read: best-effort, the model may ignore it),
 `nemotron.thinking_for_design`,
 `quality.min_pass_rate` (0.94), `quality.max_fix_iterations` (3), `quality.browser_wait_s` (1800),
 `quality.require_plan_approval`, `hub.expose_ui`.
@@ -269,7 +270,7 @@ decides who counts as "the same machine" carefully.
 | Model restricted / not available (e.g. `claude-fable-5-1`) | Your account cannot use that model. Kyora falls back to `claude-opus-5-5`, then `claude-sonnet-5-5`, and shows which one served. Change `claude_code.model` / `fallback_models` in Settings to match your plan. |
 | `engine.compat_retry` in the log, `unknown option '--max-turns'` | Your CLI version hides or lacks `--max-turns` / `--append-system-prompt-file`. Kyora retried once without them (own turn watchdog, inline system prompt). Nothing to do; updating Claude Code (`claude update`) removes the retry. |
 | NVIDIA **401** / "invalid key" in self-check | The NVIDIA key is wrong, revoked or out of credits. Create a new one at build.nvidia.com and enter it in Settings (both Nemotron and Kimi K3 slots). |
-| Kimi K3 **400** mentioning `reasoning_effort` | The gateway rejected the top-level field. Set Settings -> `kimi.effort_field` to `extra_body` (the effort is then sent as `chat_template_kwargs.reasoning_effort`) and re-run self-check, which names the field it sent and shows the provider's error body. "Accepted" means the gateway answered 200 to that body; a 1-token probe cannot show that the effort was applied. |
+| Kimi K3 **400** mentioning `reasoning_effort` | The gateway rejected the top-level field. Set Settings -> `kimi.effort_field` to `extra_body` (the effort is then sent as `chat_template_kwargs.reasoning_effort`) and re-run self-check, which names the field it sent and shows the provider's error body. "Accepted" means the gateway answered 200 to that body; a 1-token probe cannot show that the effort was applied. The `extra_body` mode is best-effort: Kimi K3's documented control is the top-level `reasoning_effort`, its template is not documented to read the keyword, so the model may ignore it and run at its default effort (self-check and the `model.request` / `model.metrics` events say so). |
 | `judge.unavailable` events | The judge could not be reached or Kimi K3 failed; the hook let the tool run (fail-open) and the run records it. Check the NVIDIA key and network. |
 | Tests wait for the browser / run BLOCKED after `quality.browser_wait_s` | The harness page needs an open browser tab on a device that can reach Kyora. Keep the Kyora tab open (on iOS keep Safari and iSH in the foreground). |
 | iSH is very slow | Expected: iSH emulates x86 in software. Let the first start finish, keep iSH in the foreground, do BUILD through a Hub, skip Bench there. |

@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, Callable
 
+from .models.kimi import EXTRA_BODY_EFFORT_NOTE
 from .pipeline.events import SELFCHECK_UPDATE
 from .server import lan_addresses
 from .util.fs import which
@@ -42,6 +43,7 @@ NO_ENGINE = ("no code engine: install Claude Code and run claude login, or link 
 TOKKIO_NOT_DEPLOYED = "Tokkio not deployed (tokkio.ui_url empty) - see docs/tokkio-overlay.md"
 KIMI_EFFORT_HINT = "set kimi.effort_field to extra_body in Settings"
 KIMI_EFFORT_HINT_TOP = "set kimi.effort_field back to top_level in Settings"
+KIMI_EFFORT_BEST_EFFORT = EXTRA_BODY_EFFORT_NOTE  # kimi.effort_field = extra_body is never reported as applied
 LABELS: dict[str, str] = {
     "python": "Python", "platform": "Platform", "git": "git", "node": "Node.js", "playwright": "Playwright (optional)",
     "claude_cli": "Claude Code CLI", "claude_auth": "Claude Code login", "claude_model": "Claude Code model",
@@ -448,6 +450,8 @@ class SelfCheck:
             if check is not None:
                 measured["effort_check"] = check["status"]
                 measured["effort_sent"] = check["sent"]
+                if check.get("field") == "extra_body":
+                    measured["effort_best_effort"] = True  # the model may ignore the chat-template keyword
                 detail += f"; {check['note']}"
                 if check["status"] == "failed":
                     status = "warn"
@@ -489,9 +493,11 @@ class SelfCheck:
                     "note": f"chat with {sent} ({field}) failed"
                             f"{f' (HTTP {status})' if status else ''}: {_excerpt(msg, 300)}"}
         # Accepted means the gateway answered 200 to a body carrying exactly ``sent``; a 1-token reply
-        # cannot show whether the effort was applied.
+        # cannot show whether the effort was applied. Kimi K3's template is not documented to read the
+        # extra_body mode's chat_template_kwargs.reasoning_effort at all, so that mode is labelled best-effort.
+        mode = f"{field}; {KIMI_EFFORT_BEST_EFFORT}" if field == "extra_body" else field
         return {"status": "ok", "error": "", "field": field, "sent": sent,
-                "note": f"request with {sent} accepted ({field})",
+                "note": f"request with {sent} accepted ({mode})",
                 "reasoning_seen": bool(getattr(res, "reasoning", ""))}
 
     # ------------------------------------------------------------------ engines

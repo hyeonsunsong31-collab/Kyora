@@ -32,6 +32,8 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   `export GIT_CONFIG_COUNT=1; export GIT_CONFIG_KEY_0=core.fsmonitor; export GIT_CONFIG_VALUE_0=...; git status`
   was approved as "read-only" while git ran the injected program outside the workspace. Genuinely
   read-only commands stay on the instant path.
+- `rg -z`/`--search-zip` (also inside a short-flag cluster such as `-nz`) is no longer classed
+  read-only: it spawns external decompressors, so it now defers to Kimi like `rg --pre`.
 - **The judge hook reaches the judge over a LAN bind.** `POST /api/judge` is authenticated by the
   per-run hook token (constant-time compare) instead of requiring a loopback peer, so running
   `kyora serve`/`hub --host <lan-ip>` no longer makes each judged call get a 403 at the route and run unjudged;
@@ -125,6 +127,17 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   SDK merges `extra_body` into the top level), so the effort was silently dropped. It now sends the
   top-level `chat_template_kwargs.reasoning_effort`. Self-check names the field and value it sent
   (`measured.effort_sent`) and no longer suggests the mode that was just rejected.
+- The `extra_body` effort mode is now reported as best-effort: Kimi K3's documented control is the
+  top-level `reasoning_effort` and its template is not documented to read
+  `chat_template_kwargs.reasoning_effort`, so the model may ignore it. Self-check's detail line
+  (`measured.effort_best_effort`), Kimi's `model.request`/`model.metrics`/`model.done`/`model.error`
+  events (new `effort_sent`, plus `effort_best_effort` and `effort_note` in that mode), the Settings
+  help, README and docs/honesty.md say so; none claims the level was applied.
+- Live Judge card: a call the engine found unjudged (the hook never reached the judge) was counted
+  only as unavailable in the UI, while the server counts it allowed + unavailable. The engines'
+  (Claude Code, Messages API, relayed unchanged by the Hub) per-call `judge.unavailable` events now
+  carry `ran_unjudged: true`, and the card counts those as allowed too; the judge's own
+  `judge.unavailable` + `judge.verdict` (source `unavailable`) pair is still counted once.
 - Windows npm install (`claude.cmd`): the prompt went into argv, where `cmd.exe` cut it at the first
   line break and dropped every later flag (stream-json, `--tools`, `--settings` with the judge hook).
   A `.cmd`/`.bat` shim now always gets the prompt on stdin and the system prompt only as a file, and

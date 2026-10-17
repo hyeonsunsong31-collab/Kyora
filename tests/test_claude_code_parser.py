@@ -896,6 +896,7 @@ class RunWithFakeCLITests(TempHomeMixin, unittest.TestCase):
         types = sink.types()
         self.assertEqual(types[0], "judge.unavailable")  # app.judge is None: visible, never silent
         self.assertIn("not configured", sink.of("judge.unavailable")[0]["reason"])
+        self.assertNotIn("ran_unjudged", sink.of("judge.unavailable")[0])  # a notice, not a counted call
         for t in ("engine.session", "engine.model_resolved", "engine.text", "engine.tool_use", "stage.progress",
                   "engine.tool_result", "engine.result", "engine.stderr"):
             self.assertIn(t, types)
@@ -952,6 +953,7 @@ class RunWithFakeCLITests(TempHomeMixin, unittest.TestCase):
         self.assertEqual(len(unav), 1)  # the Write ran without a journaled verdict
         self.assertEqual(unav[0]["tool_use_id"], "toolu_A")
         self.assertEqual(unav[0]["tool_name"], "Write")
+        self.assertIs(unav[0]["ran_unjudged"], True)  # the UI counts it allowed + unavailable, like the server
         # the unjudged call is also counted on the run (honesty-run-judge-stats-miss-unjudged-calls)
         self.assertEqual(judge.unavailable, ["r_test"])
         # with a verdict on record nothing is flagged
@@ -969,6 +971,7 @@ class RunWithFakeCLITests(TempHomeMixin, unittest.TestCase):
         reasons = [d["reason"] for d in sink.of("judge.unavailable")]
         self.assertEqual(len(reasons), 1)
         self.assertIn("server URL unknown", reasons[0])
+        self.assertNotIn("ran_unjudged", sink.of("judge.unavailable")[0])
 
     def test_fallback_model_served(self):
         res, sink = self.run_job(self.engine(), self.job("ok", env={"FAKE_SERVED_MODEL": "claude-opus-5-5"}))

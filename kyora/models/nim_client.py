@@ -776,17 +776,18 @@ def json_for_prompt(obj: Any, limit: int = 24_000) -> str:
 # ----------------------------------------------------------------------------- bus integration
 def chat_with_events(client: NIMClient, bus, *, role: str, model: str, run_id: str | None = None,
                      project_id: str | None = None, purpose: str | None = None, publish_deltas: bool = True,
-                     **chat_kwargs: Any) -> ChatResult:
+                     event_fields: Mapping[str, Any] | None = None, **chat_kwargs: Any) -> ChatResult:
     """Run ``client.chat`` and publish ``model.request/delta/metrics/done`` or ``model.error`` on ``bus``.
 
-    ``bus`` may be ``None`` (no events). Deltas are coalesced with
+    ``bus`` may be ``None`` (no events). ``event_fields`` (Kimi's ``effort_sent`` ...) are added to the
+    request, metrics, done and error events and never override ``role``/``model``/``purpose``. Deltas are coalesced with
     :class:`kyora.pipeline.events.DeltaCoalescer`. Metrics are the measured
     :class:`Metrics` of the call; nothing is invented when the server sends
     no usage block (``tokens_source`` says what the numbers are).
     """
     from ..pipeline.events import MODEL_DONE, MODEL_ERROR, MODEL_METRICS, MODEL_REQUEST, DeltaCoalescer
 
-    base = {"role": role, "model": model}
+    base = {**dict(event_fields or {}), "role": role, "model": model}
     if purpose:
         base["purpose"] = purpose
 

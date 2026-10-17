@@ -17,7 +17,10 @@ does four jobs in the pipeline:
 Sampling is fixed at ``temperature 1.0, top_p 1.0``; the reasoning effort is
 sent as the top-level ``reasoning_effort`` field or, with
 ``settings.kimi.effort_field = extra_body``, as the chat-template keyword
-``chat_template_kwargs.reasoning_effort`` (see :meth:`Kimi.effort_extra`). Kimi's preserved thinking requires the
+``chat_template_kwargs.reasoning_effort`` (see :meth:`Kimi.effort_extra`). Kimi K3's documented control is
+the top-level field; its template is not documented to read that keyword, so the ``extra_body`` mode is
+best-effort and the model may ignore it (:meth:`Kimi.effort_report` says so in ``model.request`` /
+``model.metrics`` events, self-check in its detail line). Kimi's preserved thinking requires the
 COMPLETE assistant message (``reasoning_content`` and ``tool_calls``) to be
 echoed back on the next turn; :class:`KimiConversation` stores exactly what
 :attr:`ChatResult.message` returns.
@@ -58,6 +61,9 @@ EXCERPT_CHARS = 3000
 EXCERPT_BUDGET = 24_000
 LISTING_ITEMS = 80
 GATE_NOT_PASSED_REASON = "gate not passed; complete is not allowed"
+# kimi.effort_field = extra_body: what may be said about the effort it sends. Never that it was applied.
+EXTRA_BODY_EFFORT_NOTE = ("best-effort: Kimi K3 documents only the top-level reasoning_effort, so the model "
+                          "may ignore chat_template_kwargs.reasoning_effort")
 
 # Request shapes tried for structured output, most specific first. A gateway that
 # rejects a forced ``tool_choice`` (Kimi thinking mode accepts only ``auto``) is
@@ -817,6 +823,21 @@ class Kimi:
             log.warning("kimi: unknown effort_field %r; sending reasoning_effort top-level", field)
         return {"reasoning_effort": effort}
 
+    def effort_report(self, effort: str | None) -> dict:
+        """Event fields naming the effort field and value sent (``effort_sent``), never that it was applied.
+
+        In the ``extra_body`` mode they add ``effort_best_effort: true`` and :data:`EXTRA_BODY_EFFORT_NOTE`:
+        Kimi K3's template is not documented to read ``chat_template_kwargs.reasoning_effort``.
+        """
+        extra = self.effort_extra(effort)
+        kwargs = extra.get("chat_template_kwargs")
+        if isinstance(kwargs, dict) and "reasoning_effort" in kwargs:
+            return {"effort_sent": f"chat_template_kwargs.reasoning_effort={kwargs['reasoning_effort']}",
+                    "effort_best_effort": True, "effort_note": EXTRA_BODY_EFFORT_NOTE}
+        if "reasoning_effort" in extra:
+            return {"effort_sent": f"reasoning_effort={extra['reasoning_effort']}"}
+        return {}
+
     # ------------------------------------------------------------------ bookkeeping
     def _remember(self, purpose: str, res: ChatResult) -> None:
         with self._lock:
@@ -848,13 +869,14 @@ class Kimi:
         ``auto`` so a forced, implemented tool cannot loop by construction.
         """
         extra = self.effort_extra(effort)
+        report = self.effort_report(effort)
         label = purpose or "think"
         rounds = 0
         choice = tool_choice
         while True:
             res = chat_with_events(self.client, self.bus, role=ROLE, model=self.model, run_id=run_id,
                                    project_id=project_id, purpose=label, publish_deltas=publish_deltas,
-                                   messages=conv.messages(), tools=tools, tool_choice=choice if tools else None,
+                                   event_fields=report, messages=conv.messages(), tools=tools, tool_choice=choice if tools else None,
                                    max_tokens=max_tokens, extra=extra or None, cancel=cancel, timeout_s=timeout_s,
                                    temperature=1.0, top_p=1.0)
             self._remember(label, res)

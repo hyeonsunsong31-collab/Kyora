@@ -370,6 +370,8 @@ class LoopTests(_Base):
         self.assertEqual(judge.unavailable, ["r_test"])  # the unjudged call is counted
         unav = sink.of("judge.unavailable")
         self.assertTrue(any(d.get("tool_name") == "Bash" for d in unav))
+        # ran_unjudged: the UI counts the call allowed + unavailable, as record_unavailable does
+        self.assertEqual([d.get("ran_unjudged") for d in unav if d.get("tool_name") == "Bash"], [True])
 
     def test_escape_path_rejected_without_judging(self):
         turn1 = [block("tool_use", id="t1", name="str_replace_based_edit_tool",

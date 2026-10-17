@@ -62,6 +62,8 @@ class FakeCodeEngine(CodeEngine):
             self.judge.decide(job.run_id, {"tool_name": "Bash", "tool_use_id": "jt2",
                                            "tool_input": {"command": "git push"}})
             self.judge.record_unavailable(job.run_id)  # a call the hook could not reach
+            sink.on_event(EngineEvent("judge.unavailable", {"reason": "no judge verdict recorded", "tool_name": "Edit",
+                                                            "tool_use_id": "jt3", "ran_unjudged": True}))
             self.judge.forget(job.run_id)
         sink.on_event(EngineEvent("engine.session", {"session_id": "sess-1", "model": "fake-model", "tools": ["Write"],
                                                      "permission_mode": "acceptEdits", "cwd": str(job.workspace),
@@ -248,10 +250,14 @@ class HubRoundTripTests(unittest.TestCase):
         self.fake.judge = self.hub.app.judge
         try:
             ws = self._workspace()
-            result = self._client_engine().run(self._engine_job(ws, "r_judge1"), RecordingSink(), threading.Event())
+            sink = RecordingSink()
+            result = self._client_engine().run(self._engine_job(ws, "r_judge1"), sink, threading.Event())
         finally:
             self.fake.judge = None
         self.assertTrue(result.ok, result.error)
+        # The relay keeps ran_unjudged, so the client's Live Judge card counts the unjudged call as allowed too.
+        unjudged = [e.data for e in sink.events if e.type == "judge.unavailable"]
+        self.assertEqual([(d.get("tool_use_id"), d.get("ran_unjudged")) for d in unjudged], [("jt3", True)])
         delta = result.raw["hub"]["judge"]
         self.assertEqual(delta.get("allowed"), 2)      # the Write (rule allow) + the unjudged call (fail-open)
         self.assertEqual(delta.get("denied"), 1)       # git push (rule deny)
