@@ -176,6 +176,11 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   earlier failed run's commit cleared the work tree when it was prepared, but resuming it before its first
   commit checked that commit out again, so the new game was built on the earlier run's files. Resume now
   clears the tree again while the run has not committed.
+- **Slides leave out `node_modules`.** Since slide commits force-add ignored game files, a
+  `.gitignore`'d `node_modules/` (or `__pycache__/`) at any depth went into the slide, its ZIP export and
+  its preview although the gate never measures it. Both backends now leave the directories in
+  `quality.SKIP_DIRS` (`node_modules`, `__pycache__`; `.git` as before) out of every commit, and a git
+  commit also drops such entries an older commit tracked; other ignored game files are still kept.
 
 ## 0.1.0 - 2026-10-15
 
