@@ -176,6 +176,10 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   `docs/tokkio-overlay.md` now say what happens: the code engine implements the UI, the measured gate
   decides, and Kimi K3 reviews failed gates and judges the writes and shell commands the local rules
   do not settle. `tests/test_ui_labels.py` catches the old phrasing.
+- **The bench confirm dialog names the configured effort and the selected engine.** It always said
+  "Claude subscription usage at max effort"; it now names what the engine the server would select
+  spends (Claude subscription, Anthropic API tokens or the linked Hub) at the configured
+  `claude_code.effort`. The API's `estimate.warning` and `docs/bench.md` no longer say "max effort".
 
 ## 0.1.0 - 2026-10-15
 

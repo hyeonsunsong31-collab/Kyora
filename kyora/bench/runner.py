@@ -35,8 +35,8 @@ from .scoring import SUITE_SIZE, TaskResult
 
 log = logging.getLogger("kyora.bench")
 
-WARNING = ("Each task runs the full pipeline: Nemotron + Kimi K3 tokens on your NVIDIA keys and Claude subscription "
-           "usage at max effort; typically 10-30 min per task.")
+WARNING = ("Each task runs the full pipeline: Nemotron + Kimi K3 tokens on your NVIDIA keys and code-engine usage "
+           "(your Claude subscription by default) at the configured claude_code.effort; typically 10-30 min per task.")
 NO_ENGINE = ("no code engine available (BLOCKED): install Claude Code and run claude login, link a Kyora Hub, "
              "or add an Anthropic API key")
 TERMINAL_EVENTS = ("run.completed", "run.failed", "run.blocked", "run.cancelled")

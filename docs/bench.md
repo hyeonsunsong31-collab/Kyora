@@ -103,8 +103,10 @@ for browser tests. Without a browser the run is BLOCKED after `quality.browser_w
 ## Running it
 
 It costs real money and time. **Each task runs the full pipeline: Nemotron + Kimi K3 tokens on your NVIDIA
-keys and Claude subscription usage at max effort; typically 10-30 min per task.** A full run is 24 pipeline
-runs, so expect many hours and a large share of your Claude usage limits. Start with one or two tasks.
+keys and code-engine usage (your Claude subscription by default) at the configured `claude_code.effort`
+(default `max`); typically 10-30 min per task.** The confirm dialog names the engine the server would
+select and the configured effort. A full run is 24 pipeline runs, so expect many hours and a large
+share of your Claude usage limits. Start with one or two tasks.
 
 ```
 kyora selfcheck                       # models reachable, Claude logged in, an engine available

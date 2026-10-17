@@ -6,7 +6,18 @@
 (function () {
   'use strict';
   const K = (window.Kyora = window.Kyora || {});
-  const LOCAL_WARNING = 'Each task runs the full pipeline: Nemotron + Kimi K3 tokens on your NVIDIA keys and Claude subscription usage at max effort; typically 10-30 min per task.';
+  /* What the code engine spends per task: named from the engine the server would select
+     (estimate.engine) and the configured claude_code.effort, never a fixed "max effort". */
+  const ENGINE_USAGE = {
+    claude_code: 'Claude subscription usage (Claude Code CLI)',
+    anthropic_api: 'Anthropic API tokens on your Anthropic key',
+    hub: 'code-engine usage on the linked Kyora Hub'
+  };
+  function benchWarning(effort, engine) {
+    const usage = (engine && ENGINE_USAGE[engine]) || (engine ? 'code-engine usage (' + engine + ')' : 'code-engine usage');
+    const at = typeof effort === 'string' && effort ? ' at effort ' + effort : '';
+    return 'Each task runs the full pipeline: Nemotron + Kimi K3 tokens on your NVIDIA keys and ' + usage + at + '; typically 10-30 min per task.';
+  }
 
   let tasks = null;
   let estimate = null;
@@ -183,7 +194,8 @@
   async function startRun() {
     const ids = (tasks || []).filter((t) => checked[t.id]).map((t) => t.id);
     if (!ids.length) { K.toast('Select at least one task.', 'warn'); return; }
-    const warning = (estimate && estimate.warning) || LOCAL_WARNING;
+    const effort = K.app && K.app.settingValue ? K.app.settingValue('claude_code.effort', null) : null;
+    const warning = benchWarning(effort, estimate && estimate.engine);
     const noEngine = estimate && estimate.engine_available === false;
     const body = '<p>' + U().esc(warning) + '</p><p><b>' + ids.length + ' task' + (ids.length > 1 ? 's' : '') + '</b> = ' + ids.length + ' full pipeline run' + (ids.length > 1 ? 's' : '') +
       ', roughly ' + (ids.length * 10) + '-' + (ids.length * 30) + ' minutes in sequence.</p>' +
@@ -255,5 +267,5 @@
     });
   }
 
-  (K.modules = K.modules || {}).bench = { init, onEvent };
+  (K.modules = K.modules || {}).bench = { init, onEvent, warning: benchWarning };
 })();

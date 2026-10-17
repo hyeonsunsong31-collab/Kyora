@@ -180,6 +180,22 @@ class RunLabelRenderTests(unittest.TestCase):
         self.assertIn("threshold: gateThreshold(ctx), backend:", app)
         self.assertIn("K.metrics.renderTiles(ctx ? ctx.metrics : K.metrics.emptyMetrics(), ctx ? ctx.engine : null)", app)
 
+    def test_bench_warning_names_the_configured_effort_and_engine(self):
+        out = run_node(["js/bench.js"], """{
+            cc: K.modules.bench.warning('high', 'claude_code'),
+            api: K.modules.bench.warning('medium', 'anthropic_api'),
+            hub: K.modules.bench.warning('max', 'hub'),
+            none: K.modules.bench.warning(null, null) }""")
+        self.assertIn("Claude subscription usage (Claude Code CLI) at effort high;", out["cc"])
+        self.assertIn("Anthropic API tokens on your Anthropic key at effort medium;", out["api"])
+        self.assertIn("linked Kyora Hub at effort max;", out["hub"])
+        self.assertIn("NVIDIA keys and code-engine usage; typically", out["none"])
+        for text in out.values():
+            self.assertNotIn("at max effort", text)
+        js = (WEB / "js" / "bench.js").read_text(encoding="utf-8")
+        self.assertIn("benchWarning(effort, estimate && estimate.engine)", js)
+        self.assertIn("settingValue('claude_code.effort', null)", js)
+
 
 BENCH_TESTS = REPO / "kyora" / "bench" / "tasks" / "b01-breakout.browser-tests.js"
 
