@@ -35,7 +35,7 @@ _WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
 # Names NTFS maps onto ".git": its 8.3 short name GIT~<n> (and git's hashed form GI7EBA~<n>) and ".git" with
 # trailing dots or spaces, which Win32 strips. Git itself refuses them (core.protectNTFS), but archive entries
 # are written by Python, so they are refused on every platform (a ZIP made anywhere may be imported on Windows).
-_DOTGIT_ALIAS_RE = re.compile(r"^(?:\.git[. ]+|git~\d+|gi7eba~\d+)$", re.IGNORECASE)
+_DOTGIT_ALIAS_RE = re.compile(r"^(?:\.git[. ]+|(?:git|gi7eba)~\d+[. ]*)$", re.IGNORECASE)
 # Junk that archivers add and that must not decide the "single top-level folder" question.
 _JUNK_PREFIXES = ("__MACOSX/",)
 _JUNK_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini"}
@@ -167,8 +167,10 @@ def _normalise_name(raw: str) -> tuple[str, bool]:
         raise UnsafeZipError(f"archive path aliases .git on Windows (8.3 name or trailing dot/space): {raw!r}")
     if os.name == "nt":
         for p in parts:
-            if p.split(".")[0].upper() in _WIN_RESERVED or p.endswith((" ", ".")):
+            if p.split(".")[0].upper() in _WIN_RESERVED:
                 raise UnsafeZipError(f"reserved Windows file name in archive: {raw!r}")
+            if p.endswith((" ", ".")):  # Win32 strips them, so the entry would land on another name
+                raise UnsafeZipError(f"archive path component ends in a dot or space: {raw!r}")
     return "/".join(parts), is_dir
 
 
@@ -299,7 +301,8 @@ def unzip_safe(data_or_path: bytes | Path | str | BinaryIO, dest: Path | str, *,
     drive letters, ``..`` components, symlink entries (``external_attr`` mode
     ``0o120000``), ``:`` in names and anything resolving outside ``dest``; also
     enforces ``max_files`` and ``max_total`` (declared *and* actual bytes).
-    Entries inside ``.git`` directories are skipped. With ``replace=True`` the
+    Entries inside ``.git`` directories are skipped; names that alias ``.git``
+    on NTFS (``GIT~1``, ``.git.``) and entries resolving into it are rejected. With ``replace=True`` the
     existing contents of ``dest`` are deleted first, except top-level names in
     ``keep``. Nothing is written when validation fails. Returns the extracted
     file paths (POSIX, relative to ``dest``) in archive order.

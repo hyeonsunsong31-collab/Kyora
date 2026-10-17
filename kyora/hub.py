@@ -85,7 +85,7 @@ DEFAULT_TIMEOUT_S = 7200.0
 _JOB_ID_RE = re.compile(r"^hj_[0-9a-f]{6,32}$")
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,80}$")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
-_DOTGIT_ALIAS_RE = re.compile(r"^(?:\.git[. ]+|git~\d+|gi7eba~\d+)$", re.IGNORECASE)  # = zipper's
+_DOTGIT_ALIAS_RE = re.compile(r"^(?:\.git[. ]+|(?:git|gi7eba)~\d+[. ]*)$", re.IGNORECASE)  # = zipper's
 _COPY_CHUNK = 1024 * 1024
 
 
