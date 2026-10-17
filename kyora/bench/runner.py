@@ -452,7 +452,9 @@ class BenchRunner:
             server = KyoraServer(self.app, "127.0.0.1", port, router)
         except OSError as exc:
             log.info("bench: port %s busy (%s); using an ephemeral port", port, exc)
-            server = KyoraServer(self.app, "127.0.0.1", 0, router)
+            # Both listeners ephemeral: an explicit server.preview_port is likely held by the same Kyora
+            # (or program) that holds the main port.
+            server = KyoraServer(self.app, "127.0.0.1", 0, router, preview_port=0)
         server.start()
         self._server = server
         self.app.start(server.url)

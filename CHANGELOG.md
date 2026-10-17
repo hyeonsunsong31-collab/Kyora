@@ -19,8 +19,9 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - `claude_code.command` and `claude_code.extra_args` can no longer be changed through
   `PUT /api/settings` (the Settings tab shows them read-only); edit `settings.json` instead.
 - The `kyora_token` cookie is `HttpOnly`; main-origin HTML is sent with `X-Frame-Options: SAMEORIGIN`.
-- `GET /static/...` rejects backslashes, drive letters and streams, so a Windows source install can no
-  longer be made to read files outside `kyora/web` (for example `config/keys.json`).
+- `GET /static/...` treats a backslash as a path separator and rejects `..`, drive letters, streams and NUL,
+  so a Windows source install can no longer be made to read files outside `kyora/web` (for example
+  `config/keys.json`).
 - **The judge no longer waves through program-spawning "read-only" shell commands.** A segment with an
   environment assignment (`export GIT_CONFIG_*=`, `GIT_EXTERNAL_DIFF=`, `GIT_PAGER=`, `LD_PRELOAD=`,
   `PATH=`, `BASH_ENV=`, `NODE_OPTIONS=`, a bare `NAME=value`, ...) and tool flags that run another
@@ -33,7 +34,7 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   read-only commands stay on the instant path.
 - **The judge hook reaches the judge over a LAN bind.** `POST /api/judge` is authenticated by the
   per-run hook token (constant-time compare) instead of requiring a loopback peer, so running
-  `kyora serve`/`hub --host <lan-ip>` no longer makes every tool call 403 at the route and run unjudged;
+  `kyora serve`/`hub --host <lan-ip>` no longer makes each judged call get a 403 at the route and run unjudged;
   the hook now also fails **closed** (blocks the tool) on a 401/403, which means the server rejected the
   token, not that the judge is down.
 - Windows ZIP import could write into `.git` through its 8.3 short name: an entry `GIT~1/config` (with a
@@ -47,6 +48,11 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - Windows: a second Kyora on the same port no longer starts silently next to the first one (and marks
   its running builds interrupted); listeners claim their ports with `SO_EXCLUSIVEADDRUSE` and
   `kyora serve`/`hub` report a busy port clearly and exit.
+- **One Kyora per `KYORA_HOME`.** `kyora serve`, `kyora hub` and `kyora bench` hold an OS lock on
+  `KYORA_HOME/kyora.lock` (flock / msvcrt) for their lifetime and refuse to start when another Kyora holds
+  it, so a second instance on the same home - on another port, a bench next to a running server, or a
+  listener macOS let share the port - can no longer mark the first one's live runs interrupted. The
+  bench's embedded server falls back to ephemeral main and preview ports when the configured ones are busy.
 - **Slides keep ignored game files**: slide commits (and so ZIP downloads and previews) now include
   files named by the game's `.gitignore`, `.git/info/exclude` or the user's global excludes file, as
   the snapshot backend always did; the gate measured them, so the saved slide now matches the

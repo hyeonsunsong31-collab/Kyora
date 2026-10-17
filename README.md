@@ -231,11 +231,14 @@ decides who counts as "the same machine" carefully.
   cannot post one as a CORS-free `text/plain` form.
 * **No command execution over HTTP.** `claude_code.command` and `claude_code.extra_args` are the
   argv of a process Kyora runs, so `PUT /api/settings` refuses to change them; edit `settings.json`.
-* **Static files** are read only from `kyora/web`; `..`, backslashes, drive letters and streams are
-  rejected on every platform.
-* **One instance per port.** On Windows the listeners claim their ports exclusively
-  (`SO_EXCLUSIVEADDRUSE`), so a second Kyora on the same port fails with a clear message instead of
-  silently sharing it.
+* **Static files** are read only from `kyora/web`. A backslash counts as a path separator; `..`, `.`,
+  empty segments, drive letters and streams (`:`) and NUL are rejected on every platform, and on a
+  filesystem install the resolved file must stay inside `kyora/web`.
+* **One Kyora per home.** `kyora serve`, `kyora hub` and `kyora bench` take a lock on
+  `KYORA_HOME/kyora.lock` before they start, so a second Kyora on the same home (another port, a bench
+  next to a running server) exits with a clear message instead of marking the first one's runs
+  interrupted. On Windows the listeners also claim their ports exclusively (`SO_EXCLUSIVEADDRUSE`), so a
+  second Kyora on the same port fails clearly instead of silently sharing it.
 
 ## Effort and models
 

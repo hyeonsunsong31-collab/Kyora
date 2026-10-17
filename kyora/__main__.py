@@ -22,9 +22,25 @@ def _build_app(args, hub_mode: bool = False):
     return App(cfg, home=home, hub_mode=hub_mode)
 
 
+def _claim_home(app):
+    """Take the KYORA_HOME instance lock before app.start(); None (message printed) when another Kyora holds it."""
+    from .util.instance_lock import InstanceLock
+    lock = InstanceLock(app.home)
+    if lock.acquire():
+        return lock
+    pid = lock.holder_pid()
+    print(f"Another Kyora is already running with this home ({app.home}{', pid ' + pid if pid else ''}).\n"
+          "Stop it first, or start this one with a different --home.", file=sys.stderr)
+    app.stop()
+    return None
+
+
 def cmd_serve(args, hub_mode: bool = False) -> int:
     from .server import KyoraServer, Router
     app = _build_app(args, hub_mode=hub_mode)
+    lock = _claim_home(app)
+    if lock is None:
+        return 2
     host = args.host or ("0.0.0.0" if hub_mode else app.config.server.host)
     port = args.port if args.port is not None else app.config.server.port
     router = Router()
@@ -37,6 +53,7 @@ def cmd_serve(args, hub_mode: bool = False) -> int:
               "Another Kyora or another program is using that port. Stop it, or start with --port N "
               "(and --preview-port M).", file=sys.stderr)
         app.stop()
+        lock.release()
         return 2
     app.start(server.url, server.preview_url)
     print(f"Kyora {__version__} - {app.platform['kind']} - config: {app.config.config_dir}")
@@ -68,6 +85,7 @@ def cmd_serve(args, hub_mode: bool = False) -> int:
     finally:
         server.shutdown()
         app.stop()
+        lock.release()
     return 0
 
 
@@ -108,6 +126,9 @@ def cmd_bench(args) -> int:
         if answer.strip().lower() not in ("y", "yes"):
             print("aborted")
             return 1
+    lock = _claim_home(app)
+    if lock is None:
+        return 2
     import threading as _t
     cancel = _t.Event()
     box: dict = {}
@@ -125,6 +146,7 @@ def cmd_bench(args) -> int:
     result = box.get("result")
     print(json.dumps(result if isinstance(result, dict) else getattr(result, "to_dict", lambda: str(result))(), indent=2))
     app.stop()
+    lock.release()
     return 0 if not cancel.is_set() else 130
 
 

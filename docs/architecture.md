@@ -57,7 +57,7 @@ KYORA_HOME/bench/<timestamp>/
 - `kyora.server`: `Request` (method, path, query, headers, body, client_ip; `.json()`, `.multipart()` -> `[Part]`,
   `.bearer()`, `.cookies()`, `.is_loopback()`), `Response.json/text/html/bytes/file/redirect/sse/error`, `Router.add(method,
   pattern, handler, auth='local'|'any'|'loopback'|'hub')` with `{name}` and `{name:path}` params, `event_stream(bus, ...)`,
-  `resource_response(rel)` (`safe_resource_rel` rejects `..`, `\\`, `:` and NUL), `lan_addresses()`.
+  `resource_response(rel)` (`safe_resource_rel` treats `\\` as a separator and rejects `..`, `.`, empty segments, `:` and NUL), `lan_addresses()`.
   `KyoraServer(app, host, port, router, *, preview_port=None, preview_router=None)` runs two listeners on the same
   bind address: the main one (UI + API) and the **preview listener** (`server.preview_port`, `null` = port + 1; an
   ephemeral port when that is busy; `0` = ephemeral), a separate origin for untrusted game code whose router comes
@@ -65,8 +65,9 @@ KYORA_HOME/bench/<timestamp>/
   (loopback names, the address the request arrived on, LAN addresses/hostname/`.local`/FQDN when bound beyond
   loopback, `server.allowed_hosts`) else `403`; a non-GET/HEAD/OPTIONS request with an `Origin` must come from the
   listener's own origin (`null` refused) else `403`; `Request.json()` requires `application/json` (or `*+json`)
-  for a non-empty body (`400`). Main-listener HTML gets `X-Frame-Options: SAMEORIGIN`. Listeners never share a
-  port (`SO_EXCLUSIVEADDRUSE` on Windows).
+  for a non-empty body (`400`). Main-listener HTML gets `X-Frame-Options: SAMEORIGIN`. On Windows the listeners
+  claim their ports exclusively (`SO_EXCLUSIVEADDRUSE`); on every platform the CLI holds
+  `KYORA_HOME/kyora.lock` (`kyora/util/instance_lock.py`) before `app.start()`, so two Kyoras never share a home.
 - `kyora.app.App`: attributes `config, home, bus, platform, store, nemotron, kimi, judge, claude_engine, anthropic_engine,
   hub_client, hub_worker, tokkio, run_manager, selfcheck, bench, browser_results, server_url, preview_url,
   preview_port, hub_mode, missing`; `engine()`; `status()` (includes `preview_url`, `preview_port`);
