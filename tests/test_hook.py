@@ -191,11 +191,20 @@ class HookTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("HTTP 500", self.hook_log())
 
-    def test_http_403_bad_token_fails_open(self):
-        self.stub.respond({"error": "invalid or unknown hook token", "decision": "deny"}, status=403)
-        rc, _, _ = self.run_hook(json.dumps(CALL))
-        self.assertEqual(rc, 0)  # a deny body on a non-200 answer is not a verdict
-        self.assertIn("HTTP 403", self.hook_log())
+    def test_http_401_403_rejected_token_fails_closed(self):
+        # Regression for protocol-judge-lan-host-fail-open: a 401/403 means the server REJECTED the request
+        # (bad/unknown hook token), not that the judge is down, so the hook must fail CLOSED (exit 2) and not
+        # let an unauthenticated tool call run.
+        for status in (401, 403):
+            with self.subTest(status=status):
+                self.stub.respond({"error": "invalid or unknown hook token", "decision": "deny"}, status=status)
+                rc, _, err = self.run_hook(json.dumps(CALL))
+                self.assertEqual(rc, 2)
+                self.assertIn(f"HTTP {status}", err)
+                self.assertIn("blocking Write", err)
+                log = self.hook_log()
+                self.assertIn(f"HTTP {status}", log)
+                self.assertIn("fail-closed", log)
 
     def test_non_json_body_fails_open(self):
         self.stub.respond(b"<html>oops</html>")

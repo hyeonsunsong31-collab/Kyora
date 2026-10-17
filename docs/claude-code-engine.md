@@ -147,8 +147,11 @@ back to Claude; exit 1 = non-blocking error (the tool proceeds).
    `Kyora judge (<source>) denied <tool>: <reason>`, **exit 2**.
    Any other decision -> **exit 0**.
 5. Fail-open, each logged to `hook.log` and **exit 0**: connection refused /
-   timeout / DNS errors, any non-200 status (500, 403 bad token, ...), a body
-   that is not a JSON object.
+   timeout / DNS errors, a 5xx (or any other non-200) status, a body that is not
+   a JSON object.
+6. Fail-closed on **401/403** (the server rejected an invalid/unknown hook
+   token, not an unreachable judge) -> reason on stderr, **exit 2**, so an
+   unauthenticated call cannot slip through unjudged.
 
 Fail-open is visible, never silent: after each `tool_result` of a judged tool the
 engine asks `judge.has_verdict(run_id, tool_use_id)`; without a journaled verdict
@@ -164,7 +167,9 @@ and the blocked call is listed in the result line's `permission_denials`.
 
 ## 6. Judge (`JudgeService`)
 
-`POST /api/judge` (auth `loopback`) calls `handle_request(payload)`:
+`POST /api/judge` (auth `any`; authenticated by the per-run `hook_token`, **not**
+by the peer address, so the hook reaches the judge even when Kyora binds a
+specific LAN IP such as `kyora hub --host <ip>`) calls `handle_request(payload)`:
 
 * payload not an object -> `400 {"error","decision":"deny"}`;
 * unknown run, missing or wrong `hook_token` (constant-time compare of UTF-8 bytes) -> `403`;

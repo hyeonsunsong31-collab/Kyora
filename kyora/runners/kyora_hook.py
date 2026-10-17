@@ -20,11 +20,14 @@ tool_name, tool_use_id, tool_input}`` to ``KYORA_JUDGE_URL`` (Kyora's
 * ``{"decision": "allow"}`` -> exit 0
 * ``{"decision": "deny", "reason": ...}`` -> reason on stderr, exit 2
 
-Fail-open: when the judge is unreachable, times out, answers with a non-200
-status or an unparsable body, a line is appended to ``KYORA_HOME/logs/hook.log``
-and the tool call is allowed (exit 0). Kyora's engine notices tool calls that
-have no journaled verdict and emits ``judge.unavailable`` so a silent bypass is
-never possible.
+Fail-open: when the judge is unreachable, times out, answers with a 5xx (or any
+other non-200) status or an unparsable body, a line is appended to
+``KYORA_HOME/logs/hook.log`` and the tool call is allowed (exit 0). Kyora's
+engine notices tool calls that have no journaled verdict and emits
+``judge.unavailable`` so a silent bypass is never possible. A 401/403 is the one
+exception: it means the server REJECTED the request (an invalid or unknown hook
+token), not that the judge is down, so the hook fails CLOSED (exit 2) instead of
+letting an unauthenticated call run.
 
 Environment: ``KYORA_JUDGE_URL``, ``KYORA_RUN_ID``, ``KYORA_HOOK_TOKEN``,
 ``KYORA_HOME`` (log location, default ``~/.kyora``), optional
@@ -148,6 +151,15 @@ def main() -> int:
             detail = exc.read()[:300].decode("utf-8", "replace")
         except Exception:
             pass
+        if exc.code in (401, 403):
+            # The server positively REJECTED this request (an invalid or unknown hook token), which is a
+            # misconfiguration or tampering, not an unreachable judge: fail CLOSED so the call cannot slip
+            # through unjudged. Exit 2 blocks the tool and shows the reason to Claude.
+            _log(f"judge rejected the request HTTP {exc.code}; BLOCKING (fail-closed) {detail}".rstrip(),
+                 run_id, tool_name, tool_use_id)
+            print(f"Kyora judge rejected the hook request (HTTP {exc.code}); blocking "
+                  f"{tool_name or 'this tool call'}", file=sys.stderr)
+            return EXIT_BLOCK
         _log(f"judge answered HTTP {exc.code}; allowing (fail-open) {detail}".rstrip(), run_id, tool_name, tool_use_id)
         return EXIT_ALLOW
     except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as exc:

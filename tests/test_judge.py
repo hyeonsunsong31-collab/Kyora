@@ -410,6 +410,29 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual((v["decision"], v["rule"]), ("deny", "missing_path"))
 
+    def test_judge_route_is_token_authenticated_not_loopback(self):
+        # Regression for protocol-judge-lan-host-fail-open: the /api/judge route must NOT be gated by a
+        # loopback peer (which 403s the hook when Kyora binds a specific LAN IP, making every tool call run
+        # unjudged). It is auth="any" so the request reaches handle_request, which authenticates the per-run
+        # hook token with a constant-time hmac compare.
+        from types import SimpleNamespace
+        from kyora.pipeline import routes as proutes
+        from kyora.server import Router
+        svc = self.service(ScriptedKimi())
+        token = self.register(svc)
+        app = SimpleNamespace(config=SimpleNamespace(hub=SimpleNamespace(token="", expose_ui=False)),
+                              judge=svc, missing={}, store=None, run_manager=None, bus=self.bus)
+        router = Router()
+        proutes.register_routes(router, app)
+        judge_routes = [r for r in router.routes if r.pattern == "/api/judge"]
+        self.assertEqual([r.auth for r in judge_routes], ["any"])
+        # a request carrying the valid token is judged (as it would be from a LAN peer), a bad token is 403ed
+        self.assertEqual(svc.handle_request({"hook_token": token, "run_id": "r_1", "tool_name": "Write",
+                                             "tool_input": {"file_path": str(self.ws / "src" / "game.js")},
+                                             "tool_use_id": "t1"})[0], 200)
+        self.assertEqual(svc.handle_request({"hook_token": "nope", "run_id": "r_1", "tool_name": "Write",
+                                             "tool_input": {}})[0], 403)
+
     # ------------------------------------------------------------------ bookkeeping
     def test_journal_events_stats_and_has_verdict(self):
         svc = self.service(ScriptedKimi({"decision": "allow", "reason": "ok"}))
