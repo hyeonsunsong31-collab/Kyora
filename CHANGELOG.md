@@ -21,6 +21,11 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - The `kyora_token` cookie is `HttpOnly`; main-origin HTML is sent with `X-Frame-Options: SAMEORIGIN`.
 - `GET /static/...` rejects backslashes, drive letters and streams, so a Windows source install can no
   longer be made to read files outside `kyora/web` (for example `config/keys.json`).
+- Windows ZIP import could write into `.git` through its 8.3 short name: an entry `GIT~1/config` (with a
+  `[filter]` driver) reached `<repo>\.git\config` and ran at the next `git add -A`. Game ZIP imports and
+  the Hub's unzip now refuse components that alias `.git` (`GIT~<n>`, `GI7EBA~<n>`, `.git` with trailing
+  dots or spaces, any case) and entries that resolve into a `.git` directory; on Windows also any
+  component ending in a dot or space.
 
 ### Fixed
 
@@ -93,11 +98,6 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   line break and dropped every later flag (stream-json, `--tools`, `--settings` with the judge hook).
   A `.cmd`/`.bat` shim now always gets the prompt on stdin and the system prompt only as a file, and
   an attempt is refused with a clear error when another argument holds characters `cmd.exe` mangles.
-- Windows ZIP import could write into `.git` through its 8.3 short name: an entry `GIT~1/config` (with a
-  `[filter]` driver) reached `<repo>\.git\config` and ran at the next `git add -A`. Game ZIP imports and
-  the Hub's unzip now refuse components that alias `.git` (`GIT~<n>`, `GI7EBA~<n>`, `.git` with trailing
-  dots or spaces, any case) and entries that resolve into a `.git` directory; on Windows also any
-  component ending in a dot or space.
 - A clone made with Git for Windows' default `core.autocrlf=true` checked the launchers out with CRLF, so
   `sh launchers/kyora-ish.sh` / `kyora-termux.sh` stopped at `set -eu\r` on a phone, and a release built
   from it changed 615 vendored files. `.gitattributes` now keeps `*.sh`, `*.py`, `*.mjs` and `*.js` LF,
