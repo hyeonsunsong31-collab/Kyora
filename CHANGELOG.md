@@ -181,6 +181,10 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   its preview although the gate never measures it. Both backends now leave the directories in
   `quality.SKIP_DIRS` (`node_modules`, `__pycache__`; `.git` as before) out of every commit, and a git
   commit also drops such entries an older commit tracked; other ignored game files are still kept.
+- **A FIFO in the work tree can no longer hang a run.** The "did the engine change anything" fingerprint
+  read every non-symlink entry, so a named pipe (or socket/device) an engine left behind blocked the run
+  thread forever. It now `lstat`s each entry, reads only regular files, counts other entries by type and
+  size, and skips the directories the gate never measures (`.git`, `node_modules`, `__pycache__`) at any depth.
 
 ## 0.1.0 - 2026-10-15
 

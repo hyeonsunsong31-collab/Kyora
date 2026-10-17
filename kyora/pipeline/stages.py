@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import string
 import subprocess
 import threading
@@ -29,6 +30,7 @@ from typing import Any
 from ..models.base import BusSink, CodeEngine, EngineJob, EngineResult
 from ..util.fs import atomic_write_bytes, atomic_write_json, atomic_write_text, read_json
 from . import events as ev
+from .quality import SKIP_DIRS
 
 log = logging.getLogger("kyora.pipeline")
 
@@ -212,17 +214,32 @@ def select_engine(ctx: StageContext) -> CodeEngine:
 
 
 def tree_fingerprint(root: Path) -> str:
-    """Content hash of the work tree (``.git`` excluded): tells whether the engine changed any file."""
+    """Content hash of the work tree: tells whether the engine changed any file.
+
+    The directories the gate never measures (``quality.SKIP_DIRS``: ``.git``, ``node_modules``, ...) are
+    skipped at any depth. Every entry is ``lstat``-ed and only regular files are read; a symlink counts by
+    its target, anything else (FIFO, socket, device) by its type and size, so it can never block the run.
+    """
     h = hashlib.sha256()
     root = Path(root)
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         rel_dir = Path(dirpath).relative_to(root)
-        dirnames[:] = sorted(d for d in dirnames if not (rel_dir == Path(".") and d == ".git"))
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
         for name in sorted(filenames):
-            p = Path(dirpath) / name
+            p = os.path.join(dirpath, name)
             h.update((rel_dir / name).as_posix().encode("utf-8", "surrogateescape") + b"\0")
             try:
-                h.update(os.readlink(p).encode("utf-8", "surrogateescape") if p.is_symlink() else p.read_bytes())
+                st = os.lstat(p)
+                if stat.S_ISREG(st.st_mode):
+                    # O_NONBLOCK: a file swapped for a FIFO after the lstat still cannot block the read
+                    fd = os.open(p, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0))
+                    with os.fdopen(fd, "rb") as fh:
+                        while chunk := fh.read(1 << 20):  # None (no data on a non-blocking fd) ends it too
+                            h.update(chunk)
+                elif stat.S_ISLNK(st.st_mode):
+                    h.update(b"link:" + os.readlink(p).encode("utf-8", "surrogateescape"))
+                else:
+                    h.update(f"special:{stat.S_IFMT(st.st_mode)}:{st.st_size}".encode("ascii"))
             except OSError as exc:
                 h.update(f"unreadable: {exc}".encode("utf-8", "replace"))
             h.update(b"\0")

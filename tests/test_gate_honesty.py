@@ -7,6 +7,7 @@ and the device test round are stubbed, so each test pins one pipeline decision.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import threading
@@ -365,6 +366,32 @@ class TreeFingerprintTests(unittest.TestCase):
             (root / "src").mkdir()
             (root / "src" / "game.js").write_text("")
             self.assertNotEqual(tree_fingerprint(root), fp)
+
+    def test_skipped_dirs_do_not_count(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "index.html").write_text("a")
+            fp = tree_fingerprint(root)
+            for rel in ("node_modules/pkg/index.js", "src/node_modules/dep/x.js", "tools/__pycache__/t.pyc",
+                        "vendor/.git/HEAD"):
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text("x")
+            self.assertEqual(tree_fingerprint(root), fp)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "no FIFOs on this platform")
+    def test_a_fifo_never_blocks_and_counts_by_type(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "index.html").write_text("a")
+            fp = tree_fingerprint(root)
+            os.mkfifo(root / "pipe")  # no writer: reading it would block forever
+            out: list = []
+            t = threading.Thread(target=lambda: out.append(tree_fingerprint(root)), daemon=True)
+            t.start()
+            t.join(10)
+            self.assertFalse(t.is_alive(), "tree_fingerprint blocked on a FIFO")
+            self.assertNotEqual(out[0], fp)
+            self.assertEqual(tree_fingerprint(root), out[0])
 
 
 if __name__ == "__main__":
