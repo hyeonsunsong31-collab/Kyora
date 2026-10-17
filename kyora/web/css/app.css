@@ -423,6 +423,7 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; font-
 .slide-card .sc-body { padding: var(--s-3); display: grid; gap: 2px; }
 .slide-card .sc-title { font-weight: var(--fw-semibold); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .slide-card .sc-meta { font-size: var(--fs-0); color: var(--fg-subtle); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slide-card .sc-engine-error { white-space: normal; justify-self: start; min-height: 0; margin: 2px 0; border-radius: var(--r-2); }
 .slide-card .sc-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); border-top: 1px solid var(--line); }
 .slide-card .sc-actions button, .slide-card .sc-actions a { min-height: 40px; background: var(--bg-elev); border: 0; color: var(--fg-muted); font-size: var(--fs-0); font-weight: var(--fw-medium); display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding: 0 6px; }
 .slide-card .sc-actions button:hover, .slide-card .sc-actions a:hover { background: var(--bg-elev-2); color: var(--fg); text-decoration: none; }

@@ -7,6 +7,7 @@ and the device test round are stubbed, so each test pins one pipeline decision.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import threading
@@ -120,6 +121,10 @@ class FailedEngineTests(RunnerHarness):
         run = self.execute(run.id)
         self.assertEqual(run.state, "complete")
         self.assertEqual(run.result_slide, 2)
+        # the failure that blocked the run stays on the slide, marked as one that changed nothing
+        engine = self.store.get(p.id).slide(2)["engine"]
+        self.assertIs(engine["ok"], False)
+        self.assertEqual([(e["error"], e["tree_changed"]) for e in engine["engine_errors"]], [("overloaded", False)])
 
     def test_failed_engine_that_changed_files_is_measured_and_recorded(self):
         p = self.project_with_v1()
@@ -130,6 +135,23 @@ class FailedEngineTests(RunnerHarness):
         self.assertEqual(run.extra["engine_failures"][0]["error"], "error_max_turns")
         self.assertTrue(run.extra["engine_failures"][0]["tree_changed"])
         self.assertTrue(run.extra["engine_runs"][0]["tree_changed"])
+        # the gate passed (measured) but the slide never hides that the engine failed
+        slide = self.store.get(p.id).slide(run.result_slide)
+        self.assertTrue(slide["gate"]["ok"])
+        self.assertIs(slide["engine"]["ok"], False)
+        self.assertEqual(slide["engine"]["engine_errors"], [{"kind": "build", "iteration": 0, "backend": "claude_code",
+                                                             "error": "error_max_turns", "tree_changed": True}])
+        tag = next(t for t in self.store.slide_manager(p.id).backend.list_tags() if t["name"] == slide["tag"])
+        self.assertEqual(tag["meta"]["engine"], slide["engine"])
+
+    def test_a_clean_engine_run_marks_the_slide_engine_ok(self):
+        p = self.project_with_v1()
+        self.engine = ScriptedEngine([(True, None, {"index.html": "<canvas></canvas><script>v2</script>"})])
+        run = self.execute(self.store.create_run(p.id, "modify", "add a pause menu", parent_slide=1).id)
+        self.assertEqual(run.state, "complete")
+        engine = self.store.get(p.id).slide(run.result_slide)["engine"]
+        self.assertIs(engine["ok"], True)
+        self.assertNotIn("engine_errors", engine)
 
     def test_failed_fix_engine_that_changed_nothing_blocks(self):
         p = self.project_with_v1()
@@ -365,6 +387,32 @@ class TreeFingerprintTests(unittest.TestCase):
             (root / "src").mkdir()
             (root / "src" / "game.js").write_text("")
             self.assertNotEqual(tree_fingerprint(root), fp)
+
+    def test_skipped_dirs_do_not_count(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "index.html").write_text("a")
+            fp = tree_fingerprint(root)
+            for rel in ("node_modules/pkg/index.js", "src/node_modules/dep/x.js", "tools/__pycache__/t.pyc",
+                        "vendor/.git/HEAD"):
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text("x")
+            self.assertEqual(tree_fingerprint(root), fp)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "no FIFOs on this platform")
+    def test_a_fifo_never_blocks_and_counts_by_type(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "index.html").write_text("a")
+            fp = tree_fingerprint(root)
+            os.mkfifo(root / "pipe")  # no writer: reading it would block forever
+            out: list = []
+            t = threading.Thread(target=lambda: out.append(tree_fingerprint(root)), daemon=True)
+            t.start()
+            t.join(10)
+            self.assertFalse(t.is_alive(), "tree_fingerprint blocked on a FIFO")
+            self.assertNotEqual(out[0], fp)
+            self.assertEqual(tree_fingerprint(root), out[0])
 
 
 if __name__ == "__main__":

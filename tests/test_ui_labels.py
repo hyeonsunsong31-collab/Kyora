@@ -134,6 +134,29 @@ class RunLabelRenderTests(unittest.TestCase):
         self.assertIn("not a measured charge", note)
         self.assertNotIn(">cost<b>", claude)
 
+    def test_slide_card_warns_when_an_engine_call_of_the_run_failed(self):
+        out = run_node(["js/slides.js"], """(function () {
+            K.util = { esc: (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])),
+                       enc: encodeURIComponent, fmtDate: (s) => String(s || ''), pctText: (x) => Math.round(x * 100) + ' %' };
+            const S = K.modules.slides;
+            const lay = { children: {} };
+            const card = (engine) => S.cardHtml({ number: 2, tag: 'slide/v2', title: 'v2', parent: 1, engine,
+              gate: { pass_rate: 1, ok: true, threshold: 0.94, passed: 21, total: 21 } }, lay, 'p1', 2);
+            return {
+              failed: card({ backend: 'claude_code', ok: false, engine_errors: [
+                { kind: 'build', iteration: 0, backend: 'claude_code', error: 'error_max_turns <x>', tree_changed: true }] }),
+              clean: card({ backend: 'claude_code', ok: true }),
+              older: card({ backend: 'claude_code' }),
+              imported: card({ backend: 'import' }) }; })()""")
+        chip = re.search(r'<span class="chip sc-engine-error" data-tone="warn" title="([^"]*)">([^<]*)</span>', out["failed"])
+        self.assertIsNotNone(chip, "a slide whose run had a failed engine call shows a warning chip")
+        title, text = chip.groups()
+        self.assertEqual(text, "engine reported an error during this build")
+        self.assertIn("build (iteration 0), claude_code: error_max_turns &lt;x&gt; - its files were measured", title)
+        self.assertIn('data-tone="ok"', out["failed"], "the measured gate badge is kept")
+        for key in ("clean", "older", "imported"):
+            self.assertNotIn("sc-engine-error", out[key], key)
+
     def test_presenter_shows_tokkio_only_for_a_successful_answer(self):
         out = run_node(["js/presenter.js"], """(function () {
             K.util = { esc: (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])) };

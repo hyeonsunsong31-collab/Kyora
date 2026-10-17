@@ -185,6 +185,24 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   said "Served by your Tokkio deployment" whenever the URL answered at all, including `502` from an
   ingress with no running pods or `404` from another service. It now shows the Tokkio UI only for a
   2xx/3xx answer (`ui.ok`) and otherwise says "Tokkio not deployed" with the HTTP status.
+- **A resumed fresh generation starts empty again.** A generation on `lineage/main` whose base is an
+  earlier failed run's commit cleared the work tree when it was prepared, but resuming it before its first
+  commit checked that commit out again, so the new game was built on the earlier run's files. Resume now
+  clears the tree again while the run has not committed.
+- **Slides leave out `node_modules`.** Since slide commits force-add ignored game files, a
+  `.gitignore`'d `node_modules/` (or `__pycache__/`) at any depth went into the slide, its ZIP export and
+  its preview although the gate never measures it. Both backends now leave the directories in
+  `quality.SKIP_DIRS` (`node_modules`, `__pycache__`; `.git` as before) out of every commit, and a git
+  commit also drops such entries an older commit tracked; other ignored game files are still kept.
+- **A FIFO in the work tree can no longer hang a run.** The "did the engine change anything" fingerprint
+  read every non-symlink entry, so a named pipe (or socket/device) an engine left behind blocked the run
+  thread forever. It now `lstat`s each entry, reads only regular files, counts other entries by type and
+  size, and skips the directories the gate never measures (`.git`, `node_modules`, `__pycache__`) at any depth.
+- **A slide never hides a failed engine call.** When a code-engine call failed but had changed files that
+  then passed the gate, the slide looked like a clean build. Its `engine` now carries `ok: false` and
+  `engine_errors` (kind, iteration, backend, error, whether files changed; from `run.extra.engine_failures`),
+  also in the tag meta, and the slide card shows a warning chip "engine reported an error during this build"
+  with the errors in its tooltip. The run stays `complete` and the gate badge keeps the measured result.
 
 ## 0.1.0 - 2026-10-15
 

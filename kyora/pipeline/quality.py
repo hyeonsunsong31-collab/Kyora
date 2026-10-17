@@ -51,7 +51,8 @@ MANIFEST_PATH = ".kyora/manifest.json"
 BROWSER_TESTS_PATH = "tests/browser-tests.js"
 LOGIC_TESTS_PATH = "tests/logic-tests.mjs"
 DEFAULT_MAX_TOTAL_MB = 25
-SKIP_DIRS = frozenset({".git", "node_modules"})
+# Never measured, and so never part of a slide (projects.slides.UNSHIPPED_DIRS), at any depth.
+SKIP_DIRS = frozenset({".git", "node_modules", "__pycache__"})
 MAX_SCAN_FILES = 5000
 MAX_SCAN_BYTES = 5 * 1024 * 1024
 TEXT_SCAN_EXTS = frozenset({".html", ".htm", ".js", ".mjs", ".cjs", ".css"})

@@ -9,6 +9,8 @@ Two interchangeable backends implement :class:`VersionBackend`:
   Commits stage every file of the work tree, including files that the game's
   ``.gitignore``, ``.git/info/exclude`` or the user's global excludes file
   ignore: the gate measures the whole tree, so the slide must hold all of it.
+  Only directories the gate never measures (:data:`UNSHIPPED_DIRS`, e.g.
+  ``node_modules``) stay out of every slide, at any depth.
 * :class:`SnapshotBackend` - used when git is not installed: every commit is a
   full copy under ``snapshots/<n>/``; the same API, with branch/tag pointers in
   ``snapshots/state.json``. The UI reports which backend a project uses.
@@ -39,6 +41,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..pipeline.quality import SKIP_DIRS
 from ..util import procs
 from ..util.fs import atomic_write_json, atomic_write_text, read_json, rm_tree, which
 from ..util.ids import new_id, now_iso, slug
@@ -55,7 +58,10 @@ _TAG_RE = re.compile(r"^slide/v(\d+)$")
 _REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@{}^~-]{0,200}$")
 _UNSET: Any = object()
 _GATE_KEYS = ("pass_rate", "passed", "total", "ok", "threshold", "required_failures", "missing_spec_tests")
-_ENGINE_KEYS = ("backend", "requested_model", "active_model", "fallback_used")
+_ENGINE_KEYS = ("backend", "requested_model", "active_model", "fallback_used", "ok", "engine_errors")
+# Directories the gate never measures (quality.SKIP_DIRS): never part of a slide, export or preview, at any depth.
+UNSHIPPED_DIRS: tuple[str, ...] = tuple(sorted(SKIP_DIRS - {".git"}))
+_UNSHIPPED_GLOBS: tuple[str, ...] = tuple(f"**/{d}/**" for d in UNSHIPPED_DIRS)
 
 
 class VersionError(RuntimeError):
@@ -99,8 +105,13 @@ def clear_work_tree(root: Path, keep: tuple[str, ...] = (".git",)) -> None:
                 child.unlink()
 
 
-def copy_tree(src: Path, dst: Path, exclude_top: tuple[str, ...] = (".git",)) -> None:
-    """Copy regular files/dirs from ``src`` into ``dst`` (symlinks and ``exclude_top`` skipped)."""
+def copy_tree(src: Path, dst: Path, exclude_top: tuple[str, ...] = (".git",),
+              exclude_dirs: tuple[str, ...] = ()) -> None:
+    """Copy regular files/dirs from ``src`` into ``dst``.
+
+    Symlinks, the top-level names in ``exclude_top`` and directories named in
+    ``exclude_dirs`` (at any depth) are skipped.
+    """
     src, dst = Path(src), Path(dst)
     dst.mkdir(parents=True, exist_ok=True)
     for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
@@ -108,7 +119,7 @@ def copy_tree(src: Path, dst: Path, exclude_top: tuple[str, ...] = (".git",)) ->
         rel = base.relative_to(src)
         keep = []
         for d in dirnames:
-            if (rel == Path(".") and d in exclude_top) or (base / d).is_symlink():
+            if (rel == Path(".") and d in exclude_top) or d in exclude_dirs or (base / d).is_symlink():
                 continue
             keep.append(d)
         dirnames[:] = sorted(keep)
@@ -291,7 +302,10 @@ class GitBackend(VersionBackend):
         text = (message or "Kyora commit").strip()
         if meta:
             text += "\n\nKyora-Meta: " + json.dumps(meta, sort_keys=True, ensure_ascii=False, default=str)
-        self._run("add", "-A", "-f", timeout=600)  # -f: ignore rules must not drop game files from the slide
+        # -f: ignore rules must not drop game files from the slide; the directories the gate skips never enter it
+        self._run("add", "-A", "-f", "--", ".", *(f":(exclude,glob){g}" for g in _UNSHIPPED_GLOBS), timeout=600)
+        self._run("rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", *(f":(glob){g}" for g in _UNSHIPPED_GLOBS),
+                  timeout=600)  # entries an older commit tracked there
         self._run("commit", "-q", "--allow-empty", "--no-verify", "--cleanup=verbatim", "-F", "-",
                   input_text=text + "\n")
         sha = self.head()
@@ -480,7 +494,7 @@ class SnapshotBackend(VersionBackend):
             target = self.store_dir / str(n)
             if target.exists():
                 rm_tree(target)
-            copy_tree(self.work_tree, target, exclude_top=(".git",))
+            copy_tree(self.work_tree, target, exclude_top=(".git",), exclude_dirs=UNSHIPPED_DIRS)
             st["commits"][sha] = {"parent": st["head"].get("sha"), "message": (message or "").strip(),
                                   "meta": meta or {}, "date": now_iso(), "branch": st["head"].get("branch")}
             st["next"] = n + 1
@@ -748,6 +762,9 @@ class SlideManager:
                 f"import changed it. Cancel this run and start a new one.")
         if tip:
             self.backend.checkout(branch)  # forced: the tree is exactly the run's last commit
+            if opts.get("fresh_tree") and tip == opts.get("base_sha"):
+                # a fresh generation that has not committed yet starts empty, as prepare_run left it
+                clear_work_tree(self.work_tree())
         else:
             self.backend.checkout_orphan(branch)
         if opts.get("tip", _UNSET) != tip:

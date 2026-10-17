@@ -93,6 +93,28 @@ class _IgnoredFilesScenario:
         self.assertFalse((wt / "build" / "stale.js").exists())
         self.assertTrue((wt / "build" / "bundle.js").is_file())
 
+    def test_node_modules_and_pycache_never_reach_the_slide(self):
+        store: ProjectStore = self.store  # type: ignore[attr-defined]
+        p = store.create("Node modules")
+        sm = store.slide_manager(p.id)
+        wt = sm.work_tree()
+        r = store.create_run(p.id, "generate", "game")
+        sm.prepare_run(r)
+        for name, text in {".gitignore": "node_modules/\ndist/\n__pycache__/\n",
+                           "index.html": '<script src="dist/game.js"></script>',
+                           "dist/game.js": "window.Game = {};", "lib/node_modules.js": "// a file, kept",
+                           "node_modules/pkg/index.js": "// npm", "src/node_modules/dep/x.js": "// npm",
+                           "tools/__pycache__/t.cpython-313.pyc": "pyc"}.items():
+            (wt / name).parent.mkdir(parents=True, exist_ok=True)
+            (wt / name).write_text(text, encoding="utf-8")
+        sm.commit_iteration(r, 0, None)
+        s1 = sm.commit_slide(r, "v1", None, None)
+        shipped = [".gitignore", "dist/game.js", "index.html", "lib/node_modules.js"]
+        self.assertEqual(sm.backend.ls(s1["tag"]), shipped)
+        with zipfile.ZipFile(sm.export_zip(s1["number"])) as zf:
+            self.assertEqual(sorted(n for n in zf.namelist() if not n.endswith("/")), shipped)
+        self.assertEqual(_files(sm.materialize(s1["number"])), shipped)
+
 
 @unittest.skipUnless(git_available(), "git is not installed")
 class GitIgnoredFilesTests(_IgnoredFilesScenario, _Home):
@@ -114,6 +136,19 @@ class GitIgnoredFilesTests(_IgnoredFilesScenario, _Home):
         names = sm.backend.ls(slide["tag"])
         self.assertIn("assets/sprite.svg", names)
         self.assertIn("sounds/hit.wav", names)
+
+    def test_node_modules_an_older_commit_tracked_leave_the_next_commit(self):
+        p = self.store.create("Old modules")
+        sm = self.store.slide_manager(p.id)
+        wt = sm.work_tree()
+        (wt / "index.html").write_text("<canvas></canvas>", encoding="utf-8")
+        (wt / "node_modules" / "old").mkdir(parents=True)
+        (wt / "node_modules" / "old" / "i.js").write_text("// npm", encoding="utf-8")
+        sm.backend._run("add", "-A", "-f")  # as commits staged before node_modules were left out
+        sm.backend._run("commit", "-q", "-m", "older commit")
+        self.assertIn("node_modules/old/i.js", sm.backend.ls("HEAD"))
+        sha = sm.backend.commit("next")
+        self.assertEqual(sm.backend.ls(sha), ["index.html"])
 
 
 class SnapshotIgnoredFilesTests(_IgnoredFilesScenario, _Home):
@@ -196,6 +231,36 @@ class _LineageScenario:
         self.assertEqual(_files(wt), ["index.html"])
         self.assertEqual((wt / "index.html").read_text(encoding="utf-8"), "GAME A")
         self.assertEqual(sm.backend.head(), a_sha)
+
+    def test_resumed_fresh_generation_does_not_inherit_an_earlier_runs_files(self):
+        store: ProjectStore = self.store  # type: ignore[attr-defined]
+        p = store.create("Fresh resume")
+        sm = store.slide_manager(p.id)
+        wt = sm.work_tree()
+        a = store.create_run(p.id, "generate", "game A")
+        sm.prepare_run(a)
+        (wt / "index.html").write_text("GAME A", encoding="utf-8")
+        (wt / "src").mkdir()
+        (wt / "src" / "a.js").write_text("// A only", encoding="utf-8")
+        a_sha = sm.commit_iteration(a, 0, None)
+        store.set_state(a, "failed", error="RuntimeError: boom")  # failed without a rollback
+        b = store.create_run(p.id, "generate", "game B")
+        info = sm.prepare_run(b)
+        self.assertEqual((info["branch"], info["base_sha"], info["fresh_tree"]), ("lineage/main", a_sha, True))
+        self.assertEqual(_files(wt), [])
+        store.set_state(b, "blocked", blocked_reason="Kimi K3 unreachable")  # blocked before any commit
+        info = sm.prepare_run(store.get_run(b.id))  # resume
+        self.assertEqual(info["branch"], "lineage/main")
+        self.assertEqual(sm.backend.head(), a_sha)
+        self.assertEqual(_files(wt), [])
+        (wt / "index.html").write_text("GAME B", encoding="utf-8")
+        b_sha = sm.commit_iteration(store.get_run(b.id), 0, None)
+        self.assertEqual(sm.backend.ls(b_sha), ["index.html"])
+        # once the fresh run has committed, resume restores its own commit as it is
+        (wt / "junk.js").write_text("junk", encoding="utf-8")
+        sm.prepare_run(store.get_run(b.id))
+        self.assertEqual(_files(wt), ["index.html"])
+        self.assertEqual((wt / "index.html").read_text(encoding="utf-8"), "GAME B")
 
     def test_resume_refuses_a_branch_that_moved_and_rollback_leaves_it(self):
         from kyora.projects.slides import LineageMoved
