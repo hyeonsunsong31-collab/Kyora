@@ -180,6 +180,9 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   "Claude subscription usage at max effort"; it now names what the engine the server would select
   spends (Claude subscription, Anthropic API tokens or the linked Hub) at the configured
   `claude_code.effort`. The API's `estimate.warning` and `docs/bench.md` no longer say "max effort".
+- **The Tokkio presenter persona no longer fixes the gate or the engine.** It said the gate passes at
+  ninety four percent and that Claude Code writes the code; it now says the gate passes at the
+  threshold Kyora reports for the run (94 % by default) and names a code engine, Claude Code by default.
 
 ## 0.1.0 - 2026-10-15
 

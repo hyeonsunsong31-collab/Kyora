@@ -68,6 +68,16 @@ class OverlayConfigTests(unittest.TestCase):
         self.assertRegex(section, r'(?m)^\s+token:\s*""')
         self.assertNotIn("nvapi-", self.text)
 
+    def test_persona_names_no_fixed_gate_or_engine(self):
+        m = re.search(r'(?ms)^OpenAILLMContext:\n.*?prompt:\s*"(.*?)"', self.text)
+        self.assertIsNotNone(m, "OpenAILLMContext.prompt missing")
+        persona = " ".join(m.group(1).split())
+        self.assertIn("a code engine, Claude Code by default, for writing", persona)
+        self.assertIn("passes at the threshold Kyora reports for the run, ninety four percent of checks by default",
+                      persona)
+        self.assertNotIn("passes at ninety four percent", persona)
+        self.assertNotIn("and Claude Code for writing", persona)
+
     def test_every_vendored_section_and_key_kept(self):
         vendor_sections = TOP_LEVEL.findall(self.vendor)
         ours = TOP_LEVEL.findall(self.text)
