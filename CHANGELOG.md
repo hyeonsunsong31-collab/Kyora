@@ -98,6 +98,10 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   the Hub's unzip now refuse components that alias `.git` (`GIT~<n>`, `GI7EBA~<n>`, `.git` with trailing
   dots or spaces, any case) and entries that resolve into a `.git` directory; on Windows also any
   component ending in a dot or space.
+- A clone made with Git for Windows' default `core.autocrlf=true` checked the launchers out with CRLF, so
+  `sh launchers/kyora-ish.sh` / `kyora-termux.sh` stopped at `set -eu\r` on a phone, and a release built
+  from it changed 615 vendored files. `.gitattributes` now keeps `*.sh`, `*.py`, `*.mjs` and `*.js` LF,
+  checks `*.ps1` out as CRLF and marks `vendor/**` `-text` (no conversion).
 
 ## 0.1.0 - 2026-10-15
 

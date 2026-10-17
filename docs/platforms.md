@@ -59,6 +59,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\kyora.ps1 serve 
   component like `GIT~<n>`, `GI7EBA~<n>` or `.git.` (any case, on every platform) and any entry that
   resolves into a `.git` directory; on Windows they also refuse a component that ends in a dot or a
   space (Windows strips it, so the entry would land on another name) and reserved names such as `CON`.
+* Line endings: `.gitattributes` keeps `*.sh`, `*.py`, `*.mjs` and `*.js` LF in every checkout (also with
+  Git for Windows' default `core.autocrlf=true`), checks `*.ps1` out with CRLF (PowerShell reads both)
+  and never converts `vendor/**`, so a folder cloned on Windows and copied to Termux or iSH still starts,
+  and a release built from it keeps the vendored tree byte-identical to `vendor/VENDOR.md`.
 * To reach the PC from a phone, allow Python through Windows Defender Firewall on private networks
   when Windows asks (first `kyora hub`).
 
