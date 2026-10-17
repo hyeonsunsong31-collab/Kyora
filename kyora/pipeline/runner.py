@@ -10,6 +10,7 @@ once. ``Runner.execute`` drives one run::
     gate failed at the limit / 'stop'    -> finalize -> failed_gate (slide still committed)
     no engine / model unreachable / no browser -> blocked (resume continues at that stage)
     exception -> failed ; cancel -> cancelled (work tree rolled back)
+    Kyora stopping (RunManager.stop) -> blocked 'interrupted: Kyora stopped ...' (work kept, resumable)
 
 Each stage persists ``run.json`` and publishes ``run.state``, ``stage.started``
 and ``stage.finished``; per-stage model metrics are collected from the
@@ -24,17 +25,21 @@ import time
 import traceback
 from typing import Any, Callable
 
+from ..projects.slides import LineageMoved
 from ..util.fs import atomic_write_text
 from ..util.ids import now_iso
 from . import events as ev
 from .stages import (
     RunCancelled, StageBlocked, StageContext, build_stage, design_stage, finalize_stage, fix_stage, gate_stage,
-    intake_stage, load_gate, narrate, plan_stage, review_stage, show_view, test_stage,
+    intake_stage, load_gate, narrate, plan_stage, review_stage, select_engine, show_view, test_stage,
 )
 
 log = logging.getLogger("kyora.runner")
 
 ACTIVE_STATES = ("intake", "plan", "awaiting_approval", "design", "build", "test", "gate", "review", "fix", "finalize")
+INTERRUPTED_REASON = "interrupted: Kyora stopped while this run was active; press Resume to continue"
+_ENGINE_LABELS = {"claude_code": "Claude Code", "anthropic_api": "The Anthropic API engine",
+                  "hub": "Claude Code on the Kyora Hub"}
 
 
 class RunManager:
@@ -63,7 +68,8 @@ class RunManager:
             self._threads.append(t)
 
     def stop(self, timeout: float = 5.0) -> None:
-        self._stopping.set()
+        """Stop the workers; running runs end 'blocked' (resumable) with their work kept, not cancelled."""
+        self._stopping.set()  # set first: a Runner that sees its cancel event checks it to tell stop from cancel
         with self._lock:
             for e in self._running.values():
                 e.set()
@@ -85,7 +91,7 @@ class RunManager:
             return
         for run in runs:
             if run.state in ACTIVE_STATES or run.state == "created":
-                reason = "interrupted: Kyora stopped while this run was active; press Resume to continue"
+                reason = INTERRUPTED_REASON
                 try:
                     store.set_state(run, "blocked", blocked_reason=reason)
                     self.app.bus.publish(ev.RUN_BLOCKED, {"reason": reason, "stage": run.state},
@@ -117,10 +123,18 @@ class RunManager:
         except FileNotFoundError:
             return False
         if pending or run.state in ("blocked", "awaiting_approval", "created"):
+            # All runs of a project share one work tree. While another run of the project holds the
+            # project lock (it is executing), the rollback may only move this run's branch ref.
+            plock = self._project_lock(run.project_id)
+            idle = plock.acquire(blocking=False)
             try:
-                store.slide_manager(run.project_id).rollback_working_tree(run)
+                if not store.slide_manager(run.project_id).rollback_working_tree(run, touch_tree=idle):
+                    log.warning("cancelled run %s: its commits were left in place", run_id)
             except Exception as exc:  # noqa: BLE001
                 log.warning("rollback for cancelled run %s failed: %s", run_id, exc)
+            finally:
+                if idle:
+                    plock.release()
             store.set_state(run, "cancelled")
             self.app.bus.publish(ev.RUN_CANCELLED, {}, run_id=run.id, project_id=run.project_id)
             self.app.bus.publish(ev.RUN_STATE, {"state": "cancelled", "iteration": run.iteration},
@@ -181,12 +195,14 @@ class RunManager:
                 with self._lock:
                     if rid not in self._pending:
                         continue
+                    if self._stopping.is_set():
+                        return  # Kyora is stopping: the run stays queued; the next start marks it blocked
                     self._pending.remove(rid)
                     cancel = threading.Event()
                     self._running[rid] = cancel
                     approval = self._approvals.setdefault(rid, threading.Event())
                 try:
-                    Runner(self.app, self.app.store.get_run(rid), cancel, approval).execute()
+                    Runner(self.app, self.app.store.get_run(rid), cancel, approval, shutdown=self._stopping).execute()
                 except Exception as exc:  # noqa: BLE001 - execute() handles its own errors; this is a last resort
                     log.error("runner crashed for %s: %s\n%s", rid, exc, traceback.format_exc())
                 finally:
@@ -197,11 +213,13 @@ class RunManager:
 class Runner:
     """Executes one run through the state machine (see module docstring)."""
 
-    def __init__(self, app, run, cancel: threading.Event, approval: threading.Event | None = None):
+    def __init__(self, app, run, cancel: threading.Event, approval: threading.Event | None = None,
+                 shutdown: threading.Event | None = None):
         self.app = app
         self.run = run
         self.cancel = cancel
         self.approval = approval or threading.Event()
+        self.shutdown = shutdown or threading.Event()  # set with ``cancel`` when Kyora stops: interrupt, not cancel
         self.store = app.store
         self.bus = app.bus
         self.cfg = app.config
@@ -267,7 +285,8 @@ class Runner:
             return result
         finally:
             ms = round((time.monotonic() - started) * 1000, 1)
-            status = "done" if ok else ("cancelled" if self.cancel.is_set() else "blocked_or_failed")
+            cancelled = self.cancel.is_set() and not self.shutdown.is_set()
+            status = "done" if ok else ("cancelled" if cancelled else "blocked_or_failed")
             entry = self.run.stages.get(name) or {}
             entry.update({"status": status, "finished": now_iso(), "ms": ms})
             metrics = self._metrics_since(since)
@@ -301,7 +320,10 @@ class Runner:
             ctx = StageContext(app=self.app, run=run, project=project, run_dir=self.store.run_dir(run),
                                workspace=slides.work_tree(), cancel=self.cancel, slides=slides, approval=self.approval)
             self._ctx = ctx
-            slides.prepare_run(run)  # before intake: a fresh generation clears the tree, an import fills it
+            try:  # before intake: a fresh generation clears the tree; a resume restores the run's last commit
+                slides.prepare_run(run)
+            except LineageMoved as exc:
+                raise StageBlocked(str(exc), "prepare") from None
             run.gate["threshold"] = float(self.cfg.quality.min_pass_rate)
             self.store.save_run(run)
             self._publish(ev.RUN_STATE, {"state": run.state, "iteration": run.iteration, "started": True})
@@ -314,7 +336,10 @@ class Runner:
             self._stage("design", lambda: design_stage(ctx))
             self._loop(ctx)
         except RunCancelled:
-            self._on_cancel()
+            if self.shutdown.is_set():
+                self._on_shutdown()
+            else:
+                self._on_cancel()
         except StageBlocked as b:
             stage = b.stage or self.run.state
             self._state("blocked", blocked_reason=b.reason, blocked_stage=stage)
@@ -343,8 +368,7 @@ class Runner:
             rec = self._iter_record(n)
             if not rec.get("built"):
                 if n == 0:
-                    narrate(ctx, "Claude Code is now building your game at maximum effort.")
-                    self._stage("build", lambda: build_stage(ctx), rerun=True)
+                    self._stage("build", lambda: self._build(ctx), rerun=True)
                 else:
                     prev_gate = load_gate(ctx, n - 1) or {}
                     from ..util.fs import read_json
@@ -383,6 +407,16 @@ class Runner:
             self.store.save_run(run)
             self._publish(ev.FIX_ITERATION, {"n": run.iteration})
 
+    def _build(self, ctx: StageContext) -> Any:
+        """Select the engine first (no engine -> blocked, nothing announced), then narrate what really builds."""
+        ctx.engine = ctx.engine or select_engine(ctx)
+        name = str(getattr(ctx.engine, "name", "") or "")
+        label = _ENGINE_LABELS.get(name) or (f"The {name} code engine" if name else "The code engine")
+        effort = str(getattr(getattr(self.cfg, "claude_code", None), "effort", "") or "")
+        how = " at maximum effort" if effort == "max" else (f" at {effort} effort" if effort else "")
+        narrate(ctx, f"{label} is now building your game{how}.")
+        return build_stage(ctx)
+
     def _finish(self, ctx: StageContext, gate: dict, *, ok: bool, reason: str | None = None) -> None:
         slide = self._stage("finalize", lambda: finalize_stage(ctx, gate, ok), rerun=True)
         final_state = "complete" if ok else "failed_gate"
@@ -408,5 +442,15 @@ class Runner:
             log.error("cannot record cancel of %s: %s", run.id, exc)
         self._publish(ev.RUN_CANCELLED, {})
 
+    def _on_shutdown(self) -> None:
+        """Kyora is stopping: keep the run's work (no rollback) and leave it resumable."""
+        stage = self.run.state
+        try:
+            self._state("blocked", blocked_reason=INTERRUPTED_REASON, blocked_stage=stage)
+        except Exception as exc:  # noqa: BLE001
+            log.error("cannot record interruption of %s: %s", self.run.id, exc)
+        self._publish(ev.RUN_BLOCKED, {"reason": INTERRUPTED_REASON, "stage": stage})
+        log.info("run %s interrupted at %s by shutdown", self.run.id, stage)
 
-__all__ = ["RunManager", "Runner", "ACTIVE_STATES"]
+
+__all__ = ["RunManager", "Runner", "ACTIVE_STATES", "INTERRUPTED_REASON"]

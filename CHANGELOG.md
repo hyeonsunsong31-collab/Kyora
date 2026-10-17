@@ -27,6 +27,30 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - Windows: a second Kyora on the same port no longer starts silently next to the first one (and marks
   its running builds interrupted); listeners claim their ports with `SO_EXCLUSIVEADDRUSE` and
   `kyora serve`/`hub` report a busy port clearly and exit.
+- **Slides keep ignored game files**: slide commits (and so ZIP downloads and previews) now include
+  files named by the game's `.gitignore`, `.git/info/exclude` or the user's global excludes file, as
+  the snapshot backend always did; the gate measured them, so the saved slide now matches the
+  measured game. Resets and checkouts also remove ignored leftovers, so a cancelled run's ignored
+  files cannot reach the next slide.
+- **Unfinished runs no longer share a lineage branch**: a run whose branch (`lineage/main` for a
+  first generation, or the head branch of the parent slide) is held by another unfinished run, or
+  an import in that situation, gets its own `lineage/<rid>` branch. Each run records the commit it
+  last left on its branch (`options.tip`); resume restores exactly that commit and blocks with a
+  clear reason when the branch moved on, so a resumed run never tests or commits another run's game.
+  Rollback only resets a branch whose tip is still the run's own commit, so cancelling an older run
+  can no longer delete the branch that holds a newer slide.
+- **Cancelling a queued or blocked run no longer resets a running run's work**: a never-started
+  run needs no rollback, and while another run of the project is executing the cancel only moves
+  the cancelled run's own branch ref; it never resets, cleans or checks out the shared work tree.
+- **Stopping Kyora keeps runs resumable**: Ctrl+C (`App.stop()` / `RunManager.stop()`) used to cancel
+  active runs, rolling back their built work. Runs now end `blocked` with the reason
+  "interrupted: Kyora stopped ...", their work and iteration commits kept, and Resume continues them.
+  A queued run that was waiting for its project when Kyora stopped is no longer started during
+  shutdown; the next start marks it `blocked` (resumable).
+- **Honest build narration**: the presenter announces the build only after a code engine was
+  selected, naming the real backend (Claude Code, the Anthropic API engine or Claude Code on the
+  Kyora Hub) and the configured effort; it says "maximum effort" only when the effort is `max`, and
+  says nothing when the run blocks for lack of an engine.
 
 ## 0.1.0 - 2026-10-15
 

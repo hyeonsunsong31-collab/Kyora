@@ -6,6 +6,9 @@ Two interchangeable backends implement :class:`VersionBackend`:
   identity, ``core.autocrlf=false`` and signing disabled), annotated tags whose
   message is the slide's JSON meta, lineage branches (``lineage/main``,
   ``lineage/<rid>``) and ``git archive --format=zip`` for downloads/previews.
+  Commits stage every file of the work tree, including files that the game's
+  ``.gitignore``, ``.git/info/exclude`` or the user's global excludes file
+  ignore: the gate measures the whole tree, so the slide must hold all of it.
 * :class:`SnapshotBackend` - used when git is not installed: every commit is a
   full copy under ``snapshots/<n>/``; the same API, with branch/tag pointers in
   ``snapshots/state.json``. The UI reports which backend a project uses.
@@ -16,7 +19,12 @@ Two interchangeable backends implement :class:`VersionBackend`:
   exist starts a fresh, empty lineage ``lineage/<rid>``;
 * modify checks out the parent slide; if the parent is not the head of its
   lineage branch, a new branch ``lineage/<rid>`` is created from it, so stacking
-  on an old slide never rewrites history.
+  on an old slide never rewrites history;
+* a branch held by another unfinished run (prepared, not ended, no slide yet)
+  is never shared: the new run gets its own ``lineage/<rid>`` instead;
+* every run records the commit it last left on its branch (``options.tip``);
+  resume restores exactly that commit (or raises :class:`LineageMoved` when the
+  branch moved on) and rollback only resets a branch whose tip is still the run's.
 """
 from __future__ import annotations
 
@@ -52,6 +60,10 @@ _ENGINE_KEYS = ("backend", "requested_model", "active_model", "fallback_used")
 
 class VersionError(RuntimeError):
     """A version-control operation failed (message includes the backend error)."""
+
+
+class LineageMoved(VersionError):
+    """A resumed run's branch no longer points at the commit the run left there."""
 
 
 def _check_ref(ref: str) -> str:
@@ -126,7 +138,7 @@ class VersionBackend(ABC):
 
     @abstractmethod
     def checkout(self, ref: str) -> None:
-        """Force-checkout ``ref`` (branch attaches HEAD; tag/sha detaches) and remove untracked files."""
+        """Force-checkout ``ref`` (branch attaches HEAD; tag/sha detaches) and remove untracked and ignored files."""
 
     @abstractmethod
     def checkout_orphan(self, name: str) -> None:
@@ -134,7 +146,7 @@ class VersionBackend(ABC):
 
     @abstractmethod
     def commit(self, message: str, meta: dict | None = None) -> str:
-        """Commit every change in the work tree (empty commits allowed); return the sha."""
+        """Commit every change in the work tree, ignored files included (empty commits allowed); return the sha."""
 
     @abstractmethod
     def tag(self, name: str, sha: str, meta: dict) -> None:
@@ -163,6 +175,13 @@ class VersionBackend(ABC):
     @abstractmethod
     def create_branch(self, name: str, ref: str) -> None:
         """Create branch ``name`` at ``ref`` (error when it exists)."""
+
+    @abstractmethod
+    def set_branch(self, name: str, sha: str | None) -> None:
+        """Point branch ``name`` at ``sha`` (None deletes it) without touching the work tree.
+
+        Refused while HEAD is on ``name`` (that would desynchronise the work tree).
+        """
 
     @abstractmethod
     def list_tags(self) -> list[dict]:
@@ -258,7 +277,7 @@ class GitBackend(VersionBackend):
 
     def checkout(self, ref: str) -> None:
         self._run("checkout", "-q", "-f", _check_ref(ref), "--")
-        self._run("clean", "-fdq")
+        self._run("clean", "-fdxq")  # -x: an ignored leftover would otherwise reach the next commit (add -f)
 
     def checkout_orphan(self, name: str) -> None:
         _check_ref(name)
@@ -272,7 +291,7 @@ class GitBackend(VersionBackend):
         text = (message or "Kyora commit").strip()
         if meta:
             text += "\n\nKyora-Meta: " + json.dumps(meta, sort_keys=True, ensure_ascii=False, default=str)
-        self._run("add", "-A", timeout=600)
+        self._run("add", "-A", "-f", timeout=600)  # -f: ignore rules must not drop game files from the slide
         self._run("commit", "-q", "--allow-empty", "--no-verify", "--cleanup=verbatim", "-F", "-",
                   input_text=text + "\n")
         sha = self.head()
@@ -303,7 +322,7 @@ class GitBackend(VersionBackend):
     def reset_to(self, ref: str | None) -> None:
         if ref:
             self._run("reset", "-q", "--hard", _check_ref(ref))
-            self._run("clean", "-fdq")
+            self._run("clean", "-fdxq")
             return
         branch = self.current_branch()
         if branch and self.branch_sha(branch):
@@ -313,6 +332,15 @@ class GitBackend(VersionBackend):
 
     def create_branch(self, name: str, ref: str) -> None:
         self._run("branch", _check_ref(name), _check_ref(ref))
+
+    def set_branch(self, name: str, sha: str | None) -> None:
+        ref = f"refs/heads/{_check_ref(name)}"
+        if self.current_branch() == name:
+            raise VersionError(f"branch {name} is checked out")
+        if sha:
+            self._run("update-ref", ref, _check_ref(sha))
+        elif self.branch_sha(name):
+            self._run("update-ref", "-d", ref)
 
     def list_tags(self) -> list[dict]:
         fmt = "%(refname:short)%1f%(objectname)%1f%(*objectname)%1f%(creatordate:iso-strict)%1f%(contents)%1e"
@@ -513,6 +541,21 @@ class SnapshotBackend(VersionBackend):
             st["branches"][name] = sha
             self._save(st)
 
+    def set_branch(self, name: str, sha: str | None) -> None:
+        _check_ref(name)
+        with self._lock:
+            st = self._load()
+            if st["head"].get("branch") == name:
+                raise VersionError(f"branch {name} is checked out")
+            if sha:
+                resolved = self._resolve(st, sha)
+                if not resolved:
+                    raise VersionError(f"unknown ref {sha!r}")
+                st["branches"][name] = resolved
+            else:
+                st["branches"].pop(name, None)
+            self._save(st)
+
     def list_tags(self) -> list[dict]:
         with self._lock:
             st = self._load()
@@ -643,13 +686,18 @@ class SlideManager:
             return branch
         return None
 
-    def _base_on_slide(self, slide: dict, new_branch: str) -> tuple[str, str, bool]:
-        """Check out ``slide``; returns ``(branch, sha, created_branch)``."""
+    def _base_on_slide(self, slide: dict, new_branch: str,
+                       claimed: frozenset[str] | set[str] = frozenset()) -> tuple[str, str, bool]:
+        """Check out ``slide``; returns ``(branch, sha, created_branch)``.
+
+        The slide's own branch is reused only when the slide is its head and no
+        other unfinished run holds it (``claimed``); otherwise ``new_branch`` is created.
+        """
         sha = self.backend.resolve(slide.get("tag") or "") or slide.get("sha")
         if not sha or not self.backend.resolve(sha):
             raise VersionError(f"slide v{slide.get('number')} is missing from the repository")
         branch = self._is_lineage_head(slide, sha)
-        if branch:
+        if branch and branch not in claimed:
             self.backend.checkout(branch)
             return branch, sha, False
         self.backend.create_branch(new_branch, sha)
@@ -657,32 +705,83 @@ class SlideManager:
         return new_branch, sha, True
 
     # runs -----------------------------------------------------------------------
+    def _claimed_branches(self, run: "Run | None" = None) -> set[str]:
+        """Branches held by other unfinished runs: prepared, not ended and no slide committed yet."""
+        if self.store is None:
+            return set()
+        from .store import TERMINAL_STATES
+        out: set[str] = set()
+        for other in self.store.list_runs(self.project.id, limit=1000):
+            if run is not None and other.id == run.id:
+                continue
+            o = other.options if isinstance(other.options, dict) else {}
+            if o.get("prepared") and o.get("branch") and other.state not in TERMINAL_STATES \
+                    and other.result_slide is None:
+                out.add(str(o["branch"]))
+        return out
+
+    @staticmethod
+    def _run_tip(run: "Run") -> str | None:
+        """The commit the run last left on its branch (its base before its first commit)."""
+        opts = run.options if isinstance(run.options, dict) else {}
+        if "tip" in opts:
+            return opts["tip"]
+        # runs prepared before ``tip`` was recorded: the last iteration commit, else the base
+        commits = [rec.get("commit") for rec in (run.iterations or []) if isinstance(rec, dict) and rec.get("commit")]
+        return commits[-1] if commits else opts.get("base_sha")
+
+    def _record_tip(self, run: "Run | None", sha: str | None) -> None:
+        if run is None or not isinstance(run.options, dict) or not run.options.get("prepared"):
+            return
+        run.options["tip"] = sha
+        self._save_run(run)
+
+    def _resume_prepared(self, run: "Run", opts: dict) -> dict:
+        """Restore the work tree to the commit this run last left on its branch."""
+        branch = opts["branch"]
+        tip = self._run_tip(run)
+        actual = self.backend.branch_sha(branch)
+        if actual != tip:
+            raise LineageMoved(
+                f"branch {branch} moved since this run last committed (the run left it at "
+                f"{(tip or 'no commit')[:12]}, it is now at {(actual or 'no commit')[:12]}); another run or an "
+                f"import changed it. Cancel this run and start a new one.")
+        if tip:
+            self.backend.checkout(branch)  # forced: the tree is exactly the run's last commit
+        else:
+            self.backend.checkout_orphan(branch)
+        if opts.get("tip", _UNSET) != tip:
+            opts["tip"] = tip
+            self._save_run(run)
+        log.info("run %s resumed on %s at %s", run.id, branch, tip)
+        return self._prep_info(opts)
+
     def prepare_run(self, run: "Run") -> dict:
         """Put the work tree at the run's starting point and record it in ``run.options``.
 
         Records ``branch``, ``base_sha``, ``base_slide``, ``created_branch``,
-        ``fresh_tree`` and ``prepared``; saves the run when a store is attached.
-        Calling it again for a prepared run (resume) only re-attaches the branch.
+        ``fresh_tree``, ``tip`` and ``prepared``; saves the run when a store is
+        attached. Calling it again for a prepared run (resume) restores the commit
+        the run last left on its branch and raises :class:`LineageMoved` when the
+        branch no longer points there.
         """
         with self._lock:
             opts = run.options if isinstance(run.options, dict) else {}
             run.options = opts
             if opts.get("prepared") and opts.get("branch"):
-                branch = opts["branch"]
-                if self.backend.current_branch() != branch and self.backend.branch_sha(branch):
-                    self.backend.checkout(branch)
-                return self._prep_info(opts)
+                return self._resume_prepared(run, opts)
             project = self._fresh_project()
+            claimed = self._claimed_branches(run)
             parent_n = run.parent_slide
             if parent_n is None and run.kind == "modify" and project.current_slide is not None:
                 parent_n = run.parent_slide = int(project.current_slide)
             if parent_n is not None:
                 slide = self.get_slide(parent_n)
-                branch, base, created = self._base_on_slide(slide, f"lineage/{run.id}")
+                branch, base, created = self._base_on_slide(slide, f"lineage/{run.id}", claimed)
                 fresh = False
             else:
                 fresh = True
-                if not project.slides:
+                if not project.slides and MAIN_BRANCH not in claimed:
                     branch, created = MAIN_BRANCH, False
                     base = self.backend.branch_sha(MAIN_BRANCH)
                     if base:
@@ -696,7 +795,7 @@ class SlideManager:
                     branch, base, created = f"lineage/{run.id}", None, True
                     self.backend.checkout_orphan(branch)
             opts.update({"branch": branch, "base_sha": base, "base_slide": parent_n, "created_branch": created,
-                         "fresh_tree": fresh, "prepared": True, "vcs": self.backend.kind})
+                         "fresh_tree": fresh, "prepared": True, "vcs": self.backend.kind, "tip": base})
             self._save_run(run)
 
             def _apply(p):
@@ -722,7 +821,9 @@ class SlideManager:
         with self._lock:
             self._warn_branch(run)
             meta = {"kind": "iteration", "run_id": run.id, "iteration": int(n), "gate": _summarise(gate, _GATE_KEYS)}
-            return self.backend.commit(f"Kyora run {run.id}: iteration {n}", meta)
+            sha = self.backend.commit(f"Kyora run {run.id}: iteration {n}", meta)
+            self._record_tip(run, sha)
+            return sha
 
     def commit_slide(self, run: "Run | None", title: str, gate: dict | None, engine: dict | None,
                      screenshots: list | None = None, *, parent: Any = _UNSET) -> dict:
@@ -765,6 +866,7 @@ class SlideManager:
             self._update_project(_apply)
             if run is not None:
                 run.result_slide = number
+                self._record_tip(run, sha)
             log.info("slide v%d committed (%s) on %s", number, sha[:12], branch)
             return dict(slide)
 
@@ -781,22 +883,39 @@ class SlideManager:
                 log.warning("screenshot outside the project ignored: %s", s)
         return out
 
-    def rollback_working_tree(self, run: "Run") -> None:
-        """Discard the run's changes: back to its starting point (branch reset + clean)."""
+    def rollback_working_tree(self, run: "Run", *, touch_tree: bool = True) -> bool:
+        """Discard the run's changes: its branch goes back to the run's starting point.
+
+        A run that was never prepared left nothing behind. Only a branch whose tip
+        is still the run's own last commit (``options.tip``) is reset; a branch that
+        another run or an import moved on is left alone. When the work tree is on
+        the run's branch it is reset and cleaned too, but only with ``touch_tree``
+        (False while another run of the project uses the work tree); otherwise only
+        the branch ref moves. Returns True when nothing of the run remains.
+        """
         with self._lock:
             opts = run.options or {}
             if not opts.get("prepared"):
-                if self.backend.head():
-                    self.backend.reset_to("HEAD")
-                return
+                return True
             branch = opts.get("branch")
-            if branch and self.backend.current_branch() != branch:
-                if self.backend.branch_sha(branch):
-                    self.backend.checkout(branch)
-                else:
-                    self.backend.checkout_orphan(branch)
-            self.backend.reset_to(opts.get("base_sha"))
-            log.info("run %s rolled back to %s on %s", run.id, opts.get("base_sha"), branch)
+            base = opts.get("base_sha")
+            tip = self._run_tip(run)
+            actual = self.backend.branch_sha(branch) if branch else None
+            if not branch or actual != tip:
+                log.warning("run %s: %s is at %s, not at this run's commit %s; left as it is",
+                            run.id, branch, actual, tip)
+                return False
+            if self.backend.current_branch() == branch:
+                if not touch_tree:
+                    log.warning("run %s: %s is checked out while another run uses the work tree; left as it is",
+                                run.id, branch)
+                    return False
+                self.backend.reset_to(base)
+            elif actual != base:
+                self.backend.set_branch(branch, base)
+            self._record_tip(run, base)
+            log.info("run %s rolled back to %s on %s", run.id, base, branch)
+            return True
 
     # previews / exports ------------------------------------------------------------
     def materialize(self, n: int | str) -> Path:
@@ -865,10 +984,11 @@ class SlideManager:
             try:
                 files = import_game_zip(source, staging)
                 project = self._fresh_project()
+                claimed = self._claimed_branches()  # never commit onto a blocked run's branch
                 if parent is not None:
                     slide = self.get_slide(parent)
-                    self._base_on_slide(slide, f"lineage/import-{new_id()}")
-                elif not project.slides:
+                    self._base_on_slide(slide, f"lineage/import-{new_id()}", claimed)
+                elif not project.slides and MAIN_BRANCH not in claimed:
                     if self.backend.branch_sha(MAIN_BRANCH):
                         self.backend.checkout(MAIN_BRANCH)
                     elif self.backend.current_branch() != MAIN_BRANCH or self.backend.has_commits():
