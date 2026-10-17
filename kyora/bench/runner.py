@@ -159,7 +159,7 @@ class BenchRunner:
                 "kind": t.get("kind", "generate"), "engine": t.get("engine", "vanilla"),
                 "timeout_min": t.get("timeout_min"), "fixture": t.get("fixture"),
                 "min_browser_tests": (t.get("checks") or {}).get("min_browser_tests"),
-                "min_pass_rate": (t.get("pass_rule") or {}).get("min_pass_rate", scoring.THRESHOLD),
+                "min_pass_rate": scoring.task_rule((t.get("pass_rule") or {}).get("min_pass_rate")),
             })
         return out
 
@@ -517,9 +517,10 @@ class BenchRunner:
         app = self.app
         tid = task["id"]
         checks = task.get("checks") or {}
+        rule = scoring.task_rule((task.get("pass_rule") or {}).get("min_pass_rate"))
         res = TaskResult(task_id=tid, title=task.get("title", ""), category=task.get("category", ""),
                          kind=task.get("kind", "generate"), min_browser_tests=checks.get("min_browser_tests"),
-                         started_at=now_iso())
+                         started_at=now_iso(), min_pass_rate=rule)
         t0 = time.monotonic()
         try:
             project = app.store.create(f"bench-{tid}-{bench_id}")
@@ -529,7 +530,8 @@ class BenchRunner:
             options: dict[str, Any] = {
                 "bench": {"task_id": tid, "tests_file": str(self.tests_file_path(task)), "test_ids": test_ids,
                           "min_browser_tests": checks.get("min_browser_tests"), "bench_id": bench_id,
-                          "contract": task.get("contract"), "static_checks": checks.get("static") or []},
+                          "contract": task.get("contract"), "static_checks": checks.get("static") or [],
+                          "min_pass_rate": rule},  # the gate uses this, never Settings > Quality gate
                 "import_zip_attachment": None,
             }
             attachment_ids: list[str] = []
@@ -550,9 +552,13 @@ class BenchRunner:
             res.state = str(_field(final, "state", "unknown"))
             gate = _field(final, "gate")
             res.gate = _jsonable(gate) if gate is not None else None
+            final_gate = _field(gate, "final") if gate is not None else None
+            res.threshold = _field(final_gate, "threshold") if final_gate is not None else None
             engine = _field(final, "engine") or {}
             res.engine = _field(engine, "backend") or None
-            res.active_model = _field(engine, "active_model") or None
+            res.served = self._served(final, res.engine)
+            models = list(dict.fromkeys(p.split("/", 1)[1] for p in res.served))
+            res.active_model = " + ".join(models) if models else (_field(engine, "active_model") or None)
             if not res.error:
                 run_error = _field(final, "error") or _field(final, "blocked_reason")
                 if run_error and res.state != "complete":
@@ -633,6 +639,15 @@ class BenchRunner:
             self.app.run_manager.cancel(rid)
         except Exception as exc:  # noqa: BLE001
             log.warning("bench: cancel of run %s failed: %s", rid, exc)
+
+    @staticmethod
+    def _served(run, backend: str | None) -> list[str]:
+        """``engine/model`` of every engine call of the run (``extra.engine_runs``), in order of first use."""
+        extra = _field(run, "extra") or {}
+        calls = extra.get("engine_runs") if isinstance(extra, dict) else None
+        out = [f"{c.get('backend') or backend or '?'}/{c['active_model']}" for c in calls or []
+               if isinstance(c, dict) and c.get("active_model")]
+        return list(dict.fromkeys(out))
 
     def _count_bench_tests(self, run, task_id: str) -> int | None:
         """How many of the bench's browser tests appear in the run's final gate checks (None = unknown)."""

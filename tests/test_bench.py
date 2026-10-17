@@ -28,7 +28,7 @@ from unittest import mock
 from kyora.bench import report, runner as bench_runner, scoring
 from kyora.bench.routes import register_routes
 from kyora.bench.runner import HARNESS_NOTES, WARNING, BenchRefused, BenchRunner
-from kyora.bench.scoring import TaskResult, score, task_passed
+from kyora.bench.scoring import TaskResult, score, task_passed, task_rule
 from kyora.pipeline.events import EventBus
 from kyora.server import KyoraServer, Router
 
@@ -296,9 +296,11 @@ class FixtureBrowserTests(unittest.TestCase):
 
 # ============================================================================ scoring
 def _result(task_id: str, ok: bool = True, state: str = "complete", model: str | None = "claude-opus-5-5",
-            engine: str = "claude_code", **kw) -> TaskResult:
-    gate = {"threshold": 0.94, "final": {"pass_rate": 1.0 if ok else 0.8, "passed": 20 if ok else 16, "total": 20,
-                                         "ok": ok, "required_failures": []}}
+            engine: str = "claude_code", gate_threshold: float = 0.94, pass_rate: float | None = None,
+            **kw) -> TaskResult:
+    gate = {"threshold": gate_threshold, "final": {"pass_rate": pass_rate or (1.0 if ok else 0.8),
+                                                   "passed": 20 if ok else 16, "total": 20, "ok": ok,
+                                                   "required_failures": [], "threshold": gate_threshold}}
     r = TaskResult(task_id=task_id, state=state, gate=gate, engine=engine, active_model=model, **kw)
     r.evaluate()
     return r
@@ -306,7 +308,7 @@ def _result(task_id: str, ok: bool = True, state: str = "complete", model: str |
 
 class ScoringTests(unittest.TestCase):
     def test_task_pass_rule(self):
-        ok_gate = {"final": {"ok": True, "pass_rate": 0.95}}
+        ok_gate = {"final": {"ok": True, "pass_rate": 0.95, "threshold": 0.94}}
         self.assertTrue(task_passed("complete", ok_gate))
         self.assertFalse(task_passed("failed_gate", ok_gate))
         self.assertFalse(task_passed("blocked", ok_gate))
@@ -317,6 +319,21 @@ class ScoringTests(unittest.TestCase):
         self.assertFalse(task_passed("complete", ok_gate, bench_tests_seen=5, min_browser_tests=13))
         self.assertTrue(task_passed("complete", ok_gate, bench_tests_seen=13, min_browser_tests=13))
         self.assertTrue(task_passed("complete", ok_gate, bench_tests_seen=None, min_browser_tests=13))
+
+    def test_task_pass_rule_ignores_a_lowered_settings_gate(self):
+        # Settings > Quality gate at 0.5: the gate said ok at 60 %, the bench does not
+        self.assertFalse(task_passed("complete", {"final": {"ok": True, "pass_rate": 0.6, "threshold": 0.5}}, 14, 14))
+        self.assertFalse(task_passed("complete", {"final": {"ok": True, "pass_rate": 0.97, "threshold": 0.5}}))
+        self.assertFalse(task_passed("complete", {"final": {"ok": True, "pass_rate": 0.9, "threshold": 0.94}}))
+        self.assertFalse(task_passed("complete", {"final": {"ok": True, "pass_rate": 0.97}}), "threshold unrecorded")
+        # the task's own rule applies when it is stricter, never a looser one
+        gate = {"final": {"ok": True, "pass_rate": 0.95, "threshold": 0.94}}
+        self.assertFalse(task_passed("complete", gate, min_pass_rate=0.97))
+        self.assertTrue(task_passed("complete", gate, min_pass_rate=0.5))
+        self.assertEqual((task_rule(0.5), task_rule(0.97), task_rule(None), task_rule("x")), (0.94, 0.97, 0.94, 0.94))
+        sc = score([_result(t, gate_threshold=0.5, pass_rate=0.6) for t in EXPECTED_IDS])
+        self.assertEqual(sc.passed, 0)
+        self.assertFalse(sc.certified)
 
     def test_all_24_passing_on_one_model_is_certified(self):
         sc = score([_result(t) for t in EXPECTED_IDS])
@@ -370,6 +387,21 @@ class ScoringTests(unittest.TestCase):
         self.assertFalse(sc.certified)
         self.assertIn("more than one engine/model", sc.reason)
         self.assertEqual(len(sc.models_seen), 2)
+
+    def test_a_task_served_by_two_models_blocks_certification(self):
+        # b07's BUILD fell back to opus, its FIX ran on fable: the last call alone would look fable-only
+        served = {"b07-2048": ["claude_code/claude-opus-5-5", "claude_code/claude-fable-5-1"]}
+        results = [_result(t, model="claude-fable-5-1", served=served.get(t, ["claude_code/claude-fable-5-1"]))
+                   for t in EXPECTED_IDS]
+        sc = score(results)
+        self.assertEqual(sc.passed, 24)
+        self.assertFalse(sc.certified)
+        self.assertIn("mixed within b07-2048", sc.reason)
+        self.assertEqual(sc.models_seen, ["claude_code/claude-fable-5-1", "claude_code/claude-opus-5-5"])
+        same = score([_result(t, model="claude-fable-5-1", served=["claude_code/claude-fable-5-1"])
+                      for t in EXPECTED_IDS])
+        self.assertTrue(same.certified)
+        self.assertEqual((same.engine, same.model), ("claude_code", "claude-fable-5-1"))
 
     def test_passing_task_without_a_model_blocks_certification(self):
         results = [_result(t) for t in EXPECTED_IDS[:23]] + [_result(EXPECTED_IDS[23], model=None)]
@@ -479,8 +511,10 @@ class FakeRunManager:
     ``outcome(task_id)`` returns ``(state, gate_ok, model)``; ``hang=True`` never finishes a run until cancel().
     """
 
-    def __init__(self, app, outcome=None, hang=False, delay=0.01, checks_on_disk=False, drop_bench_tests=False):
+    def __init__(self, app, outcome=None, hang=False, delay=0.01, checks_on_disk=False, drop_bench_tests=False,
+                 engine_runs=None):
         self.app = app
+        self.engine_runs = engine_runs
         self.outcome = outcome or (lambda tid: ("complete", True, "claude-opus-5-5"))
         self.hang = hang
         self.delay = delay
@@ -513,6 +547,8 @@ class FakeRunManager:
             final["checks"] = checks
         run.gate = {"threshold": 0.94, "final": final}
         run.engine = {"backend": "claude_code", "active_model": model, "fallback_used": False}
+        if self.engine_runs is not None:
+            run.extra = {"engine_runs": self.engine_runs(bench["task_id"])}
         run.state = state
         etype = {"complete": "run.completed", "failed_gate": "run.completed", "blocked": "run.blocked"}.get(state, "run.failed")
         self.app.bus.publish(etype, {"state": state}, run_id=rid, project_id=run.project_id)
@@ -690,6 +726,9 @@ class RunnerTests(_HomeCase):
         self.assertTrue(app.store.projects["p_001"].name.startswith("bench-b01-breakout-"))
         opts = runs[0].options
         self.assertEqual(opts["bench"]["task_id"], "b01-breakout")
+        self.assertEqual(opts["bench"]["min_pass_rate"], 0.94)  # the gate threshold, whatever Settings say
+        self.assertEqual([t["threshold"] for t in saved["tasks"]], [0.94, 0.94])
+        self.assertEqual([t["min_pass_rate"] for t in saved["tasks"]], [0.94, 0.94])
         self.assertTrue(Path(opts["bench"]["tests_file"]).is_file())
         self.assertEqual(len(opts["bench"]["test_ids"]), 14)
         self.assertIsNone(opts["import_zip_attachment"])
@@ -749,6 +788,20 @@ class RunnerTests(_HomeCase):
         badge = b.badge()
         self.assertFalse(badge["certified"])
         self.assertIn("below the 94% threshold", badge["reason"])
+
+    def test_every_engine_call_decides_the_served_models(self):
+        calls = {"b01-breakout": [{"kind": "build", "backend": "claude_code", "active_model": "claude-opus-5-5"},
+                                  {"kind": "fix", "backend": "claude_code", "active_model": "claude-fable-5-1"}],
+                 "b02-snake": [{"kind": "build", "backend": "claude_code", "active_model": "claude-fable-5-1"},
+                               {"kind": "fix", "backend": "claude_code", "active_model": None, "ok": False}]}
+        app = make_app(self.home, engine_runs=lambda tid: calls[tid],
+                       outcome=lambda tid: ("complete", True, "claude-fable-5-1"))
+        res = BenchRunner(app, poll_s=0.05).run(["b01-breakout", "b02-snake"], confirm=True, cancel=threading.Event())
+        t1, t2 = res["tasks"]
+        self.assertEqual(t1["served"], ["claude_code/claude-opus-5-5", "claude_code/claude-fable-5-1"])
+        self.assertEqual(t1["active_model"], "claude-opus-5-5 + claude-fable-5-1")
+        self.assertEqual(t2["served"], ["claude_code/claude-fable-5-1"])
+        self.assertIn("mixed within b01-breakout", res["score"]["reason"])
 
     def test_missing_bench_tests_in_gate_fail_the_task(self):
         app = make_app(self.home, drop_bench_tests=True, checks_on_disk=True)

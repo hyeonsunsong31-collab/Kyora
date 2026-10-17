@@ -81,7 +81,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\kyora.ps1 serve
 `install.ps1` installs Python 3.12, Git, Node.js LTS (with `-WithNode`) and Claude Code via winget
 (falling back to Anthropic's official installer), and checks that Claude Code is logged in.
 `kyora.ps1 [serve|hub|selfcheck|bench|version] [args...]` starts Kyora; `serve` opens
-http://127.0.0.1:8765.
+http://127.0.0.1:8765. Games are served from a second port, 8766 (see [Security model](#security-model)).
 
 **Android** (Termux; everything except Claude Code, which has no official Android build):
 
@@ -117,8 +117,8 @@ in a source checkout).
    browser (keep the tab open). The gate shows `passed / total` and the pass rate against 94 %. Below
    94 %, Kimi K3 reviews and Claude Code fixes, up to 3 rounds.
 5. **Preview on your phone** - *Open on another device* shows a LAN link and QR code (the PC must run
-   `kyora hub` or `serve --host 0.0.0.0` with *Settings -> hub.expose_ui* on, and the phone must be on
-   the same network).
+   `kyora hub` or `serve --host 0.0.0.0` with *Settings -> hub.expose_ui* on, the phone must be on
+   the same network, and the PC firewall must let in both ports, 8765 for the UI and 8766 for games).
 6. **Download** - every finished run becomes a **slide** (`slide/v1`, `v2`, ...). From the slide strip
    you can preview any slide, branch from it, stack a modification on it (*Modify current slide*) or
    download it as a ZIP.
@@ -167,9 +167,11 @@ UI. Guide: [`docs/tokkio-overlay.md`](docs/tokkio-overlay.md) and
 
 `kyora bench --list`, `kyora bench --tasks <ids> --dry-run` (estimate) and `kyora bench --tasks <ids>`
 run the **real** pipeline on fixed game tasks with bench-owned browser tests. It costs NVIDIA tokens
-and Claude usage, so it asks for confirmation (`--yes` to skip). A task passes at >= 94 % of its
-checks; the "certified" badge appears only from a measured run on your setup, shown with date,
-engine and model. This README contains no bench number on purpose. Rules:
+and Claude usage, so it asks for confirmation (`--yes` to skip). A task passes when >= 94 % of the
+bench's own tests pass and every required check passes (the threshold is fixed, whatever Settings
+say); the "certified" badge appears only from a measured run on your setup in which one engine/model
+served every engine call, shown with date, engine and model. This README contains no bench number on
+purpose. Rules:
 [`docs/bench.md`](docs/bench.md).
 
 ## Settings and keys
@@ -190,13 +192,46 @@ Claude Code uses your **Claude subscription login** (`claude auth login`); Kyora
 API key. The optional Messages-API engine activates only if you set `ANTHROPIC_API_KEY` (or
 `anthropic.api_key`) **and** `pip install anthropic`.
 
-Important settings (`config/settings.json`): `server.port` (8765), `claude_code.model`,
+Important settings (`config/settings.json`): `server.port` (8765), `server.preview_port` (`null` =
+port + 1, i.e. 8766; `kyora serve --preview-port N`), `server.allowed_hosts` (`[]`), `claude_code.model`,
 `claude_code.fallback_models`, `claude_code.effort`, `claude_code.max_turns` (60),
-`claude_code.timeout_s` (3600), `claude_code.command` (e.g. a wrapper for a proot-distro install),
-`claude_code.extra_args`, `kimi.reasoning_effort` / `kimi.judge_reasoning_effort` (`max`),
+`claude_code.timeout_s` (3600), `claude_code.command` (e.g. a wrapper for a proot-distro install) and
+`claude_code.extra_args` (both edited only in `settings.json`, never over HTTP; restart Kyora after a
+change), `kimi.reasoning_effort` / `kimi.judge_reasoning_effort` (`max`),
 `kimi.effort_field` (`top_level` | `extra_body`), `nemotron.thinking_for_design`,
 `quality.min_pass_rate` (0.94), `quality.max_fix_iterations` (3), `quality.browser_wait_s` (1800),
 `quality.require_plan_approval`, `hub.expose_ui`.
+
+## Security model
+
+Kyora is a local app: the API has no login for clients on the same machine, so the HTTP server
+decides who counts as "the same machine" carefully.
+
+* **Two origins.** The UI and the API are on `server.port` (8765). Generated and imported game code
+  is untrusted, so it is served only by a second listener on `server.preview_port` (default port + 1,
+  8766): `/preview/...`, the browser test harness `/runner/...`, its scripts and the two
+  browser-results endpoints, nothing else. A game's `fetch('/api/settings')` reaches the preview
+  listener, which has no such route. On the main port `/preview/...` and `/runner/...` only redirect
+  to the preview port. The hub-token cookie is `HttpOnly`, so game code cannot read it.
+* **Host allow-list (DNS rebinding).** A request whose `Host` header is not this machine is refused
+  with `403 host not allowed`. Allowed: `localhost`, `127.0.0.1`, `::1`, the address the request
+  arrived on, and, when Kyora listens beyond loopback (`kyora hub`, `--host 0.0.0.0`), this machine's
+  LAN addresses, hostname, `<hostname>.local` and FQDN. Add other names to `server.allowed_hosts`
+  (for example a reverse proxy, a WSL or Docker host name, or the name a Tokkio pod uses to reach
+  Kyora).
+* **Origin check.** A POST/PUT/DELETE that carries an `Origin` header must come from the listener's
+  own origin; anything else, including `null`, gets `403 cross-origin request refused`. Clients that
+  send no `Origin` (the judge hook, the hub client, the Tokkio overlay, curl) are unaffected. Kyora
+  never sends `Access-Control-Allow-*` headers.
+* **JSON must say so.** A JSON body must be sent as `Content-Type: application/json`, so a web page
+  cannot post one as a CORS-free `text/plain` form.
+* **No command execution over HTTP.** `claude_code.command` and `claude_code.extra_args` are the
+  argv of a process Kyora runs, so `PUT /api/settings` refuses to change them; edit `settings.json`.
+* **Static files** are read only from `kyora/web`; `..`, backslashes, drive letters and streams are
+  rejected on every platform.
+* **One instance per port.** On Windows the listeners claim their ports exclusively
+  (`SO_EXCLUSIVEADDRUSE`), so a second Kyora on the same port fails with a clear message instead of
+  silently sharing it.
 
 ## Effort and models
 
@@ -227,7 +262,10 @@ Important settings (`config/settings.json`): `server.port` (8765), `claude_code.
 | `judge.unavailable` events | The judge could not be reached or Kimi K3 failed; the hook let the tool run (fail-open) and the run records it. Check the NVIDIA key and network. |
 | Tests wait for the browser / run BLOCKED after `quality.browser_wait_s` | The harness page needs an open browser tab on a device that can reach Kyora. Keep the Kyora tab open (on iOS keep Safari and iSH in the foreground). |
 | iSH is very slow | Expected: iSH emulates x86 in software. Let the first start finish, keep iSH in the foreground, do BUILD through a Hub, skip Bench there. |
-| Phone cannot open the LAN link | Run `kyora hub` (binds 0.0.0.0), enable `hub.expose_ui`, allow Python through the PC firewall on private networks, use the same Wi-Fi. |
+| Phone cannot open the LAN link | Run `kyora hub` (binds 0.0.0.0), enable `hub.expose_ui`, allow Python through the PC firewall on private networks (ports 8765 and 8766), use the same Wi-Fi. |
+| Preview stays blank on another device | Games come from the preview port (8766 by default, `preview_port` in `/api/status`). Let it through the firewall too, or set `server.preview_port`. |
+| `403 host not allowed: <name>` | Kyora was reached by a name it does not know as its own (DNS rebinding protection). Use the IP address or `localhost`, or add the name to `server.allowed_hosts` in `settings.json` and restart. |
+| `Kyora cannot listen on ...` at start | Another Kyora (or another program) already uses the port or the preview port. Stop it, or start with `--port N --preview-port M`. |
 | PowerShell refuses to run the scripts | Start them with `powershell -NoProfile -ExecutionPolicy Bypass -File ...` as shown, or `Unblock-File .\launchers\*.ps1`. |
 
 ## Licences and attribution

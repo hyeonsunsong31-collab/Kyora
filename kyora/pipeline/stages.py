@@ -12,6 +12,7 @@ The orchestration (state machine, persistence, events) lives in
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -155,8 +156,36 @@ def plan_files(plan: dict) -> list[str]:
     return out
 
 
+def bench_options(ctx: StageContext) -> dict:
+    """``options.bench`` of a Kyora Bench run (the bench injected its own test file), else ``{}``."""
+    bench = (ctx.run.options or {}).get("bench") or {}
+    return bench if isinstance(bench, dict) and bench.get("tests_file") else {}
+
+
+def gate_threshold(ctx: StageContext) -> float:
+    """The gate threshold: Settings for normal runs; for bench runs the task's rule, never below 0.94."""
+    bench = bench_options(ctx)
+    if not bench:
+        return float(ctx.cfg.quality.min_pass_rate)
+    from ..bench.scoring import THRESHOLD
+    try:
+        rule = float(bench.get("min_pass_rate") or THRESHOLD)
+    except (TypeError, ValueError):
+        rule = THRESHOLD
+    return max(THRESHOLD, min(1.0, rule))  # Settings > Quality gate cannot lower a bench task's bar
+
+
 def threshold_pct(ctx: StageContext) -> str:
-    return f"{ctx.cfg.quality.min_pass_rate * 100:g}"
+    return f"{gate_threshold(ctx) * 100:g}"
+
+
+def served_models(run: Any) -> list[str]:
+    """Every model that served a code-engine call of ``run`` (``extra.engine_runs``), in order of first use."""
+    models = [e.get("active_model") for e in (run.extra or {}).get("engine_runs") or []
+              if isinstance(e, dict) and e.get("active_model")]
+    if not models and (run.engine or {}).get("active_model"):
+        models = [run.engine["active_model"]]
+    return list(dict.fromkeys(str(m) for m in models))
 
 
 # ----------------------------------------------------------------------------- engine selection
@@ -182,8 +211,32 @@ def select_engine(ctx: StageContext) -> CodeEngine:
     return eng
 
 
+def tree_fingerprint(root: Path) -> str:
+    """Content hash of the work tree (``.git`` excluded): tells whether the engine changed any file."""
+    h = hashlib.sha256()
+    root = Path(root)
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        rel_dir = Path(dirpath).relative_to(root)
+        dirnames[:] = sorted(d for d in dirnames if not (rel_dir == Path(".") and d == ".git"))
+        for name in sorted(filenames):
+            p = Path(dirpath) / name
+            h.update((rel_dir / name).as_posix().encode("utf-8", "surrogateescape") + b"\0")
+            try:
+                h.update(os.readlink(p).encode("utf-8", "surrogateescape") if p.is_symlink() else p.read_bytes())
+            except OSError as exc:
+                h.update(f"unreadable: {exc}".encode("utf-8", "replace"))
+            h.update(b"\0")
+    return h.hexdigest()
+
+
 def run_engine(ctx: StageContext, kind: str, prompt: str) -> EngineResult:
-    """Run the code engine once (build or fix) and record the result on the run."""
+    """Run the code engine once (build or fix) and record the result on the run.
+
+    An engine result that is not ok blocks the run (resumable) unless the engine
+    provably changed the work tree relative to the iteration base (the tree right
+    before the call): a refused or rate-limited engine must never let TEST/GATE
+    measure the unchanged parent game as if the requested change had been made.
+    """
     eng = ctx.engine or select_engine(ctx)
     ctx.engine = eng
     cc = ctx.cfg.claude_code
@@ -209,13 +262,21 @@ def run_engine(ctx: StageContext, kind: str, prompt: str) -> EngineResult:
                        "test_spec": [t["id"] for t in plan_tests(plan)], "plan_title": plan.get("title")},
     )
     ctx.publish(ev.STAGE_PROGRESS, {"stage": kind, "pct": 1, "message": f"{eng.name}: starting ({cc.model}, effort {cc.effort})"})
+    base = tree_fingerprint(ctx.workspace)
     result = eng.run(job, BusSink(ctx.bus, ctx.run_id, ctx.project_id), ctx.cancel)
+    changed = tree_fingerprint(ctx.workspace) != base
     info = result.to_dict()
     info["backend_name"] = eng.name
+    info["tree_changed"] = changed
     ctx.last_engine = info
     ctx.run.engine = info
     ctx.run.extra.setdefault("engine_runs", []).append({"kind": kind, "iteration": ctx.run.iteration, **{
-        k: info.get(k) for k in ("ok", "backend", "active_model", "fallback_used", "num_turns", "duration_ms", "error")}})
+        k: info.get(k) for k in ("ok", "backend", "active_model", "fallback_used", "num_turns", "duration_ms", "error",
+                                 "tree_changed")}})
+    if not result.ok and not (ctx.cancel.is_set() or result.error == "cancelled"):
+        ctx.run.extra.setdefault("engine_failures", []).append(
+            {"kind": kind, "iteration": ctx.run.iteration, "backend": eng.name,
+             "error": (result.error or "unknown error")[:500], "tree_changed": changed})
     if ctx.app.judge is not None:
         try:
             stats = {k: v for k, v in ctx.app.judge.stats(ctx.run_id).items()}
@@ -233,11 +294,14 @@ def run_engine(ctx: StageContext, kind: str, prompt: str) -> EngineResult:
     if ctx.cancel.is_set() or result.error == "cancelled":
         raise RunCancelled()
     if not result.ok:
-        if (ctx.workspace / "index.html").is_file():
-            ctx.publish(ev.STAGE_PROGRESS, {"stage": kind, "pct": 100, "message":
-                        f"engine ended with an error ({(result.error or '')[:200]}); measuring the files it produced"})
-        else:
+        if not (ctx.workspace / "index.html").is_file():
             raise StageBlocked(f"code engine ({eng.name}) failed without producing index.html: {result.error}", kind)
+        if not changed:
+            raise StageBlocked(f"code engine ({eng.name}) failed and changed no file in the work tree: "
+                               f"{(result.error or 'unknown error')[:400]}", kind)
+        ctx.publish(ev.STAGE_PROGRESS, {"stage": kind, "pct": 100, "message":
+                    f"engine ended with an error ({(result.error or '')[:200]}) after changing the work tree; "
+                    "measuring the files it produced"})
     return result
 
 
@@ -282,24 +346,44 @@ def intake_stage(ctx: StageContext) -> dict:
     views = app.store.attachment_views(ctx.project_id, ids) if ids else []
     ctx.data["attachment_views"] = views
     prompt = ctx.run.prompt or ("Continue from the imported game base." if import_id else "")
-    intake = _model_call("intake", "Kimi K3", kimi.intake, prompt, views, ctx.run_id, ctx.project_id, ctx.cancel,
-                         import_attachment_id=import_id)
+    try:
+        intake = _model_call("intake", "Kimi K3", kimi.intake, prompt, views, ctx.run_id, ctx.project_id, ctx.cancel,
+                             import_attachment_id=import_id)
+    except ValueError as exc:
+        raise StageBlocked(f"Kimi K3 returned no valid intake: {exc}", "intake") from None
     ctx.write_artifact("intake", intake)
     return intake
 
 
+def unrunnable_node_tests(plan: dict, node: str | None) -> list[str]:
+    """Plan acceptance ids of kind ``node`` when this device has no Node (they could never report a result)."""
+    return [] if node else [t["id"] for t in plan_tests(plan) if t["kind"] == "node"]
+
+
+def _block_unrunnable_node_tests(plan: dict, node: str | None, stage: str) -> None:
+    ids = unrunnable_node_tests(plan, node)
+    if ids:
+        raise StageBlocked(f"the plan has Node acceptance tests ({', '.join(ids)}) but Node.js is not installed on this "
+                           "device, so they can never run: install Node.js and press Resume, or start a new run "
+                           "(Kimi K3 then plans browser tests only)", stage)
+
+
 def plan_stage(ctx: StageContext) -> dict:
+    from .quality import find_node
+    node = find_node()
     plan = ctx.read_artifact("plan")
     if not isinstance(plan, dict):
         kimi = _require(ctx.app.kimi, "Kimi K3", "plan")
         intake = ctx.read_artifact("intake") or {}
         try:
-            plan = _model_call("plan", "Kimi K3", kimi.plan, intake, ctx.run_id, ctx.project_id, ctx.cancel)
+            plan = _model_call("plan", "Kimi K3", kimi.plan, intake, ctx.run_id, ctx.project_id, ctx.cancel,
+                               node_available=bool(node))
         except ValueError as exc:
             raise StageBlocked(f"Kimi K3 returned no valid plan: {exc}", "plan") from None
         plan = _apply_bench_contract(ctx, plan)
         ctx.write_artifact("plan", plan)
         ctx.save_run()
+    _block_unrunnable_node_tests(plan, node, "plan")
     if ctx.cfg.quality.require_plan_approval and not (ctx.run.options or {}).get("plan_approved"):
         ctx.app.store.set_state(ctx.run, "awaiting_approval")
         ctx.publish(ev.RUN_AWAITING_APPROVAL, {"plan_title": plan.get("title"), "tests": len(plan_tests(plan)),
@@ -491,7 +575,10 @@ def test_stage(ctx: StageContext, n: int) -> tuple[list, list, list]:
     _inject_bench_tests(ctx)
     plan = ctx.read_artifact("plan") or {}
     node = find_node()
+    _block_unrunnable_node_tests(plan, node, "test")  # e.g. Node removed since PLAN: never loop fixes on them
     static = StaticChecker(ctx.workspace, plan, node).run()
+    if bench_options(ctx):  # the bench injected the test file: 'its ids are in its file' measures nothing
+        static = [c for c in static if not c.id.startswith("tests_present:")]
     atomic_write_json(ctx.iter_dir(n) / "static.json", [c.to_dict() for c in static])
     ctx.publish(ev.TEST_STATIC, {"iteration": n, "passed": sum(c.status == "pass" for c in static),
                                  "failed": sum(c.status == "fail" for c in static),
@@ -510,8 +597,8 @@ def test_stage(ctx: StageContext, n: int) -> tuple[list, list, list]:
     ctx.save_run()
     ctx.publish(ev.TEST_AWAIT_BROWSER, {"runner_url": runner_url, "iteration": n})
     show_view(ctx, f"Testing iteration {n}", buttons=[("kyora:run_tests", "Run tests")])
-    if node and ctx.cfg.quality.auto_run_browser_tests and getattr(ctx.app, "server_url", ""):
-        _headless_driver(ctx, ctx.app.server_url.rstrip("/") + runner_url, node)
+    if node and ctx.cfg.quality.auto_run_browser_tests and getattr(ctx.app, "preview_url", ""):
+        _headless_driver(ctx, ctx.app.preview_url.rstrip("/") + runner_url, node)  # the harness's own origin
     payload = collector.wait(ctx.run_id, n, float(ctx.cfg.quality.browser_wait_s), ctx.cancel)
     ctx.check_cancel()
     if payload is None:
@@ -524,12 +611,14 @@ def test_stage(ctx: StageContext, n: int) -> tuple[list, list, list]:
 def gate_stage(ctx: StageContext, n: int, static: list, node: list, browser: list) -> dict:
     from .quality import QualityGate, merge_checks
     plan = ctx.read_artifact("plan") or {}
-    result = QualityGate(ctx.cfg.quality, plan).evaluate(merge_checks(static, node, browser))
+    # a bench run is scored on the bench's own test ids only (engine-written tests cannot dilute it)
+    scored = [t["id"] for t in plan_tests(plan)] if bench_options(ctx) else None
+    result = QualityGate(gate_threshold(ctx), plan, scored_ids=scored).evaluate(merge_checks(static, node, browser))
     full = result.to_dict()
     full["iteration"] = n
     atomic_write_json(ctx.iter_dir(n) / "gate.json", full)
     summary = {k: full.get(k) for k in ("threshold", "passed", "total", "pass_rate", "ok", "required_failures",
-                                        "missing_spec_tests")}
+                                        "missing_spec_tests", "scope")}
     summary["iteration"] = n
     ctx.run.gate["final"] = summary
     ctx.run.gate["threshold"] = summary["threshold"]
@@ -565,8 +654,11 @@ def review_stage(ctx: StageContext, n: int, gate: dict) -> dict:
                                              "missing_spec_tests")}
     compact_gate["failing_checks"] = [{k: c.get(k) for k in ("id", "group", "name", "required", "detail")}
                                       for c in gate.get("checks") or [] if c.get("status") == "fail"][:80]
-    review = _model_call("review", "Kimi K3", kimi.review, summary, compact_gate, shots, ctx.run_id, ctx.project_id,
-                         ctx.cancel)
+    try:
+        review = _model_call("review", "Kimi K3", kimi.review, summary, compact_gate, shots, ctx.run_id, ctx.project_id,
+                             ctx.cancel)
+    except ValueError as exc:
+        raise StageBlocked(f"Kimi K3 returned no valid review: {exc}", "review") from None
     atomic_write_json(ctx.run_dir / f"review-{n}.json", review)
     ctx.publish(ev.REVIEW_DECISION, {"iteration": n, "decision": review.get("decision"),
                                      "reasons": (review.get("reasons") or [])[:5]})
@@ -583,7 +675,7 @@ def finalize_stage(ctx: StageContext, gate: dict, ok: bool) -> dict:
     else:
         title = str(plan.get("title") or "Generated game")
     try:
-        DeckBuilder(ctx.project_id, ctx.app.store).write_into_workspace(ctx.workspace)
+        DeckBuilder(ctx.project_id, ctx.app.store).write_into_workspace(ctx.workspace, run=ctx.run)
     except Exception as exc:  # noqa: BLE001 - the deck must not lose the slide
         log.warning("deck build failed: %s", exc)
     shots = []
@@ -592,6 +684,11 @@ def finalize_stage(ctx: StageContext, gate: dict, ok: bool) -> dict:
         shots = [str(p) for p in collector.screenshots(ctx.run_id, int(gate.get("iteration", ctx.run.iteration)))]
     gate_summary = {k: gate.get(k) for k in ("threshold", "passed", "total", "pass_rate", "ok")}
     engine = {k: (ctx.run.engine or {}).get(k) for k in ("backend", "active_model", "fallback_used", "requested_model")}
+    models = served_models(ctx.run)
+    if len(models) > 1:  # the slide names every model that served this run, not only the last call's
+        engine["active_model"] = " + ".join(models)
+        engine["fallback_used"] = any(e.get("fallback_used") for e in ctx.run.extra.get("engine_runs") or []
+                                      if isinstance(e, dict))
     slide = ctx.slides.commit_slide(ctx.run, title, gate_summary, engine, shots)
     ctx.run.result_slide = slide["number"]
     ctx.save_run()
@@ -610,7 +707,8 @@ def show_view(ctx: StageContext, title: str, *, buttons: list[tuple[str, str]] |
         return
     stages = [{"name": name, "status": (ctx.run.stages.get(name) or {}).get("status", "idle")}
               for name in ("intake", "plan", "design", "build", "test", "gate", "review", "fix", "finalize")]
-    view = {"title": title, "preview_url": f"/preview/{ctx.project_id}/run-{ctx.run_id}/index.html", "stages": stages,
+    preview_base = str(getattr(ctx.app, "preview_url", "") or "").rstrip("/")  # game code: the preview origin
+    view = {"title": title, "preview_url": f"{preview_base}/preview/{ctx.project_id}/run-{ctx.run_id}/index.html", "stages": stages,
             "buttons": [{"id": i, "text": t} for i, t in (buttons or [])]}
     if screenshot_b64:
         view["screenshot_b64"] = screenshot_b64
@@ -648,5 +746,5 @@ __all__ = [
     "StageBlocked", "RunCancelled", "StageContext", "render_template", "select_engine", "run_engine",
     "intake_stage", "plan_stage", "design_stage", "write_build_files", "build_stage", "fix_stage", "test_stage",
     "gate_stage", "load_gate", "review_stage", "finalize_stage", "show_view", "narrate", "plan_tests", "plan_files",
-    "NO_ENGINE_REASON", "NO_BROWSER_REASON",
+    "NO_ENGINE_REASON", "NO_BROWSER_REASON", "gate_threshold", "served_models", "tree_fingerprint",
 ]

@@ -57,6 +57,7 @@ MAX_SCAN_BYTES = 5 * 1024 * 1024
 TEXT_SCAN_EXTS = frozenset({".html", ".htm", ".js", ".mjs", ".cjs", ".css"})
 HTML_EXTS = frozenset({".html", ".htm"})
 DEFERRED_DETAIL = "no syntax verification available"
+DID_NOT_RUN_DETAIL = "did not run"
 
 _ACCEPTANCE_ID_RE = re.compile(r"^([A-Za-z]{1,8}-\d+)(?=$|[\s:.,)\]-])")
 _SAFE_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -115,6 +116,7 @@ class GateResult:
     required_failures: list[str] = field(default_factory=list)
     checks: list[Check] = field(default_factory=list)
     missing_spec_tests: list[str] = field(default_factory=list)
+    scope: str = "checks"
 
     def to_dict(self, include_checks: bool = True) -> dict:
         """JSON-ready dict. ``pass_rate`` is floored to 4 decimals (never rounded up)."""
@@ -126,6 +128,7 @@ class GateResult:
             "ok": self.ok,
             "required_failures": list(self.required_failures),
             "missing_spec_tests": list(self.missing_spec_tests),
+            "scope": self.scope,
         }
         if include_checks:
             out["checks"] = [c.to_dict() for c in self.checks]
@@ -1279,33 +1282,48 @@ class QualityGate:
     """Applies the measured pass-rate threshold and the hard requirements to a set of checks.
 
     ``ok`` iff at least one check was counted, ``passed/total >= cfg.min_pass_rate``,
-    no required check failed (a required check still ``deferred`` counts as failed)
-    and every plan acceptance test id (kind browser or node) was reported by the
-    browser or Node runner. Plan tests marked ``required: true`` make their checks
+    no required check failed (a required check still ``deferred`` or ``skip`` counts
+    as failed) and every plan acceptance test id (kind browser or node) was reported
+    with a pass/fail result by the browser or Node runner: a plan acceptance test
+    that was skipped (TAP ``# SKIP`` / ``# TODO``, harness ``skip``) did not run and
+    counts as a failure. Plan tests marked ``required: true`` make their checks
     required.
+
+    ``scored_ids`` (Kyora Bench) scores only those test ids: ``passed`` is the
+    number of them with a ``pass`` result and ``total`` their number, so checks
+    the measured engine wrote itself cannot dilute the score; every required
+    check must still pass (``scope`` is then ``bench_tests``).
     """
 
-    def __init__(self, cfg: Any, plan: Mapping | None = None):
+    def __init__(self, cfg: Any, plan: Mapping | None = None, *, scored_ids: Iterable[str] | None = None):
         if isinstance(cfg, (int, float)) and not isinstance(cfg, bool):
             self.threshold = float(cfg)
         else:
             self.threshold = float(getattr(cfg, "min_pass_rate", 0.94))
         self.plan = plan or {}
+        self.scored_ids = list(dict.fromkeys(str(i).lower() for i in scored_ids)) if scored_ids is not None else None
 
     def evaluate(self, checks: Iterable[Check]) -> GateResult:
         """Compute the :class:`GateResult` for ``checks`` (inputs are not mutated)."""
         tests = [t for t in _plan_tests(self.plan) if t["kind"] in ("browser", "node")]
         required_ids = {t["id"].lower() for t in tests if t["required"]}
+        plan_ids = {t["id"].lower() for t in tests}
         work: list[Check] = []
         for c in checks:
             c = Check(**asdict(c))
+            is_test = c.group in ("browser", "node")
+            if is_test and c.id.lower() in required_ids:
+                c.required = True
             if c.status == "deferred" and c.required:
                 c.status = "fail"
                 c.detail = DEFERRED_DETAIL + (f" ({c.detail})" if c.detail else "")
-            if c.group in ("browser", "node") and c.id.lower() in required_ids:
-                c.required = True
+            elif c.status in ("skip", "deferred") and (c.required or (is_test and c.id.lower() in plan_ids)):
+                # a skipped/TODO required check or plan acceptance test never ran: that is a failure
+                c.status = "fail"
+                c.detail = DID_NOT_RUN_DETAIL + (f" ({c.detail})" if c.detail else "")
             work.append(c)
-        reported = {c.id.lower() for c in work if c.group in ("browser", "node")}
+        # an acceptance id is reported only by a pass/fail result of the browser or Node runner
+        reported = {c.id.lower() for c in work if c.group in ("browser", "node") and c.status in COUNTED_STATUSES}
         missing: list[str] = []
         for t in tests:
             if t["id"].lower() not in reported:
@@ -1313,14 +1331,20 @@ class QualityGate:
                 work.append(Check(f"missing:{t['id']}", t["kind"], f"Acceptance test {t['id']} reported", "fail",
                                   t["required"], f"plan acceptance test {t['id']} ({t['name']}) was not reported by the "
                                                  f"{t['kind']} runner", "gate"))
-        counted = [c for c in work if c.status in COUNTED_STATUSES]
-        total = len(counted)
-        passed = sum(1 for c in counted if c.status == "pass")
+        if self.scored_ids is None:
+            counted = [c for c in work if c.status in COUNTED_STATUSES]
+            total = len(counted)
+            passed = sum(1 for c in counted if c.status == "pass")
+        else:  # a scored id without a pass result (failed, skipped, missing) counts as not passed
+            results = {c.id.lower(): c.status for c in work if c.group in ("browser", "node")}
+            total = len(self.scored_ids)
+            passed = sum(1 for i in self.scored_ids if results.get(i) == "pass")
         pass_rate = passed / total if total else 0.0
         required_failures = [c.id for c in work if c.required and c.status == "fail"]
         ok = total > 0 and pass_rate + 1e-9 >= self.threshold and not required_failures and not missing
         return GateResult(threshold=self.threshold, passed=passed, total=total, pass_rate=pass_rate, ok=ok,
-                          required_failures=required_failures, checks=work, missing_spec_tests=missing)
+                          required_failures=required_failures, checks=work, missing_spec_tests=missing,
+                          scope="checks" if self.scored_ids is None else "bench_tests")
 
 
 __all__ = [
