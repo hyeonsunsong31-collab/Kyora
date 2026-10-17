@@ -316,6 +316,30 @@ class ReportTests(_Base):
         self.assertEqual(items["claude_model"]["status"], "skip")
         self.assertEqual(logged_out.probe_calls, [])
 
+    def test_missing_cli_is_not_a_failure_when_a_hub_is_the_selected_engine(self):
+        # Termux (no Android build of Claude Code) or a Windows PC installed with -SkipClaude, linked to a Hub.
+        missing_cli = SimpleNamespace(name="claude_code", availability=lambda: Availability(
+            False, "claude_code", "'claude' not found on PATH (install Claude Code and run 'claude auth login')",
+            {"command": ["claude"]}))
+        hub = FakeHub()
+        for platform in ({"kind": "termux", "system": "linux", "machine": "aarch64", "is_ish": False},
+                         {"kind": "windows", "system": "windows", "machine": "AMD64", "is_ish": False}):
+            app = self.make_app(platform=platform, claude_engine=missing_cli, engine=lambda: hub)
+            report = SelfCheck(app).run(probe_models=False)
+            items = self.by_id(report)
+            self.assertEqual(items["engine_selected"]["status"], "ok")
+            self.assertEqual(items["hub"]["status"], "ok")
+            self.assertEqual(items["claude_cli"]["status"], "skip", items["claude_cli"]["detail"])
+            self.assertIn("not found on PATH", items["claude_cli"]["detail"])
+            self.assertIn("not needed: the selected code engine is hub", items["claude_cli"]["detail"])
+            self.assertEqual(report["summary"]["fail"], 0, [it for it in report["items"] if it["status"] == "fail"])
+            self.assertNotEqual(report["overall"], "fail")
+        # without any engine the missing CLI still fails, next to engine_selected
+        items = self.by_id(SelfCheck(self.make_app(claude_engine=missing_cli, engine=lambda: None))
+                           .run(probe_models=False))
+        self.assertEqual(items["claude_cli"]["status"], "fail")
+        self.assertEqual(items["engine_selected"]["status"], "fail")
+
     def test_probe_claude_fallback_note(self):
         claude = FakeClaude(probe={"ok": True, "requested": "claude-fable-5-1", "active": "claude-opus-5-5",
                                    "fallback_used": True, "duration_ms": 3200, "error": None,

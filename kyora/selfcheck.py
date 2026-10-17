@@ -131,6 +131,7 @@ class SelfCheck:
             results.update(self._execute(phase1))
             # the engine choice reuses the availability results cached by phase 1
             results.update(self._execute([_Probe(("engine_selected",), self._p_engine_selected, 60.0)]))
+            self._claude_not_needed(results)
             items = [results[i] for i in ORDER if i in results]
             summary = {s: sum(1 for it in items if it["status"] == s) for s in STATUSES}
             overall = "fail" if summary["fail"] else "warn" if summary["warn"] else "ok"
@@ -225,6 +226,19 @@ class SelfCheck:
 
     def _missing(self, name: str, default: str) -> str:
         return (getattr(self.app, "missing", None) or {}).get(name, default)
+
+    def _claude_not_needed(self, results: dict[str, dict]) -> None:
+        """A missing Claude Code CLI is no failure while another engine (a linked Hub on Termux or a
+        ``install.ps1 -SkipClaude`` PC, or the Messages API) is the selected one; no engine at all is
+        reported by ``engine_selected``."""
+        cli, sel = results.get("claude_cli"), results.get("engine_selected")
+        if not cli or not sel or cli["status"] != "fail" or sel["status"] != "ok":
+            return
+        backend = (sel.get("measured") or {}).get("backend") or ""
+        if not backend or backend == getattr(getattr(self.app, "claude_engine", None), "name", "claude_code"):
+            return
+        results["claude_cli"] = item("claude_cli", "skip", f"{cli['detail']}; not needed: the selected code engine "
+                                     f"is {backend}", {**cli["measured"], "not_needed_for": backend})
 
     # ------------------------------------------------------------------ local probes
     def _p_python(self) -> dict:

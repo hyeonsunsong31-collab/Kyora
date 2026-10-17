@@ -102,6 +102,9 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   `sh launchers/kyora-ish.sh` / `kyora-termux.sh` stopped at `set -eu\r` on a phone, and a release built
   from it changed 615 vendored files. `.gitattributes` now keeps `*.sh`, `*.py`, `*.mjs` and `*.js` LF,
   checks `*.ps1` out as CRLF and marks `vendor/**` `-text` (no conversion).
+- Self-check no longer fails (exit status 1) on a Termux phone or an `install.ps1 -SkipClaude` PC whose
+  linked Hub is the selected, reachable code engine: a missing Claude Code CLI is then reported as SKIP
+  ("not needed: the selected code engine is hub"). With no engine at all it still fails.
 
 ## 0.1.0 - 2026-10-15
 

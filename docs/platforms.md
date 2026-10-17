@@ -87,6 +87,10 @@ sh launchers/kyora-termux.sh --hub        # Hub mode (only useful if Claude Code
   proot-distro Ubuntu, wired up with Settings -> `claude_code.command` (a command that runs `claude`
   inside the distro; Kyora's workspace path must be visible at the same path there). Without any
   engine, BUILD is BLOCKED.
+* Self-check reports a missing `claude` as SKIP ("not needed: the selected code engine is hub") while a
+  linked Hub (or the Messages-API engine) is the selected engine, so `kyora-termux.sh selfcheck` exits 0
+  on a correctly linked phone (the same holds on a PC installed with `install.ps1 -SkipClaude`). With no
+  engine at all both `Claude Code CLI` and `Selected code engine` stay FAIL.
 * Android may stop Termux in the background; `termux-wake-lock` keeps it alive during long runs.
 
 ## iOS / iPadOS (iSH)
