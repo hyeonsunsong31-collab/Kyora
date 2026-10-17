@@ -23,7 +23,8 @@ from kyora.models.base import Availability
 from kyora.models.tokkio import Tokkio
 from kyora.pipeline.events import EventBus
 from kyora.selfcheck import (
-    ISH_CLAUDE, KIMI_EFFORT_HINT, KIMI_EFFORT_HINT_TOP, NO_ENGINE, NODE_MISSING, ORDER, TOKKIO_NOT_DEPLOYED, SelfCheck, _Probe,
+    ISH_CLAUDE, KIMI_EFFORT_BEST_EFFORT, KIMI_EFFORT_HINT, KIMI_EFFORT_HINT_TOP, NO_ENGINE, NODE_MISSING, ORDER,
+    TOKKIO_NOT_DEPLOYED, SelfCheck, _Probe,
     register_routes,
 )
 from kyora.server import KyoraServer, Router
@@ -258,6 +259,8 @@ class ReportTests(_Base):
         self.assertTrue(it["measured"]["reasoning_seen"])
         self.assertEqual(it["measured"]["effort_sent"], "reasoning_effort=max")
         self.assertIn("request with reasoning_effort=max accepted (top_level)", it["detail"])
+        self.assertNotIn(KIMI_EFFORT_BEST_EFFORT, it["detail"])  # the documented field is not labelled best-effort
+        self.assertNotIn("effort_best_effort", it["measured"])
 
     def test_kimi_effort_check_reports_extra_body_field_actually_sent(self):
         # The real Kimi wrapper builds the body; self-check must name what it put on the wire.
@@ -270,7 +273,14 @@ class ReportTests(_Base):
         self.assertEqual(nim.chats[0]["extra"], {"chat_template_kwargs": {"reasoning_effort": "high"}})
         self.assertNotIn("extra_body", nim.chats[0]["extra"])
         self.assertEqual(it["measured"]["effort_sent"], "chat_template_kwargs.reasoning_effort=high")
-        self.assertIn("request with chat_template_kwargs.reasoning_effort=high accepted (extra_body)", it["detail"])
+        # Kimi K3's template is not documented to read this keyword: the detail says best-effort and never
+        # claims that the level was applied.
+        self.assertIn("request with chat_template_kwargs.reasoning_effort=high accepted (extra_body; best-effort: "
+                      "Kimi K3 documents only the top-level reasoning_effort, so the model may ignore "
+                      "chat_template_kwargs.reasoning_effort)", it["detail"])
+        self.assertIn(KIMI_EFFORT_BEST_EFFORT, it["detail"])
+        self.assertTrue(it["measured"]["effort_best_effort"])
+        self.assertNotIn("applied", it["detail"])
         # When that form is rejected too, the hint must not point back at the mode that just failed.
         rejected = FakeStatusError('HTTP 400: {"detail":"chat_template_kwargs.reasoning_effort not permitted"}', 400)
         it = self.by_id(SelfCheck(self.make_app(nim_kimi=FakeNIM(chat_exc=rejected), kimi=kimi))
