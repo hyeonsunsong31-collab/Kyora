@@ -279,7 +279,9 @@ Kill = `SIGTERM` to the process group (POSIX) / `taskkill /T /F` (Windows),
   result's `modelUsage`; a model named in `init` that was refused is not active.
   `fallback_used` = `active_model` is not the requested model.
 * `duration_ms` from the result line, else measured wall time; `cost_usd` =
-  `total_cost_usd` as reported by the CLI; `permission_denials` from the result.
+  `total_cost_usd` as reported by the CLI (computed at API list prices, `costBasis: list`: an
+  API-equivalent estimate, not a charge; a subscription login is not billed per run, so the UI shows
+  it as "API-equiv. est." with that explanation); `permission_denials` from the result.
 * `raw`: `rc, attempts, retries, compat, run_dir, stream, stderr, tool_uses,
   malformed_lines, model_usage, duration_api_ms, stderr_tail, api_error, rate_limits`.
 

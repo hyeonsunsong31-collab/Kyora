@@ -80,8 +80,9 @@ def scripted_events(run_id: str) -> list[tuple[str, dict]]:
                           "latency_ms": 3, "tool_name": "Bash"})
     add("engine.tool_result", {"tool_use_id": "tu_2", "is_error": True, "excerpt": "blocked by judge"})
     add("stage.progress", {"stage": "build", "pct": 80, "message": "writing tests"})
+    # cost_usd is the CLI's list-price total_cost_usd (an estimate; the UI must label it so)
     add("engine.result", {"subtype": "success", "is_error": False, "num_turns": 31, "duration_ms": 812000,
-                          "cost_usd": None, "result": "done"})
+                          "cost_usd": 1.00287625, "result": "done"})
     add("stage.finished", {"stage": "build", "ok": True, "ms": 812000})
     # test + gate
     add("run.state", {"state": "test", "iteration": 1})

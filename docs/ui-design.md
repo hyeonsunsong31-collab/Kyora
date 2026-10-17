@@ -162,6 +162,8 @@ These are deliberate, visible design rules rather than copy choices:
   Self-check measured them.
 - **Resolved model, not requested model.** The Claude tile and run chips show the model the
   engine actually used, and flag "fallback from ..." when it differs.
+- **Estimates say so.** The code-engine tile shows Claude Code's `total_cost_usd` as
+  "API-equiv. est." (`~$`), explained as the CLI's list-price estimate, never as a measured cost.
 - **Labels from the run, not from constants.** The stage chart's Gate node and fix-loop label, the
   gauge and the gate texts use the threshold the run recorded (`run.gate.threshold`, the gate
   result's `threshold`); Build/Fix and the code-engine tile name the run's backend (`engine.session`,

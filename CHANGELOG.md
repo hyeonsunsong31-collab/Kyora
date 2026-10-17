@@ -95,6 +95,10 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   gate from Settings. The engine call records its effort in `run.json` (`engine.effort`) and announces
   `backend`/`effort` in its first `stage.progress`. A bench run records the bench threshold from the
   start, and the gate narration and Tokkio slide view name the gate the run applied, not Settings.
+- **Claude Code's cost is labelled as an estimate.** The code-engine tile showed the CLI's
+  `total_cost_usd` as "cost", as if Kyora had measured a charge. It is computed by the CLI at API list
+  prices and a subscription login is not billed per run, so the tile now shows it as
+  "API-equiv. est." (`~$`) with that explanation.
 
 ## 0.1.0 - 2026-10-15
 

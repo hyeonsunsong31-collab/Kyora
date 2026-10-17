@@ -2,7 +2,7 @@
    Values come only from model.metrics (Nemotron / Kimi) and engine.* events (Claude Code).
    Unknown values render as "-". Nothing is estimated here; when the backend reports
    tokens_source != "usage" the tile says so. The code-engine tile is named after the run's recorded
-   backend and effort. */
+   backend and effort; Claude Code's total_cost_usd is labelled as the CLI's list-price estimate. */
 (function () {
   'use strict';
   const K = (window.Kyora = window.Kyora || {});
@@ -112,6 +112,10 @@
     return '<svg class="spark" viewBox="0 0 ' + w + ' ' + h + '" aria-hidden="true"><path class="spark-area" d="' + area + '"/><path d="' + d + '"/></svg>';
   }
 
+  /* Claude Code's total_cost_usd is computed by the CLI at API list prices; with a subscription login
+     nothing is charged per run, so it is shown as an API-equivalent estimate, never as a measured cost. */
+  const COST_NOTE = 'Claude Code\'s total_cost_usd: an API-equivalent estimate at list prices computed by the CLI, not a measured charge. A Claude subscription login is not billed per run.';
+
   /* engine: the run's recorded engine info ({backend, effort}) from run.json / engine events, optional. */
   function renderTiles(metrics, engine) {
     engine = engine || {};
@@ -126,7 +130,9 @@
         ? (m.turns != null ? fmtNum(m.turns, 0) + '<small>turns</small>' : '-<small>turns</small>')
         : (fmtNum(m.tps) + '<small>tok/s</small>');
       const stats = isClaude
-        ? [['duration', fmtMs(m.duration_ms)], ['cost', m.cost_usd == null ? '-' : '$' + fmtNum(m.cost_usd, 3)], ['tokens', m.completion_tokens == null && m.prompt_tokens == null ? '-' : fmtTokens(m.prompt_tokens, m.completion_tokens)]]
+        ? [['duration', fmtMs(m.duration_ms)],
+          ['API-equiv. est.', m.cost_usd == null ? '-' : '~$' + fmtNum(m.cost_usd, 3), COST_NOTE, 'cost'],
+          ['tokens', m.completion_tokens == null && m.prompt_tokens == null ? '-' : fmtTokens(m.prompt_tokens, m.completion_tokens)]]
         : [['TTFT', fmtMs(m.ttft_ms)], ['latency', fmtMs(m.total_ms)], ['tokens', fmtTokens(m.prompt_tokens, m.completion_tokens)]];
       const foot = [];
       if (m.busy) foot.push('<span class="tile-live">● live</span>');
@@ -139,7 +145,7 @@
         '<div class="tile-head"><span class="tile-name">' + esc(name) + '</span><span class="tile-role">' + esc(role) + '</span></div>' +
         '<div class="tile-model" title="' + esc(m.model || '') + '">' + esc(m.model || (isClaude ? 'model resolved at session start' : 'model not called yet')) + '</div>' +
         '<div class="tile-main"><div class="tile-big">' + big + '</div>' + (isClaude ? '' : sparkline(m.history)) + '</div>' +
-        '<div class="tile-stats">' + stats.map((p) => '<div>' + esc(p[0]) + '<b>' + esc(p[1]) + '</b></div>').join('') + '</div>' +
+        '<div class="tile-stats">' + stats.map((p) => '<div' + (p[3] ? ' data-stat="' + esc(p[3]) + '"' : '') + (p[2] ? ' title="' + esc(p[2]) + '"' : '') + '>' + esc(p[0]) + '<b>' + esc(p[1]) + '</b>' + (p[2] ? '<span class="sr-only">' + esc(p[2]) + '</span>' : '') + '</div>').join('') + '</div>' +
         '<div class="tile-foot">' + foot.join('') + '</div>' +
         '</article>'
       );

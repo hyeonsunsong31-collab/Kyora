@@ -337,6 +337,7 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; font-
 .tile[data-sys="kimi"] .spark { color: var(--sys-kimi); }
 .tile[data-sys="claude"] .spark { color: var(--sys-claude); }
 .tile .tile-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-2); margin-top: var(--s-3); font-size: var(--fs-0); color: var(--fg-subtle); }
+.tile .tile-stats > div { position: relative; min-width: 0; }
 .tile .tile-stats b { display: block; color: var(--fg); font-family: var(--font-mono); font-size: var(--fs-1); font-weight: var(--fw-medium); font-variant-numeric: tabular-nums; }
 .tile .tile-foot { margin-top: var(--s-2); font-size: var(--fs-0); color: var(--fg-subtle); display: flex; justify-content: space-between; gap: var(--s-2); }
 .tile .tile-live { color: var(--accent); }

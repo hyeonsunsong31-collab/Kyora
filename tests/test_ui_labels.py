@@ -118,6 +118,22 @@ class RunLabelRenderTests(unittest.TestCase):
         self.assertIn('<span class="tile-role">code engine</span>', out["none"])
         self.assertNotIn("effort", out["none"])
 
+    def test_claude_cost_is_labelled_as_a_list_price_estimate(self):
+        out = run_node(["js/pipeline-chart.js", "js/metrics.js"], """(function () {
+            const m = K.metrics.emptyMetrics();
+            K.metrics.applyMetricsEvent(m, { type: 'engine.session', data: { backend: 'claude_code', model: 'claude-opus-5-5' } });
+            K.metrics.applyMetricsEvent(m, { type: 'engine.result', data: { num_turns: 3, duration_ms: 9253, cost_usd: 1.00287625 } });
+            return K.metrics.renderTiles(m, null); })()""")
+        claude = out[out.index('data-sys="claude"'):]
+        cost = re.search(r'<div data-stat="cost" title="([^"]*)">([^<]*)<b>([^<]*)</b>', claude)
+        self.assertIsNotNone(cost, "the cost stat carries its explanation")
+        note, label, value = cost.groups()
+        self.assertEqual(label, "API-equiv. est.")
+        self.assertEqual(value, "~$1.003")
+        self.assertIn("list prices", note)
+        self.assertIn("not a measured charge", note)
+        self.assertNotIn(">cost<b>", claude)
+
     def test_static_texts_do_not_hard_code_gate_or_effort(self):
         html = (WEB / "index.html").read_text(encoding="utf-8")
         for fixed in ("at effort max", "<code>--effort max</code>", "94 % is a gate", "at least 94 % of its counted"):
