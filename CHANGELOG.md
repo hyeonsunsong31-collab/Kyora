@@ -187,6 +187,9 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   `docs/honesty.md` and `docs/ui-design.md` say "at least the configured pass rate (default 94 %,
   `quality.min_pass_rate`)", "up to `quality.max_fix_iterations` rounds (default 3)" and that a slide
   below the gate is labelled "below <threshold> %".
+- **`docs/hub-mode.md` describes the single-instance rules like the README.** Instead of "a second
+  Kyora on a port in use stops with an error" it says that on Windows the listeners claim their ports
+  exclusively and that on every platform one Kyora runs per `KYORA_HOME` (`kyora.lock`).
 
 ## 0.1.0 - 2026-10-15
 

@@ -114,8 +114,11 @@ The client side (`HubClientEngine`) works like this:
 - **Ports and firewall.** `/api/code-engine/*` is on the main port (8765). With
   `hub.expose_ui`, phones that open the hub's UI also load game previews and the test
   harness from the preview port (8766 by default, `server.preview_port`); allow both
-  ports for private networks in the PC firewall. A second Kyora started on a port that
-  is already in use stops with an error instead of sharing it.
+  ports for private networks in the PC firewall. On Windows the listeners claim their
+  ports exclusively (`SO_EXCLUSIVEADDRUSE`), so a second Kyora on the same port fails
+  clearly instead of silently sharing it. On every platform one Kyora runs per
+  `KYORA_HOME`: `kyora serve`, `kyora hub` and `kyora bench` take `KYORA_HOME/kyora.lock`
+  first, and a second one on the same home exits with a clear message.
 - **Uploads.** Every uploaded zip is validated before anything is written. Absolute
   paths, drive letters, `..`, `:`, symlink entries and anything that resolves outside the
   job directory are rejected, and entries inside `.git` are never written.
