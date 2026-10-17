@@ -85,6 +85,7 @@ DEFAULT_TIMEOUT_S = 7200.0
 _JOB_ID_RE = re.compile(r"^hj_[0-9a-f]{6,32}$")
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,80}$")
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
+_DOTGIT_ALIAS_RE = re.compile(r"^(?:\.git[. ]+|git~\d+|gi7eba~\d+)$", re.IGNORECASE)  # = zipper's
 _COPY_CHUNK = 1024 * 1024
 
 
@@ -194,6 +195,10 @@ def _check_entry_name(raw: str) -> tuple[str, bool]:
     parts = [p for p in name.split("/") if p not in ("", ".")]
     if any(p == ".." for p in parts):
         raise ValueError(f"unsafe zip entry ('..'): {raw!r}")
+    # Same rule as zipper: NTFS maps GIT~<n> and ".git" + trailing dots/spaces onto .git, and Win32 strips
+    # trailing dots/spaces from every name, so such components could overwrite another file or .git/config.
+    if any(_DOTGIT_ALIAS_RE.match(p) or (os.name == "nt" and p.endswith((" ", "."))) for p in parts):
+        raise ValueError(f"unsafe zip entry (aliases .git or another name on Windows): {raw!r}")
     return "/".join(parts), is_dir
 
 
@@ -228,9 +233,11 @@ def fallback_unzip(data: bytes, dest: Path | str, *, replace: bool = False, keep
                 continue
             target = (root / name).resolve()
             try:
-                target.relative_to(root)
+                rel = target.relative_to(root)
             except ValueError:
                 raise ValueError(f"unsafe zip entry (escapes destination): {info.filename!r}") from None
+            if any(p.lower() == ".git" for p in rel.parts):  # an existing short name resolved to .git
+                raise ValueError(f"unsafe zip entry (resolves into .git): {info.filename!r}")
             if not is_dir:
                 files += 1
                 total += max(int(info.file_size), 0)
@@ -255,9 +262,11 @@ def fallback_unzip(data: bytes, dest: Path | str, *, replace: bool = False, keep
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             try:
-                target.parent.resolve().relative_to(root)
+                rel = target.parent.resolve().relative_to(root)
             except ValueError:
                 raise ValueError(f"unsafe zip entry (escapes destination): {info.filename!r}") from None
+            if any(p.lower() == ".git" for p in rel.parts):
+                raise ValueError(f"unsafe zip entry (resolves into .git): {info.filename!r}")
             if target.is_symlink():
                 target.unlink()
             with zf.open(info, "r") as src, open(target, "wb") as dst:
