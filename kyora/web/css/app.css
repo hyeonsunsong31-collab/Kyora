@@ -342,6 +342,7 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; font-
 .tile .tile-live { color: var(--accent); }
 
 .judge-counters { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-2); }
+.judge-note { margin: var(--s-2) 0 0; font-size: var(--fs-0); color: var(--fg-subtle); }
 .counter { text-align: center; padding: var(--s-2); border-radius: var(--r-2); background: var(--bg-sunken); }
 .counter b { display: block; font-size: var(--fs-5); font-weight: var(--fw-bold); font-variant-numeric: tabular-nums; }
 .counter span { font-size: var(--fs-0); color: var(--fg-subtle); text-transform: uppercase; letter-spacing: var(--tracking-caps); }

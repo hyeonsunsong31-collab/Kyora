@@ -23,8 +23,10 @@ intake -> plan -> design ->  BUILD/FIX  ---->  Claude Code CLI (--effort max), j
 test -> gate -> review -> finalize (slides, deck) on the phone
 ```
 
-The hub runs the judge for every tool call with **its own** NVIDIA keys and Kimi
-settings, because the PreToolUse hook can only reach the judge on the same machine.
+The hub runs the judge for the engine's Write, Edit, MultiEdit, NotebookEdit and Bash
+calls (local rules first, then Kimi K3 for the rest; Read, Glob and Grep are not judged)
+with **its own** NVIDIA keys and Kimi settings, because the PreToolUse hook can only
+reach the judge on the same machine.
 
 ## Linking a phone to a hub
 

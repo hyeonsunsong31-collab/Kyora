@@ -477,7 +477,7 @@ class DeckBuilder:
         svg.append(f"<path d=\"M{gx + w / 2:g},{y0 + h + 4} v26 H{x0 + 3 * (w + gap) + w / 2:g} v-22\" class=\"edge dashed\" "
                    f"marker-end=\"url(#arrow)\"/>"
                    f"<text x=\"{(gx + bx + w) / 2:g}\" y=\"{y0 + h + 46}\" class=\"sys2\">below threshold: Kimi K3 review → fix</text>")
-        svg.append(f"<text x=\"{bx + w / 2:g}\" y=\"{y0 - 14}\" class=\"sys2\">every tool call judged by Kimi K3</text>")
+        svg.append(f"<text x=\"{bx + w / 2:g}\" y=\"{y0 - 14}\" class=\"sys2\">writes + shell judged: local rules, then Kimi K3</text>")
         svg.append("</svg>")
         served = (f"<p class=\"muted\">Models that served the code engine for this version: {esc(', '.join(models))}.</p>"
                   if len(models) > 1 else "")

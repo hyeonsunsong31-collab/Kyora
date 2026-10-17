@@ -8,7 +8,7 @@
 // modules may be missing), every tab shows its section, the capability strip + engine banner
 // match /api/status, the settings form masks secrets, the hub-link hash flow updates
 // /api/settings, and after the driver publishes a scripted run the chart, metric tiles, gate
-// gauge (94) and judge counters (1 allowed / 1 denied) reflect it, and that game previews load
+// gauge (94) and judge counters (1 allowed / 1 denied; 1 by rule, 1 by Kimi K3) reflect it, and that game previews load
 // from the separate preview origin (which serves no API).
 // Optional: KYORA_SMOKE_SHOTS=<dir> saves a screenshot of every view.
 import { spawn, execSync } from 'node:child_process';
@@ -234,6 +234,8 @@ async function checkPipeline(page, label) {
       claudeModel: (document.querySelector('.tile[data-sys="claude"] .tile-model') || {}).textContent || '',
       gauge: (document.querySelector('#gate-gauge .g-num') || {}).textContent || '',
       allowed: counter('allowed'), denied: counter('denied'), unavailable: counter('unavailable'),
+      byRule: counter('rule'), cached: counter('cached'), byKimi: counter('kimi'),
+      judgeHead: (document.getElementById('h-judge') || {}).textContent || '',
       iter: (document.getElementById('iter-counter') || {}).textContent || '',
       logLines: document.querySelectorAll('#log .log-line').length,
       runSelect: (document.getElementById('run-select') || {}).value
@@ -247,6 +249,8 @@ async function checkPipeline(page, label) {
   assert(/claude-opus-5-5/.test(r.claudeModel), `[${label}] Claude tile model "${r.claudeModel}"`);
   assert(/94/.test(r.gauge), `[${label}] gauge shows "${r.gauge}"`);
   assert(r.allowed === '1' && r.denied === '1' && r.unavailable === '0', `[${label}] judge counters ${r.allowed}/${r.denied}/${r.unavailable}`);
+  assert(r.byRule === '1' && r.cached === '0' && r.byKimi === '1', `[${label}] judge sources rule/cache/kimi ${r.byRule}/${r.cached}/${r.byKimi}`);
+  assert(!/every tool call/i.test(r.judgeHead) && /local rules/.test(r.judgeHead), `[${label}] judge card heading "${r.judgeHead}"`);
   assert(r.iter === 'iteration 1', `[${label}] iteration counter "${r.iter}"`);
   assert(r.logLines >= 15, `[${label}] only ${r.logLines} log lines`);
   assert(r.runSelect === 'r_demo', `[${label}] run select is "${r.runSelect}"`);

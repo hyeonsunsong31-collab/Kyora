@@ -135,8 +135,9 @@
             <div class="gauge-wrap" id="gate-gauge"></div>
           </section>
           <section class="card" aria-labelledby="h-judge">
-            <h2 id="h-judge">Judge <span class="hint">Kimi K3 on every tool call</span></h2>
+            <h2 id="h-judge">Judge <span class="hint">Write/Edit/Bash: local rules, then Kimi K3</span></h2>
             <div class="judge-counters" id="judge-counters"></div>
+            <p class="judge-note" id="judge-note">Write, Edit, MultiEdit, NotebookEdit and Bash calls of the code engine pass through the judge. Local rules allow planned files, standard game paths and read-only commands and deny escapes and destructive commands; Kimi K3 decides the rest. Read, Glob and Grep are not judged.</p>
           </section>
         </div>
         <section class="card" aria-labelledby="h-metrics">
@@ -280,7 +281,7 @@
       <div class="stack">
         <section class="card honesty" aria-labelledby="h-honesty">
           <h3 id="h-honesty">Honesty</h3>
-          <p><span class="yes">Kyora is</span> an orchestration application. It calls four external systems over their own APIs, each in a fixed role: NVIDIA Nemotron-3-Ultra writes design prose, UI spec and narration; Kimi K3 plans, judges every tool call and reviews; Claude Code implements and tests at <code>--effort max</code> through your Claude subscription; NVIDIA Tokkio presents.</p>
+          <p><span class="yes">Kyora is</span> an orchestration application. It calls four external systems over their own APIs, each in a fixed role: NVIDIA Nemotron-3-Ultra writes design prose, UI spec and narration; Kimi K3 plans, judges the code engine's file writes and shell commands that Kyora's local rules do not settle (reads are not judged; rules allow standard game paths and read-only commands) and reviews; Claude Code implements and tests at <code>--effort max</code> through your Claude subscription; NVIDIA Tokkio presents.</p>
           <p><span class="no">Kyora is not</span> a merged model, a fine-tune or a lighter copy of any of them. Nothing here is generated locally and nothing is simulated: a missing engine shows as <b>BLOCKED</b>, a missing metric shows as <b>-</b>.</p>
           <ul>
             <li><b>94 % is a gate, not a score.</b> Each run must pass at least 94 % of its counted checks (static, Node and in-browser acceptance tests) and all required checks, or it loops through Kimi review and Claude fixes a bounded number of times. Kyora Bench applies the same rule to fixed tasks and only grants a badge when <i>your</i> measured run clears it.</li>

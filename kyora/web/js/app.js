@@ -94,6 +94,9 @@
 
   K.util = { $, $$, esc, lsGet, lsSet, toDate, fmtClock, fmtDate, relTime, debounce, unwrapList, pctText, clip, errText, enc, previewOrigin, previewHref };
 
+  /* Judge verdict counters of a run: decisions plus where each verdict came from (rule, cache, Kimi K3). */
+  function emptyJudge() { return { allowed: 0, denied: 0, unavailable: 0, rule: 0, cached: 0, kimi: 0 }; }
+
   /* ================================================================== store */
   const state = {
     view: 'studio',
@@ -115,7 +118,7 @@
     run: null,
     stages: {},
     gate: null,
-    judge: { allowed: 0, denied: 0, unavailable: 0 },
+    judge: emptyJudge(),
     metrics: K.metrics.emptyMetrics(),
     kind: 'generate'
   };
@@ -416,8 +419,8 @@
     };
     model('Nemotron-3-Ultra', 'nemotron');
     model('Kimi K3', 'kimi');
-    if (comp.judge && comp.kimi) out.push(chipHtml('Judge: Kimi K3', 'info', 'Every Write/Edit/Bash of the code engine is judged before it runs.'));
-    else if (comp.judge) out.push(chipHtml('Judge: rules only', 'warn', 'Kimi K3 is not configured; only built-in rules judge tool calls.'));
+    if (comp.judge && comp.kimi) out.push(chipHtml('Judge: rules + Kimi K3', 'info', 'Write, Edit, MultiEdit, NotebookEdit and Bash calls of the code engine pass through the judge before they run: local rules allow planned files, standard game paths and read-only commands, Kimi K3 decides the rest. Read, Glob and Grep are not judged.'));
+    else if (comp.judge) out.push(chipHtml('Judge: rules only', 'warn', 'Kimi K3 is not configured: only built-in rules judge Write/Edit/Bash calls; calls the rules do not settle are allowed unjudged and counted as unavailable.'));
     else out.push(chipHtml('Judge: missing', 'danger', missing.judge || 'not loaded'));
     const eng = (key, label) => {
       const e = engines[key] || {};
@@ -853,7 +856,7 @@
   function newRunCtx(id, projectId) {
     return {
       id, projectId: projectId || '', state: '', iteration: null, kind: '', prompt: '',
-      stages: {}, gate: null, threshold: null, judge: { allowed: 0, denied: 0, unavailable: 0 },
+      stages: {}, gate: null, threshold: null, judge: emptyJudge(),
       metrics: K.metrics.emptyMetrics(), engine: {}, log: [], lastId: 0, loading: true, pending: [],
       awaitBrowser: null, browserSummary: null, blockedReason: '', error: '', review: null, slide: null,
       detail: null, firstTs: null, lastTs: null, delta: null
@@ -1071,6 +1074,9 @@
         break;
       case 'judge.verdict':
         if (d.decision === 'deny') ctx.judge.denied += 1; else ctx.judge.allowed += 1;
+        if (d.source === 'rule') ctx.judge.rule += 1;
+        else if (d.source === 'cache') ctx.judge.cached += 1;
+        else if (d.source === 'kimi') ctx.judge.kimi += 1;
         out.push(line(ev, 'judge', 'judge', d.decision === 'deny' ? 'deny' : 'allow',
           (d.tool_name ? d.tool_name + ': ' : '') + (d.reason || '') + ' (' + (d.source || 'judge') + (d.latency_ms != null ? ', ' + K.metrics.fmtMs(d.latency_ms) : '') + ')', d.decision === 'deny' ? 'deny' : 'allow'));
         break;
@@ -1168,7 +1174,7 @@
     const ctx = state.run;
     state.stages = ctx ? ctx.stages : {};
     state.gate = ctx ? ctx.gate : null;
-    state.judge = ctx ? ctx.judge : { allowed: 0, denied: 0, unavailable: 0 };
+    state.judge = ctx ? ctx.judge : emptyJudge();
     state.metrics = ctx ? ctx.metrics : K.metrics.emptyMetrics();
   }
 
@@ -1202,9 +1208,7 @@
     const lines = [];
     events.forEach((ev) => { Array.prototype.push.apply(lines, applyRunEvent(ctx, ev)); });
     if (ctx.judgeDetail && !ctx.judge.allowed && !ctx.judge.denied && !ctx.judge.unavailable) {
-      ctx.judge.allowed = ctx.judgeDetail.allowed || 0;
-      ctx.judge.denied = ctx.judgeDetail.denied || 0;
-      ctx.judge.unavailable = ctx.judgeDetail.unavailable || 0;
+      Object.keys(ctx.judge).forEach((k) => { ctx.judge[k] = Number(ctx.judgeDetail[k]) || 0; });
     }
     ctx.loading = false;
     const pending = ctx.pending.slice().sort((a, b) => (a.id || 0) - (b.id || 0));
@@ -1402,9 +1406,11 @@
   function renderJudge(ctx) {
     const host = $('#judge-counters');
     if (!host) return;
-    const j = ctx ? ctx.judge : { allowed: 0, denied: 0, unavailable: 0 };
-    const cell = (tone, n, label) => '<div class="counter" data-tone="' + tone + '" data-counter="' + label + '"><b>' + (ctx ? esc(n) : '-') + '</b><span>' + label + '</span></div>';
-    host.innerHTML = cell('ok', j.allowed, 'allowed') + cell('danger', j.denied, 'denied') + cell('warn', j.unavailable, 'unavailable');
+    const j = ctx ? ctx.judge : emptyJudge();
+    const cell = (tone, n, key, label) => '<div class="counter" data-tone="' + tone + '" data-counter="' + key + '"><b>' + (ctx ? esc(n) : '-') + '</b><span>' + esc(label || key) + '</span></div>';
+    // verdict sources: local rules and the per-run cache answer without a model call; only "Kimi K3" asked Kimi
+    host.innerHTML = cell('ok', j.allowed, 'allowed') + cell('danger', j.denied, 'denied') + cell('warn', j.unavailable, 'unavailable') +
+      cell('', j.rule, 'rule', 'by rule') + cell('', j.cached, 'cached') + cell('', j.kimi, 'kimi', 'by Kimi K3');
   }
 
   function renderControls(ctx) {

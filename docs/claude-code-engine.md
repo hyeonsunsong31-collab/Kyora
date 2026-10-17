@@ -1,7 +1,8 @@
 # Claude Code engine, judge hook and judge
 
-How Kyora drives the Claude Code CLI as its code engine, how every tool call is
-judged, and what the real-CLI smoke test observed. Code:
+How Kyora drives the Claude Code CLI as its code engine, how its Write, Edit,
+MultiEdit, NotebookEdit and Bash calls are judged (local rules, a per-run cache, then
+Kimi K3; Read, Glob and Grep are not judged), and what the real-CLI smoke test observed. Code:
 `kyora/models/claude_code.py` (`ClaudeCodeEngine`), `kyora/runners/kyora_hook.py`
 (PreToolUse hook), `kyora/pipeline/judge.py` (`JudgeService`). Tests:
 `tests/test_claude_code_parser.py`, `tests/test_hook.py`, `tests/test_judge.py`,

@@ -82,6 +82,12 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - **The deck credits only what ran.** An imported-ZIP slide's architecture slide now says "imported ZIP -
   no code engine ran" (or "not built yet") instead of drawing the Build step as Claude Code, and the
   tests slide lists the code-engine errors recorded for the run.
+- **Honest judge wording.** The Judge card, the capability chip, README, docs, the deck's
+  architecture slide and the engine's system prompt no longer say that Kimi K3 judges each tool call.
+  They now say what happens: Write, Edit, MultiEdit, NotebookEdit and Bash pass through the judge,
+  local rules allow planned files, standard game paths and read-only commands (and deny escapes and
+  destructive commands), a per-run cache repeats Kimi verdicts, Kimi K3 decides the rest, and Read,
+  Glob and Grep are not judged. The Judge card also counts verdicts by rule, cache and Kimi K3.
 
 ## 0.1.0 - 2026-10-15
 
@@ -94,8 +100,8 @@ First release.
   and SSE replay, stdlib HTTP server, CLI `kyora serve | hub | selfcheck | bench | version`.
 - **Model roles over their own APIs**: NVIDIA Nemotron-3-Ultra (`nvidia/nemotron-3-ultra-550b-a55b`)
   for design document, narrative, UI spec, copy and narration; Moonshot Kimi K3 (`moonshotai/kimi-k3`,
-  `reasoning_effort` max) for intake with vision, plan and acceptance tests, instant judgement of every
-  code-engine tool call and review; both through `https://integrate.api.nvidia.com/v1` with measured
+  `reasoning_effort` max) for intake with vision, plan and acceptance tests, judgement of the code
+  engine's Write/Edit/Bash calls that local rules do not settle, and review; both through `https://integrate.api.nvidia.com/v1` with measured
   time to first token, latency, token counts and tokens/s.
 - **Code engine**: Claude Code CLI at `--effort max` with the user's subscription login, model
   fallback chain (`claude-fable-5-1` -> `claude-opus-5-5` -> `claude-sonnet-5-5`) with the served model

@@ -13,7 +13,7 @@ An orchestration application. Four external systems in fixed roles over their ow
 | Role | System | Access |
 |---|---|---|
 | Text/design director: GDD prose, narrative, dialogue, UI/UX spec + design tokens + copy, presenter narration | NVIDIA Nemotron-3-Ultra | `https://integrate.api.nvidia.com/v1`, model `nvidia/nemotron-3-ultra-550b-a55b`, OpenAI-compatible chat completions |
-| Planner + judge: intake (vision), plan + task graph + acceptance tests, instant judgement of each code-engine tool call, final review | Moonshot Kimi-K3 | same endpoint, model `moonshotai/kimi-k3` |
+| Planner + judge: intake (vision), plan + task graph + acceptance tests, judgement of the code engine's Write/Edit/Bash calls that local rules do not settle, final review | Moonshot Kimi-K3 | same endpoint, model `moonshotai/kimi-k3` |
 | Code engine: implement, debug, test, build | Claude Code CLI at `--effort max` (subscription login) ; optional Messages-API engine ; remote Kyora Hub | subprocess / official `anthropic` SDK / HTTP |
 | Presenter + custom-view output channel | NVIDIA Tokkio 5.0.0-ga (vendored, unmodified) + Kyora overlay processor | deployed by the user on an NVIDIA-GPU Kubernetes cluster |
 
