@@ -110,6 +110,10 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   there), or found none with Git for Windows' default PATH. It now uses Git Bash
   (`CLAUDE_CODE_GIT_BASH_PATH`, the `bash.exe` next to `git.exe`, PATH, `%ProgramFiles%\Git`), never a
   `bash.exe` under `%SystemRoot%` or WindowsApps, and says "install Git for Windows" when there is none.
+- Tokkio overlay: the avatar's real-time Nemotron-3-Ultra LLM ran with reasoning on (the model's
+  default), and the Tokkio LLM service speaks only `delta.content`, so the avatar stayed silent for the
+  whole reasoning trace. `bot.kyora.py` now builds it with `temperature 0.2` and
+  `chat_template_kwargs.enable_thinking=false` (through the OpenAI SDK's `extra_body`).
 
 ## 0.1.0 - 2026-10-15
 

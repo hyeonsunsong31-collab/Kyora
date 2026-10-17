@@ -112,6 +112,23 @@ class OverlayBotTests(unittest.TestCase):
     def test_bot_compiles(self):
         compile(KYORA_BOT.read_text(encoding="utf-8"), str(KYORA_BOT), "exec")
 
+    def test_realtime_nemotron_runs_with_reasoning_off(self):
+        # Nemotron-3-Ultra reasons by default, and the Tokkio LLM mixin speaks only delta.content: with reasoning on
+        # the avatar stays silent for the whole trace. pipecat 0.0.68 passes InputParams.extra to the OpenAI SDK's
+        # create(), so chat_template_kwargs must travel inside extra_body.
+        import ast
+        calls = [n for n in ast.walk(ast.parse(KYORA_BOT.read_text(encoding="utf-8")))
+                 if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "TokkioNvidiaLLMService"]
+        self.assertEqual(len(calls), 1)
+        kw = {k.arg: k.value for k in calls[0].keywords}
+        self.assertIn("params", kw, "the NvidiaLLMService avatar LLM is built without InputParams")
+        params = kw["params"]
+        self.assertEqual(ast.unparse(params.func), "TokkioNvidiaLLMService.InputParams")
+        pkw = {k.arg: k.value for k in params.keywords}
+        self.assertEqual(ast.literal_eval(pkw["temperature"]), 0.2)
+        self.assertEqual(ast.literal_eval(pkw["extra"]),
+                         {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}})
+
     def test_readme_diff_is_current(self):
         readme = (OVERLAY / "README.md").read_text(encoding="utf-8")
         m = re.search(r"```diff\n(.*?)```", readme, re.S)

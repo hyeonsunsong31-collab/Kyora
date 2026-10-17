@@ -30,7 +30,7 @@ Tokkio, Kyora's Presenter panel says "Tokkio not deployed"; nothing is simulated
 |---|---|---|
 | `configs/config.kyora.yaml` | `configs/config.yaml` | The vendored `src/llm-rag/configs/config.yaml` with every section kept, plus: `NvidiaLLMService.model: "nvidia/nemotron-3-ultra-550b-a55b"`, a Kyora presenter persona/greeting in `OpenAILLMContext` / `UserPresenceProcesssor`, and a new `KyoraProcessor` section (`events_url`, `token`, `narrate`, `show_views`, `reconnect_s`). `Pipeline.llm_processor` stays `"NvidiaLLMService"`. The vendored pydantic `Config` ignores the extra section. |
 | `src/kyora_processor.py` | `src/kyora_processor.py` | `KyoraProcessor`, a pass-through pipecat `FrameProcessor` (pipecat-ai 0.0.68 / nvidia-pipecat 0.2.0 APIs). On `StartFrame` it opens a reconnecting SSE subscription to `<events_url>/api/events?types=tokkio.narration,tokkio.view,tokkio.clear` (`Authorization: Bearer <token>`, resumes with `Last-Event-ID`, skips history on the first connect). Narration is queued at the pipeline head with `PipelineTask.queue_frame(TTSSpeakFrame(text))` so it passes user-presence gating, TTS, transcript sync and Audio2Face; views are pushed downstream as `StartCustomViewFrame` (`HeaderBlock`, `TextBlock`, `ImageBlock`, `TableBlock`, `ButtonListBlock`) / `StopCustomViewFrame`. `UIButtonPressFrame`s with `kyora:` ids are POSTed to `<events_url>/api/actions`. When Kyora is unreachable it logs and retries with backoff (3 s doubling to 60 s); the Tokkio pipeline keeps running. Uses `httpx`, which is already installed in the container (locked in `uv.lock`, imported by nvidia-pipecat). |
-| `src/bot.kyora.py` | `src/bot.py` | The vendored `src/llm-rag/src/bot.py` plus lines marked `# KYORA` only (diff below): reads the `KyoraProcessor` section (config first, env `KYORA_EVENTS_URL` / `KYORA_HUB_TOKEN` as fallback), inserts `KyoraProcessor` after `rag_multimodal_response_processor` and before `a2f`, and calls `attach_task(task)`. |
+| `src/bot.kyora.py` | `src/bot.py` | The vendored `src/llm-rag/src/bot.py` plus lines marked `# KYORA` only (diff below): reads the `KyoraProcessor` section (config first, env `KYORA_EVENTS_URL` / `KYORA_HUB_TOKEN` as fallback), inserts `KyoraProcessor` after `rag_multimodal_response_processor` and before `a2f`, calls `attach_task(task)`, and builds the `NvidiaLLMService` avatar LLM with reasoning off (`InputParams(temperature=0.2, extra={"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}})`; Nemotron-3-Ultra reasons by default and the avatar would stay silent through the trace). |
 | `.env.kyora.example` | `.env` (optional) | Env fallbacks `KYORA_EVENTS_URL`, `KYORA_HUB_TOKEN`. The vendored `entrypoint.sh` exports `/app/.env` and `bot.py` calls `load_dotenv()`. The upload script never writes it. |
 | `deploy/upload_overlay.py` | - | Uploads the three files above (standard library only; dry run by default). |
 | `deploy/helm-values.notes.md` | - | Which vendored Helm/UCS values matter for Kyora (GPUs, ports, secrets, the hot-reload volume) and why no values change is needed. |
@@ -133,7 +133,19 @@ Output of `diff -u vendor/tokkio-5.0.0-ga/src/llm-rag/src/bot.py tokkio-kyora/sr
  
  redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
  redis_client = redis.Redis(
-@@ -223,6 +239,10 @@
+@@ -147,6 +163,11 @@
+                 model=config.NvidiaLLMService.model,
+                 filler=config.Pipeline.filler,
+                 time_delay=config.Pipeline.time_delay,
++                # KYORA: Nemotron-3-Ultra reasons by default; the avatar speaks only delta.content, so it would stay
++                # KYORA: silent for the whole trace. Reasoning off (temperature 0.2), as NVIDIA's cookbook says;
++                # KYORA: pipecat passes "extra" to the OpenAI SDK, which merges extra_body into the request body.
++                params=TokkioNvidiaLLMService.InputParams(temperature=0.2, extra={  # KYORA
++                    "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}),  # KYORA
+             )
+ 
+         if config.Pipeline.llm_processor == 'OpenAILLMService':
+@@ -223,6 +244,10 @@
          # nvidia_tts_response_cacher = NvidiaTTSResponseCacher()
  
          rag_multimodal_response_processor = RAGMultimodalResponseProcessor()
@@ -144,7 +156,7 @@ Output of `diff -u vendor/tokkio-5.0.0-ga/src/llm-rag/src/bot.py tokkio-kyora/sr
  
          pipeline = Pipeline(
              [
-@@ -242,6 +262,7 @@
+@@ -242,6 +267,7 @@
                  # nvidia_tts_response_cacher,  # For caching TTS response when Speculative Speech Processing is enabled
                  tts_transcript_synchronization,
                  rag_multimodal_response_processor,
@@ -152,7 +164,7 @@ Output of `diff -u vendor/tokkio-5.0.0-ga/src/llm-rag/src/bot.py tokkio-kyora/sr
                  a2f,
                  # audio_recorder,
                  posture_provider_processor,
-@@ -265,6 +286,7 @@
+@@ -265,6 +291,7 @@
              ),
          )
  

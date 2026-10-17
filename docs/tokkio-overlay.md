@@ -50,6 +50,11 @@ deployed, the Presenter panel shows **"Tokkio not deployed"** and every other fe
   Kubernetes secrets are **non-empty**, so `OPENAI_API_KEY` must be set even though the overlay keeps
   `llm_processor: "NvidiaLLMService"` and never calls OpenAI. `NVIDIA_API_KEY` can be the same NVIDIA
   API Catalog key Kyora uses (it serves `nvidia/nemotron-3-ultra-550b-a55b` to the avatar's LLM).
+  The overlay's `bot.kyora.py` builds that real-time LLM with reasoning **off**
+  (`chat_template_kwargs.enable_thinking=false`, sent through the OpenAI SDK's `extra_body`, and
+  `temperature 0.2`, NVIDIA's settings for reasoning off): Nemotron-3-Ultra reasons by default, and
+  the Tokkio LLM service speaks only `delta.content`, so with reasoning on the avatar would stay silent
+  for the whole reasoning trace after the filler phrase was cancelled.
 * A Linux workstation for the one-click scripts (they use bash, OpenTofu/Terraform and Ansible;
   `install-pre-requisites.sh` installs what they need).
 

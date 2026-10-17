@@ -31,6 +31,11 @@ Sampling used by Kyora (`kyora/models/nemotron.py`), with thinking switched thro
 | thinking on | design document and UI spec (default; `settings.nemotron.thinking_for_design`) | `temperature 1.0`, `top_p 0.95`, `chat_template_kwargs: {"enable_thinking": true}` |
 | thinking off | presenter narration (one sentence, at most 120 characters), and design / UI spec when the setting is false | `temperature 0.2`, `chat_template_kwargs: {"enable_thinking": false}` |
 
+The Tokkio avatar's own real-time LLM (`tokkio-kyora/src/bot.kyora.py`, outside Kyora's process) uses
+the thinking-off request as well: `temperature 0.2` and `extra_body={"chat_template_kwargs":
+{"enable_thinking": false}}` through pipecat's `InputParams.extra`, so the avatar answers without a
+silent reasoning phase.
+
 The design document and the UI spec are requested as structured tool calls (`emit_design`, `emit_ui_spec`). `kyora selfcheck` measures the
 model's reachability, time to first token and tokens per second from your device; those measured
 numbers are what the UI shows (see [`honesty.md`](honesty.md)).

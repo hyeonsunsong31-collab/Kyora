@@ -163,6 +163,11 @@ async def create_pipeline_task(pipeline_metadata: PipelineMetadata):
                 model=config.NvidiaLLMService.model,
                 filler=config.Pipeline.filler,
                 time_delay=config.Pipeline.time_delay,
+                # KYORA: Nemotron-3-Ultra reasons by default; the avatar speaks only delta.content, so it would stay
+                # KYORA: silent for the whole trace. Reasoning off (temperature 0.2), as NVIDIA's cookbook says;
+                # KYORA: pipecat passes "extra" to the OpenAI SDK, which merges extra_body into the request body.
+                params=TokkioNvidiaLLMService.InputParams(temperature=0.2, extra={  # KYORA
+                    "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}),  # KYORA
             )
 
         if config.Pipeline.llm_processor == 'OpenAILLMService':
