@@ -279,6 +279,28 @@ async function checkPipeline(page, label) {
   assert(hidden && shown, `[${label}] judge log filter toggle failed`);
 }
 
+/* A Tokkio UI URL that answers with an HTTP error (here Kyora's own 404) is not a deployment:
+   the Presenter must say "Tokkio not deployed" with the status, never frame the error page. */
+async function checkTokkioHttpError(page, label) {
+  const put = (url) => page.evaluate((u) => fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ keys: { tokkio: { ui_url: u } } }) }).then((r) => r.json()), url);
+  const bad = await page.evaluate(() => location.origin + '/api/no-such-tokkio-ui');
+  await put(bad);
+  try {
+    await page.click('#btn-tokkio-refresh');
+    await page.waitForFunction(() => /HTTP \d{3}|did not answer/.test((document.getElementById('tokkio-main') || {}).textContent || '') &&
+      !document.querySelector('#tokkio-main .spinner'), null, { timeout: 15000 });
+    const r = await page.evaluate(() => ({
+      main: document.getElementById('tokkio-main').textContent,
+      frames: document.querySelectorAll('#presenter-root iframe').length
+    }));
+    assert(/Tokkio not deployed/.test(r.main) && !/Served by your Tokkio deployment/.test(r.main), `[${label}] Tokkio HTTP error shown as deployed: ${r.main.slice(0, 160)}`);
+    assert(r.frames === 0, `[${label}] presenter framed a Tokkio URL that answered with an error`);
+  } finally {
+    await put('');
+  }
+}
+
 async function checkOtherViews(page, label, wantNarration) {
   await gotoView(page, 'presenter');
   await page.waitForFunction(() => /Tokkio not deployed|Tokkio/.test((document.getElementById('tokkio-main') || {}).textContent || '') &&
@@ -295,6 +317,7 @@ async function checkOtherViews(page, label, wantNarration) {
   if (wantNarration) {
     assert(pres.narr.some((t) => /Gate passed at 94 percent/.test(t)), `[${label}] narration card missing`);
     assert(pres.views >= 1, `[${label}] tokkio.view card missing`);
+    await checkTokkioHttpError(page, label);
   }
   await gotoView(page, 'slides');
   await page.waitForFunction(() => !document.getElementById('slides-empty').hidden || document.querySelectorAll('#strip .slide-card').length > 0, null, { timeout: 8000 });

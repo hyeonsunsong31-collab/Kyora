@@ -1,6 +1,7 @@
 /* Presenter: NVIDIA Tokkio, vendored unmodified and deployed by the user. GET /api/tokkio/health
-   decides: configured and reachable -> the Tokkio web UI in an iframe; otherwise an explanation of
-   what Tokkio needs. Below, the last tokkio.view / tokkio.narration events show what the avatar is
+   decides: configured and its UI answered 2xx/3xx (ui.ok) -> the Tokkio web UI in an iframe;
+   otherwise "Tokkio not deployed" with the reason (an HTTP error status is named) and what Tokkio
+   needs. Below, the last tokkio.view / tokkio.narration events show what the avatar is
    asked to present (title, stages, buttons as inert chips, narration text). No avatar is drawn here. */
 (function () {
   'use strict';
@@ -80,6 +81,23 @@
       '<p class="help" style="margin-top:12px;font-size:var(--fs-1);color:var(--fg-subtle)">Until then this panel shows, below, exactly what the overlay would send to the avatar. Nothing here imitates an avatar.</p>';
   }
 
+  /* Main panel for a health answer: the Tokkio frame only when the UI answered with a page
+     (ui.ok: a 2xx/3xx status); an HTTP error (a 502 ingress, a 404 from another service) or no
+     answer means Tokkio is not deployed there. Returns {deployed, reason} (reason is HTML). */
+  function mainState(h, url) {
+    const ui = (h && h.ui) || {};
+    if (h && h.configured && ui.ok && url) return { deployed: true, reason: '' };
+    let reason = '';
+    if (h && h.error) reason = U().esc(h.error);
+    else if (h && h.configured && ui.reachable) {
+      const answer = /^HTTP \d/.test(ui.error || '') ? ui.error : 'HTTP ' + (ui.status || '?') + (ui.error ? ' (' + ui.error + ')' : '');
+      reason = 'Tokkio UI at <code>' + U().esc(url || '?') + '</code> answered <b>' + U().esc(answer) + '</b> instead of a page, so the deployment is not serving it.';
+    } else if (h && h.configured) {
+      reason = 'Tokkio UI is configured at <code>' + U().esc(url || '?') + '</code> but did not answer' + (ui.error ? ': ' + U().esc(ui.error) : '') + '.';
+    }
+    return { deployed: false, reason };
+  }
+
   function renderMain() {
     const root = $('presenter-root');
     if (!root) return;
@@ -101,9 +119,9 @@
       frameUrl = '';
       return;
     }
-    const ui = health.ui || {};
     const url = uiUrl();
-    if (health.configured && ui.reachable && url) {
+    const view = mainState(health, url);
+    if (view.deployed) {
       if (frameUrl !== url || !main.querySelector('iframe.presenter-frame')) {
         frameUrl = url;
         main.innerHTML = '<h2>Tokkio <span class="hint">' + U().esc(url) + '</span></h2><div id="tokkio-status"></div>' +
@@ -116,10 +134,7 @@
       return;
     }
     frameUrl = '';
-    let reason = '';
-    if (health.error) reason = U().esc(health.error);
-    else if (health.configured && !ui.reachable) reason = 'Tokkio UI is configured at <code>' + U().esc(url || '?') + '</code> but did not answer' + (ui.error ? ': ' + U().esc(ui.error) : '') + '.';
-    main.innerHTML = (health.configured || health.configurator ? statusChips(health) : '') + notDeployedHtml(reason);
+    main.innerHTML = (health.configured || health.configurator ? statusChips(health) : '') + notDeployedHtml(view.reason);
   }
 
   function viewCard(v) {
@@ -178,5 +193,5 @@
     renderMain();
   }
 
-  (K.modules = K.modules || {}).presenter = { init, onEvent, check };
+  (K.modules = K.modules || {}).presenter = { init, onEvent, check, mainState };
 })();

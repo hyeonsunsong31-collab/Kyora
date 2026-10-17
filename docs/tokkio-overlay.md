@@ -127,7 +127,7 @@ redeploy.
 
 | Symptom | Cause / fix |
 |---|---|
-| Presenter panel: "Tokkio not deployed" | `tokkio.ui_url` is empty or unreachable from the device running Kyora. |
+| Presenter panel: "Tokkio not deployed" | `tokkio.ui_url` is empty or unreachable from the device running Kyora, or it answers with an HTTP error (the panel names the status, e.g. `HTTP 502` from an ingress whose Tokkio pods are not running, or `HTTP 404` from another service). Only a 2xx/3xx answer shows the Tokkio UI. |
 | Pod log: `KyoraProcessor: no events_url configured` | Neither `KyoraProcessor.events_url` nor `KYORA_EVENTS_URL` is set. |
 | Pod log: `HTTP 403 ... check hub.token and settings hub.expose_ui=true` | Wrong token, or `hub.expose_ui` is false. |
 | Pod log: `Kyora unreachable ... retry in Ns` | The pod cannot reach Kyora's address (firewall, NAT, wrong IP). The avatar keeps working without narration. |

@@ -134,6 +134,29 @@ class RunLabelRenderTests(unittest.TestCase):
         self.assertIn("not a measured charge", note)
         self.assertNotIn(">cost<b>", claude)
 
+    def test_presenter_shows_tokkio_only_for_a_successful_answer(self):
+        out = run_node(["js/presenter.js"], """(function () {
+            K.util = { esc: (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])) };
+            const P = K.modules.presenter;
+            const url = 'http://10.0.0.5:30111';
+            const ui = (o) => ({ configured: true, ui: Object.assign({ configured: true, url }, o) });
+            return {
+              ok: P.mainState(ui({ reachable: true, ok: true, status: 200 }), url),
+              bad: P.mainState(ui({ reachable: true, ok: false, status: 502, error: 'HTTP 502 Bad Gateway' }), url),
+              notFound: P.mainState(ui({ reachable: true, ok: false, status: 404, error: 'HTTP 404 Not Found' }), url),
+              down: P.mainState(ui({ reachable: false, ok: false, error: 'unreachable: timed out' }), url),
+              off: P.mainState({ configured: false, ui: { configured: false } }, '') }; })()""")
+        self.assertEqual(out["ok"], {"deployed": True, "reason": ""})
+        self.assertFalse(out["bad"]["deployed"])
+        self.assertIn("HTTP 502 Bad Gateway", out["bad"]["reason"])
+        self.assertFalse(out["notFound"]["deployed"])
+        self.assertIn("HTTP 404", out["notFound"]["reason"])
+        self.assertFalse(out["down"]["deployed"])
+        self.assertIn("did not answer", out["down"]["reason"])
+        self.assertFalse(out["off"]["deployed"])
+        js = (WEB / "js" / "presenter.js").read_text(encoding="utf-8")
+        self.assertIn("const view = mainState(health, url);\n    if (view.deployed) {", js)
+
     def test_static_texts_do_not_hard_code_gate_or_effort(self):
         html = (WEB / "index.html").read_text(encoding="utf-8")
         for fixed in ("at effort max", "<code>--effort max</code>", "94 % is a gate", "at least 94 % of its counted"):

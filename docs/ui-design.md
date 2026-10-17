@@ -140,7 +140,8 @@ own container is at least 640 px wide, so it adapts to the column, not the windo
   harness and renders its posted results (per test, syntax checks, screenshots).
 - **Slides**: the version strip with lineage connectors (branches on their own row), gate
   badge per slide, Preview / Stack change or Branch from here / ZIP / Deck, ZIP import.
-- **Presenter**: the deployed Tokkio UI in a frame, or an explanation of what Tokkio needs;
+- **Presenter**: the deployed Tokkio UI in a frame (only when its URL answered 2xx/3xx), or
+  "Tokkio not deployed" with the reason (no answer, or the HTTP error status) and what Tokkio needs;
   below, the views and narration the overlay sends to the avatar.
 - **Check**: the self-check table, platform facts, LAN addresses with QR codes, hub link.
 - **Bench**: task selection, cost/time confirmation, progress, results, and the score.

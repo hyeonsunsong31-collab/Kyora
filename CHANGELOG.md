@@ -99,6 +99,10 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   `total_cost_usd` as "cost", as if Kyora had measured a charge. It is computed by the CLI at API list
   prices and a subscription login is not billed per run, so the tile now shows it as
   "API-equiv. est." (`~$`) with that explanation.
+- **An HTTP error from the Tokkio URL is not a deployment.** The Presenter framed the Tokkio URL and
+  said "Served by your Tokkio deployment" whenever the URL answered at all, including `502` from an
+  ingress with no running pods or `404` from another service. It now shows the Tokkio UI only for a
+  2xx/3xx answer (`ui.ok`) and otherwise says "Tokkio not deployed" with the HTTP status.
 
 ## 0.1.0 - 2026-10-15
 
