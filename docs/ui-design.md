@@ -172,9 +172,10 @@ These are deliberate, visible design rules rather than copy choices:
   `stage.progress{backend, effort}`). Texts about the next run (prompt help, Honesty card) show the
   configured Settings values. No label says "94 %", "effort max" or "Claude Code" unless the run did.
 - **No badge without a measurement.** A slide shows a green gate badge only when its gate
-  passed at or above the threshold; otherwise "below 94%" with the measured rate, or "no gate"
-  for imports. The Bench certified badge and the large pass-rate number appear only when the
-  API reports `certified: true`; otherwise the panel says "Not certified" and why.
+  passed at or above the threshold; otherwise "below <threshold> %" (the gate's recorded threshold,
+  94 % by default) with the measured rate, or "no gate" for imports. The Bench certified badge and
+  the large pass-rate number appear only when the API reports `certified: true`; otherwise the panel
+  says "Not certified" and why.
 - **No fake avatar.** Without a reachable Tokkio deployment the Presenter draws no face, video
   or canvas; it explains the GPU/Kubernetes/NGC requirement and lists the exact payloads that
   would be sent.

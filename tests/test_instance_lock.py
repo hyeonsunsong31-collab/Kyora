@@ -64,6 +64,13 @@ class InstanceLockTests(unittest.TestCase):
             start.assert_not_called()  # app.start() would block the other instance's live runs
             self.assertIn("Another Kyora is already running with this home", err.getvalue())
 
+    def test_docs_describe_the_home_lock_and_windows_exclusive_ports(self):
+        for rel in ("README.md", "docs/hub-mode.md"):
+            text = " ".join((REPO / rel).read_text(encoding="utf-8").split())
+            self.assertIn("kyora.lock", text, rel)
+            self.assertIn("SO_EXCLUSIVEADDRUSE", text, rel)
+            self.assertNotIn("started on a port that is already in use stops with an error", text, rel)
+
 
 class BenchEmbeddedServerTests(unittest.TestCase):
     def test_busy_main_port_and_explicit_preview_port_fall_back_to_ephemeral_ports(self):

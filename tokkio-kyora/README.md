@@ -23,8 +23,10 @@ pipeline in `src/llm-rag`. With this overlay the avatar
   `nvidia/nemotron-3-ultra-550b-a55b` with a "Kyora presenter" persona.
 
 Tokkio does **not** generate game UI, code or tests. Game UI is produced by Kyora's pipeline
-(Nemotron writes the UI spec, Claude Code implements it, Kimi K3 judges it). Without a deployed
-Tokkio, Kyora's Presenter panel says "Tokkio not deployed"; nothing is simulated.
+(Nemotron writes the UI spec, the code engine - Claude Code by default - implements it, the measured
+quality gate decides, and Kimi K3 reviews failed gates and judges the writes and shell commands the
+local rules do not settle). Without a deployed Tokkio, Kyora's Presenter panel says "Tokkio not
+deployed"; nothing is simulated.
 
 ## Files
 

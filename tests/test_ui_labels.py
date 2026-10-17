@@ -33,6 +33,9 @@ EVERY_CALL_CLAIMS = re.compile(
     r"every tool call|judges every|judged by Kimi K3|every action of the code engine|on every tool call|"
     r"judgement of every|every code-engine tool call|Every Write/Edit/Bash of the code engine is judged",
     re.IGNORECASE)
+# Kimi K3 does not judge the finished game: the measured gate decides, Kimi K3 reviews failed gates and
+# judges the writes/shell commands the local rules do not settle.
+JUDGES_OUTPUT_CLAIMS = re.compile(r"Kimi\s+K3\s+judges\s+(?:it\b|the\s+result|the\s+game)", re.IGNORECASE)
 
 
 def run_node(files: list[str], expr: str):
@@ -66,6 +69,16 @@ class JudgeWordingTests(unittest.TestCase):
             text = (REPO / rel).read_text(encoding="utf-8")
             hits = [m.group(0) for m in EVERY_CALL_CLAIMS.finditer(text)]
             self.assertEqual(hits, [], f"{rel} still claims Kimi K3 judges every tool call")
+
+    def test_no_surface_claims_kimi_judges_the_game(self):
+        self.assertTrue(JUDGES_OUTPUT_CLAIMS.search("Claude Code implements it, Kimi K3 judges\nit)."))
+        self.assertTrue(JUDGES_OUTPUT_CLAIMS.search("Kimi K3 judges the result"))
+        self.assertIsNone(JUDGES_OUTPUT_CLAIMS.search("Kimi K3 judges the writes the local rules do not settle"))
+        for rel in self.SURFACES + ["tokkio-kyora/README.md", "docs/tokkio-overlay.md",
+                                    "tokkio-kyora/configs/config.kyora.yaml"]:
+            text = (REPO / rel).read_text(encoding="utf-8")
+            hits = [m.group(0) for m in JUDGES_OUTPUT_CLAIMS.finditer(text)]
+            self.assertEqual(hits, [], f"{rel} still says Kimi K3 judges the game")
 
     def test_surfaces_say_what_is_judged(self):
         html = (WEB / "index.html").read_text(encoding="utf-8")
@@ -189,6 +202,36 @@ class RunLabelRenderTests(unittest.TestCase):
         app = (WEB / "js" / "app.js").read_text(encoding="utf-8")
         self.assertIn("threshold: gateThreshold(ctx), backend:", app)
         self.assertIn("K.metrics.renderTiles(ctx ? ctx.metrics : K.metrics.emptyMetrics(), ctx ? ctx.engine : null)", app)
+
+    def test_docs_do_not_fix_the_gate_or_the_fix_rounds(self):
+        fixed = {
+            "README.md": ("at least **94 % of that project", "GATE (>= 94 %)", "against 94 %", "up to 3 rounds"),
+            "docs/honesty.md": ("below 94 % - not complete", "`pass_rate >= 0.94`"),
+            "docs/ui-design.md": ('"below 94%"',),
+        }
+        for rel, phrases in fixed.items():
+            text = " ".join((REPO / rel).read_text(encoding="utf-8").split())
+            for phrase in phrases:
+                self.assertNotIn(phrase, text, f"{rel} presents a configurable gate value as fixed")
+            self.assertIn("94 % by default" if rel.startswith("docs/") else "quality.min_pass_rate", text)
+        readme = " ".join((REPO / "README.md").read_text(encoding="utf-8").split())
+        self.assertIn("up to `quality.max_fix_iterations` rounds (default 3)", readme)
+
+    def test_bench_warning_names_the_configured_effort_and_engine(self):
+        out = run_node(["js/bench.js"], """{
+            cc: K.modules.bench.warning('high', 'claude_code'),
+            api: K.modules.bench.warning('medium', 'anthropic_api'),
+            hub: K.modules.bench.warning('max', 'hub'),
+            none: K.modules.bench.warning(null, null) }""")
+        self.assertIn("Claude subscription usage (Claude Code CLI) at effort high;", out["cc"])
+        self.assertIn("Anthropic API tokens on your Anthropic key at effort medium;", out["api"])
+        self.assertIn("linked Kyora Hub at effort max;", out["hub"])
+        self.assertIn("NVIDIA keys and code-engine usage; typically", out["none"])
+        for text in out.values():
+            self.assertNotIn("at max effort", text)
+        js = (WEB / "js" / "bench.js").read_text(encoding="utf-8")
+        self.assertIn("benchWarning(effort, estimate && estimate.engine)", js)
+        self.assertIn("settingValue('claude_code.effort', null)", js)
 
 
 BENCH_TESTS = REPO / "kyora" / "bench" / "tasks" / "b01-breakout.browser-tests.js"

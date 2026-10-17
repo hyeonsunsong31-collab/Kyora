@@ -8,10 +8,11 @@ allow standard game paths and read-only commands; reads are not judged) and revi
 **Claude Code** (CLI,
 `--effort max`, your Claude subscription) writes, tests and fixes the game, and **NVIDIA Tokkio**
 (optional, on your own GPU cluster) presents the run as a talking avatar. Kyora runs the real tests
-in a real browser and only calls a project finished when at least **94 % of that project's measured
-checks pass**. It is not a merged model, it never fakes output, metrics or verdicts, and when a piece
-is missing it says **BLOCKED** instead of pretending. The core is Python 3.10+ standard library only
-and ships as one file, `kyora.pyz`, for Windows, Android (Termux) and iOS (iSH).
+in a real browser and only calls a project finished when at least **the configured pass rate (default
+94 %, `quality.min_pass_rate`) of that project's measured checks pass**. It is not a merged model, it
+never fakes output, metrics or verdicts, and when a piece is missing it says **BLOCKED** instead of
+pretending. The core is Python 3.10+ standard library only and ships as one file, `kyora.pyz`, for
+Windows, Android (Termux) and iOS (iSH).
 
 - [What Kyora is / is not](#what-kyora-is--is-not)
 - [Architecture](#architecture)
@@ -48,9 +49,9 @@ Full statement: [`docs/honesty.md`](docs/honesty.md).
                                                         | HTTP + SSE (stdlib ThreadingHTTPServer)
 +-------------------------------------------------------+---------------------------------------------+
 | kyora.pyz (Python standard library only)                                                            |
-|  pipeline: INTAKE -> PLAN -> DESIGN -> BUILD -> TEST -> GATE (>= 94 %) -> [REVIEW -> FIX]* -> FINALIZE |
+|  pipeline: INTAKE -> PLAN -> DESIGN -> BUILD -> TEST -> GATE -> [REVIEW -> FIX]* -> FINALIZE        |
 |  models/:  nim_client (OpenAI-compatible SSE) | nemotron | kimi | claude_code | anthropic_api | tokkio |
-|  quality:  static checks + Node checks + in-browser acceptance tests -> gate                         |
+|  quality:  static checks + Node checks + in-browser acceptance tests -> gate (>= min_pass_rate)     |
 |  judge:    Claude Code PreToolUse hook -> POST /api/judge -> rules / cache / Kimi K3 verdict         |
 |  projects: store | slides (git or snapshot) | deck | zip      hub: /api/code-engine/* (LAN, token)  |
 +---------+------------------------+---------------------------+-------------------------+-----------+
@@ -116,8 +117,9 @@ in a source checkout).
    streams model output, Claude Code's tool calls and every Kimi K3 verdict; the metrics tiles show
    time to first token, tokens/s and token counts per model.
 4. **Test and gate** - when BUILD finishes, the browser test harness runs the acceptance tests in your
-   browser (keep the tab open). The gate shows `passed / total` and the pass rate against 94 %. Below
-   94 %, Kimi K3 reviews and Claude Code fixes, up to 3 rounds.
+   browser (keep the tab open). The gate shows `passed / total` and the pass rate against the configured
+   threshold (default 94 %, `quality.min_pass_rate`). Below it, Kimi K3 reviews and Claude Code fixes,
+   up to `quality.max_fix_iterations` rounds (default 3).
 5. **Preview on your phone** - *Open on another device* shows a LAN link and QR code (the PC must run
    `kyora hub` or `serve --host 0.0.0.0` with *Settings -> hub.expose_ui* on, the phone must be on
    the same network, and the PC firewall must let in both ports, 8765 for the UI and 8766 for games).

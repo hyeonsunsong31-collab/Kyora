@@ -203,6 +203,24 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   `engine_errors` (kind, iteration, backend, error, whether files changed; from `run.extra.engine_failures`),
   also in the tag meta, and the slide card shows a warning chip "engine reported an error during this build"
   with the errors in its tooltip. The run stays `complete` and the gate badge keeps the measured result.
+- **The Tokkio docs no longer say Kimi K3 grades the game.** `tokkio-kyora/README.md` and
+  `docs/tokkio-overlay.md` now say what happens: the code engine implements the UI, the measured gate
+  decides, and Kimi K3 reviews failed gates and judges the writes and shell commands the local rules
+  do not settle. `tests/test_ui_labels.py` catches the old phrasing.
+- **The bench confirm dialog names the configured effort and the selected engine.** It always said
+  "Claude subscription usage at max effort"; it now names what the engine the server would select
+  spends (Claude subscription, Anthropic API tokens or the linked Hub) at the configured
+  `claude_code.effort`. The API's `estimate.warning` and `docs/bench.md` no longer say "max effort".
+- **The Tokkio presenter persona no longer fixes the gate or the engine.** It said the gate passes at
+  ninety four percent and that Claude Code writes the code; it now says the gate passes at the
+  threshold Kyora reports for the run (94 % by default) and names a code engine, Claude Code by default.
+- **The docs no longer present the gate threshold and the fix rounds as fixed.** `README.md`,
+  `docs/honesty.md` and `docs/ui-design.md` say "at least the configured pass rate (default 94 %,
+  `quality.min_pass_rate`)", "up to `quality.max_fix_iterations` rounds (default 3)" and that a slide
+  below the gate is labelled "below <threshold> %".
+- **`docs/hub-mode.md` describes the single-instance rules like the README.** Instead of "a second
+  Kyora on a port in use stops with an error" it says that on Windows the listeners claim their ports
+  exclusively and that on every platform one Kyora runs per `KYORA_HOME` (`kyora.lock`).
 
 ## 0.1.0 - 2026-10-15
 
