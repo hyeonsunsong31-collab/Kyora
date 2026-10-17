@@ -29,9 +29,10 @@ previews and the test harness live on Kyora's separate preview listener (`server
 default the main port + 1), so `/api/actions` answers `http://<host the overlay used>:<preview_port>/preview/...`
 for **Open preview** and `http://<host>:<port>/api/projects/<id>/slides/<n>/download` for **Download ZIP**,
 and the overlay replaces a `127.0.0.1` that Kyora reports for itself by the `events_url` host. The Tokkio
-UI cannot open a tab on the viewer's device; open the link from a browser on the same network (the ZIP
-download, like every Kyora API route, needs that browser's Kyora session or loopback). Allow both ports
-in the PC's firewall.
+UI cannot open a tab on the viewer's device; open the link from a browser on the same network. Like the
+rest of Kyora, previews and the ZIP need that browser's Kyora session (the `kyora_token` cookie set by
+Kyora's link or QR code; a cookie covers both ports of the host) unless it runs on the Kyora PC itself.
+Allow both ports in the PC's firewall.
 
 Tokkio is **not** a UI generator and is not part of the code path. Game UI is produced by Kyora's
 pipeline: Nemotron-3-Ultra writes the UI spec, tokens and copy; Claude Code implements real
