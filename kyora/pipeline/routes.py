@@ -7,12 +7,35 @@ PreToolUse hook running on this machine. Everything else uses the server's
 from __future__ import annotations
 
 import logging
+import urllib.parse
 from typing import Any
 
-from ..server import Request, Response, Router
+from ..server import Request, Response, Router, parse_host
 from . import events as ev
 
 log = logging.getLogger("kyora.pipeline.routes")
+
+
+def _caller_origins(app, req: Request) -> tuple[str, str]:
+    """``(main, preview)`` origins under the name the caller used to reach Kyora.
+
+    The ``Host`` header already passed the server's allow-list, so a Tokkio cluster that posts to
+    ``http://192.168.1.20:8765`` gets ``http://192.168.1.20:8765`` and ``http://192.168.1.20:<preview_port>``
+    back, not ``127.0.0.1``. Game files live only on the preview listener (a separate origin)."""
+    raw = (req.headers.get("host") or "").strip()
+    host = parse_host(raw)
+    main = str(getattr(app, "server_url", "") or "").rstrip("/")
+    preview = str(getattr(app, "preview_url", "") or "").rstrip("/")
+    if host:
+        name = f"[{host}]" if ":" in host else host
+        try:
+            port = urllib.parse.urlsplit("//" + raw).port or urllib.parse.urlsplit(main).port
+        except ValueError:
+            port = None
+        main = f"http://{name}" + (f":{port}" if port else "")
+        pport = getattr(app, "preview_port", None)
+        preview = f"http://{name}:{pport}" if pport else preview
+    return main, preview or main
 
 
 def _run_view(app, run) -> dict:
@@ -124,27 +147,34 @@ def register_routes(router: Router, app) -> None:
         if not pid:
             raise ValueError("project_id or run_id is required")
         project = store.get(pid)
+        # Absolute URLs: the caller (the Tokkio overlay) runs on another host and origin. Previews and the test
+        # harness are served by the preview listener only; the slide ZIP by the main listener.
+        main, preview = _caller_origins(app, req)
+
+        def on_preview(path: str) -> str:
+            return path if "://" in path else preview + path
+
         if action == "run_tests":
             if run is None or not run.extra.get("runner_url"):
                 n = project.current_slide
                 if not n:
                     raise ValueError("no slide or run to test yet")
-                return Response.json({"url": f"/runner/{pid}/v{n}?auto=1&post=1"})
+                return Response.json({"url": on_preview(f"/runner/{pid}/v{n}?auto=1&post=1")})
             app.bus.publish(ev.TEST_AWAIT_BROWSER, {"runner_url": run.extra["runner_url"], "iteration": run.iteration,
                                                     "requested_by": "action"}, run_id=run.id, project_id=pid)
-            return Response.json({"url": run.extra["runner_url"]})
+            return Response.json({"url": on_preview(run.extra["runner_url"])})
         if action == "open_preview":
             if run is not None and run.result_slide is None:
-                return Response.json({"url": f"/preview/{pid}/run-{run.id}/index.html"})
+                return Response.json({"url": on_preview(f"/preview/{pid}/run-{run.id}/index.html")})
             n = (run.result_slide if run is not None else None) or project.current_slide
             if not n:
                 raise ValueError("no slide yet")
-            return Response.json({"url": f"/preview/{pid}/v{n}/index.html"})
+            return Response.json({"url": on_preview(f"/preview/{pid}/v{n}/index.html")})
         if action == "download":
             n = (run.result_slide if run is not None else None) or project.current_slide
             if not n:
                 raise ValueError("no slide to download yet")
-            return Response.json({"url": f"/api/projects/{pid}/slides/{n}/download"})
+            return Response.json({"url": f"{main}/api/projects/{pid}/slides/{n}/download"})
         raise ValueError("unknown action (run_tests, open_preview, download)")
 
     router.add("POST", "/api/projects/{id}/runs", wrap(create_run))

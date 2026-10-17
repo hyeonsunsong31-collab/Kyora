@@ -19,7 +19,10 @@ live presenter of a Kyora run:
   action buttons) is shown in the Tokkio UI (``StartCustomViewFrame``).
 * ``tokkio.clear`` -> the custom view is hidden (``StopCustomViewFrame``).
 * Button presses in the Tokkio UI whose id starts with ``kyora:`` are posted back
-  to Kyora as ``POST <events_url>/api/actions {action, run_id, project_id}``.
+  to Kyora as ``POST <events_url>/api/actions {action, run_id, project_id}``; the
+  ``{"url": ...}`` Kyora answers (Open preview, Download ZIP, Run tests) is shown in
+  the view as an absolute link. Preview links name the Kyora host the cluster
+  reaches (``events_url``), never ``127.0.0.1``.
 
 Nothing is invented: every spoken sentence and every block comes verbatim from a
 Kyora event. When Kyora is unreachable the processor logs and retries with
@@ -192,6 +195,35 @@ def kyora_base_url(events_url: str) -> str:
     return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0", "::"}
+
+
+def resolve_kyora_url(url: str, base_url: str) -> str:
+    """An absolute URL the Tokkio UI can open, from one Kyora reported.
+
+    A Kyora-relative path (``/preview/...``) is joined to ``base_url`` (Kyora's main listener redirects
+    ``/preview`` and ``/runner`` to its preview listener). Kyora names itself ``127.0.0.1`` when it listens on
+    every interface, which means nothing on the cluster or the kiosk, so a loopback host is replaced by
+    ``base_url``'s host; the scheme, the port (the preview listener has its own) and the path are kept.
+    """
+    u = (url or "").strip()
+    if not u or not base_url:
+        return u
+    if u.startswith("/") and not u.startswith("//"):
+        return base_url.rstrip("/") + u
+    try:
+        parts = urllib.parse.urlsplit(u)
+        base = urllib.parse.urlsplit(base_url)
+        host, port, base_host = parts.hostname, parts.port, base.hostname
+    except ValueError:
+        return u
+    if not host or (host.lower() not in _LOOPBACK_HOSTS) or not base_host or base_host.lower() in _LOOPBACK_HOSTS:
+        return u
+    name = f"[{base_host}]" if ":" in base_host else base_host
+    return urllib.parse.urlunsplit((parts.scheme, name + (f":{port}" if port else ""), parts.path, parts.query,
+                                    parts.fragment))
+
+
 def _s(value: Any, default: str = "") -> str:
     if value is None:
         return default
@@ -298,6 +330,7 @@ class KyoraProcessor(FrameProcessor):
         self._connected_at: float = 0.0
         self._resume_from: str | None = None
         self._warned_no_task = False
+        self._last_view: dict = {}
         self._stats = {"connects": 0, "events": 0, "narrations": 0, "views": 0, "clears": 0, "actions": 0, "errors": 0}
 
     # ------------------------------------------------------------------ wiring
@@ -528,7 +561,9 @@ class KyoraProcessor(FrameProcessor):
         title = _s(data.get("title")).strip()
         if title:
             blocks.append(HeaderBlock(id=f"kyora-title-{uuid.uuid4()}", header=title, level=2))
-        preview_url = _s(data.get("preview_url")).strip()
+        for label, link in data.get("links") or []:  # URLs Kyora returned for a pressed button (see _post_action)
+            blocks.append(TextBlock(id=f"kyora-link-{uuid.uuid4()}", text=f"{label}: {link}"))
+        preview_url = resolve_kyora_url(_s(data.get("preview_url")), self._base_url)
         if preview_url:
             blocks.append(TextBlock(id=f"kyora-preview-{uuid.uuid4()}", text=f"Preview: {preview_url}"))
         shot = data.get("screenshot_b64")
@@ -554,6 +589,7 @@ class KyoraProcessor(FrameProcessor):
     async def _show_view(self, data: dict) -> None:
         if not self._show_views:
             return
+        self._last_view = dict(data)
         blocks = self.build_view_blocks(data)
         if not blocks:
             logger.debug("KyoraProcessor: tokkio.view without displayable content; clearing instead")
@@ -567,6 +603,7 @@ class KyoraProcessor(FrameProcessor):
         if not self._show_views:
             return
         self._stats["clears"] += 1
+        self._last_view = {}
         await self.push_frame(StopCustomViewFrame(action_id=VIEW_ACTION_ID), FrameDirection.DOWNSTREAM)
 
     # ------------------------------------------------------------------ Tokkio -> Kyora
@@ -582,9 +619,30 @@ class KyoraProcessor(FrameProcessor):
         if 200 <= status < 300:
             self._stats["actions"] += 1
             logger.info(f"KyoraProcessor: action {payload.get('action')!r} accepted by Kyora (HTTP {status})")
+            await self._show_action_link(_s(payload.get("action")), body)
         else:
             self._stats["errors"] += 1
             logger.error(f"KyoraProcessor: action {payload.get('action')!r} rejected by Kyora: HTTP {status} {body[:200]!r}")
+
+    async def _show_action_link(self, action: str, body: str) -> None:
+        """Show the URL Kyora answered a button with (``{"url": ...}`` for Open preview / Download ZIP / Run
+        tests) in the current custom view, as an absolute link. The Tokkio UI cannot open a tab on the viewer's
+        device, so the link is displayed, labelled like the button that was pressed."""
+        try:
+            url = _s((json.loads(body or "{}") or {}).get("url")).strip()
+        except (ValueError, AttributeError):
+            url = ""
+        if not url or not self._show_views or not self._last_view:
+            logger.info(f"KyoraProcessor: {action!r} answered {url!r}; no custom view to show it in")
+            return
+        link = resolve_kyora_url(url, self._base_url)
+        label = next((lbl for bid, lbl, _ in normalise_buttons(self._last_view.get("buttons"))
+                      if bid == BUTTON_PREFIX + action), action)
+        view = {**self._last_view, "links": [(label, link)]}
+        logger.info(f"KyoraProcessor: {label}: {link}")
+        self._stats["views"] += 1
+        await self.push_frame(StartCustomViewFrame(action_id=VIEW_ACTION_ID, blocks=self.build_view_blocks(view)),
+                              FrameDirection.DOWNSTREAM)
 
     async def _http_post(self, url: str, payload: dict) -> tuple[int, str]:
         import httpx
@@ -599,6 +657,7 @@ __all__ = [
     "KyoraProcessor",
     "SSELineParser",
     "kyora_base_url",
+    "resolve_kyora_url",
     "normalise_stages",
     "normalise_buttons",
     "strip_data_url",

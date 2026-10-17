@@ -16,7 +16,9 @@ pipeline in `src/llm-rag`. With this overlay the avatar
   during a run; Kyora's narration role is Nemotron-3-Ultra; the avatar's LLM does not rewrite them),
 * **shows** Kyora's `tokkio.view` events as a Tokkio *custom view* (title, preview link, screenshot,
   stage table, action buttons) and hides it on `tokkio.clear`,
-* sends presses of `kyora:*` buttons back to Kyora (`POST /api/actions`),
+* sends presses of `kyora:*` buttons back to Kyora (`POST /api/actions`) and adds the absolute URL
+  Kyora answers (Open preview, Download ZIP) to the view; preview links name the `events_url` host,
+  never `127.0.0.1`,
 * answers spoken questions with its own LLM, which the overlay config points at
   `nvidia/nemotron-3-ultra-550b-a55b` with a "Kyora presenter" persona.
 

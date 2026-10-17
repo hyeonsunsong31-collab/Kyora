@@ -114,6 +114,12 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   default), and the Tokkio LLM service speaks only `delta.content`, so the avatar stayed silent for the
   whole reasoning trace. `bot.kyora.py` now builds it with `temperature 0.2` and
   `chat_template_kwargs.enable_thinking=false` (through the OpenAI SDK's `extra_body`).
+- Tokkio overlay links: the custom view showed preview URLs as Kyora reported them (`127.0.0.1` or a
+  Kyora-relative path, which mean nothing on the cluster or the kiosk), and **Open preview** / **Download
+  ZIP** did nothing because the overlay dropped the URL `POST /api/actions` returned. `/api/actions` now
+  answers absolute URLs under the host the caller used (previews and the harness on the preview listener,
+  the ZIP on the main one), the overlay rewrites a loopback host to its `events_url` host, and a pressed
+  button adds `<label>: <url>` to the view.
 
 ## 0.1.0 - 2026-10-15
 
