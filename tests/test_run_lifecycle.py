@@ -197,6 +197,36 @@ class _LineageScenario:
         self.assertEqual((wt / "index.html").read_text(encoding="utf-8"), "GAME A")
         self.assertEqual(sm.backend.head(), a_sha)
 
+    def test_resumed_fresh_generation_does_not_inherit_an_earlier_runs_files(self):
+        store: ProjectStore = self.store  # type: ignore[attr-defined]
+        p = store.create("Fresh resume")
+        sm = store.slide_manager(p.id)
+        wt = sm.work_tree()
+        a = store.create_run(p.id, "generate", "game A")
+        sm.prepare_run(a)
+        (wt / "index.html").write_text("GAME A", encoding="utf-8")
+        (wt / "src").mkdir()
+        (wt / "src" / "a.js").write_text("// A only", encoding="utf-8")
+        a_sha = sm.commit_iteration(a, 0, None)
+        store.set_state(a, "failed", error="RuntimeError: boom")  # failed without a rollback
+        b = store.create_run(p.id, "generate", "game B")
+        info = sm.prepare_run(b)
+        self.assertEqual((info["branch"], info["base_sha"], info["fresh_tree"]), ("lineage/main", a_sha, True))
+        self.assertEqual(_files(wt), [])
+        store.set_state(b, "blocked", blocked_reason="Kimi K3 unreachable")  # blocked before any commit
+        info = sm.prepare_run(store.get_run(b.id))  # resume
+        self.assertEqual(info["branch"], "lineage/main")
+        self.assertEqual(sm.backend.head(), a_sha)
+        self.assertEqual(_files(wt), [])
+        (wt / "index.html").write_text("GAME B", encoding="utf-8")
+        b_sha = sm.commit_iteration(store.get_run(b.id), 0, None)
+        self.assertEqual(sm.backend.ls(b_sha), ["index.html"])
+        # once the fresh run has committed, resume restores its own commit as it is
+        (wt / "junk.js").write_text("junk", encoding="utf-8")
+        sm.prepare_run(store.get_run(b.id))
+        self.assertEqual(_files(wt), ["index.html"])
+        self.assertEqual((wt / "index.html").read_text(encoding="utf-8"), "GAME B")
+
     def test_resume_refuses_a_branch_that_moved_and_rollback_leaves_it(self):
         from kyora.projects.slides import LineageMoved
         store, p, sm, a, a_sha = self._blocked_first_generation()

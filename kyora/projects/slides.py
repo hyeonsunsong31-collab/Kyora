@@ -748,6 +748,9 @@ class SlideManager:
                 f"import changed it. Cancel this run and start a new one.")
         if tip:
             self.backend.checkout(branch)  # forced: the tree is exactly the run's last commit
+            if opts.get("fresh_tree") and tip == opts.get("base_sha"):
+                # a fresh generation that has not committed yet starts empty, as prepare_run left it
+                clear_work_tree(self.work_tree())
         else:
             self.backend.checkout_orphan(branch)
         if opts.get("tip", _UNSET) != tip:

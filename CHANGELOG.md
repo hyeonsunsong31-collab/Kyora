@@ -172,6 +172,10 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   said "Served by your Tokkio deployment" whenever the URL answered at all, including `502` from an
   ingress with no running pods or `404` from another service. It now shows the Tokkio UI only for a
   2xx/3xx answer (`ui.ok`) and otherwise says "Tokkio not deployed" with the HTTP status.
+- **A resumed fresh generation starts empty again.** A generation on `lineage/main` whose base is an
+  earlier failed run's commit cleared the work tree when it was prepared, but resuming it before its first
+  commit checked that commit out again, so the new game was built on the earlier run's files. Resume now
+  clears the tree again while the run has not committed.
 
 ## 0.1.0 - 2026-10-15
 
