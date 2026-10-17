@@ -796,6 +796,7 @@ class FakeJudge:
         self.contexts: dict[str, dict] = {}
         self.forgotten: list[str] = []
         self.verdict_ids = verdict_ids or set()
+        self.unavailable: list[str] = []
 
     def register_context(self, run_id: str, ctx: dict) -> str:
         self.contexts[run_id] = ctx
@@ -806,6 +807,9 @@ class FakeJudge:
 
     def has_verdict(self, run_id: str, tool_use_id: str) -> bool:
         return tool_use_id in self.verdict_ids
+
+    def record_unavailable(self, run_id: str, *, allowed: bool = True) -> None:
+        self.unavailable.append(run_id)
 
 
 class RunWithFakeCLITests(TempHomeMixin, unittest.TestCase):
@@ -921,12 +925,15 @@ class RunWithFakeCLITests(TempHomeMixin, unittest.TestCase):
         self.assertEqual(len(unav), 1)  # the Write ran without a journaled verdict
         self.assertEqual(unav[0]["tool_use_id"], "toolu_A")
         self.assertEqual(unav[0]["tool_name"], "Write")
+        # the unjudged call is also counted on the run (honesty-run-judge-stats-miss-unjudged-calls)
+        self.assertEqual(judge.unavailable, ["r_test"])
         # with a verdict on record nothing is flagged
         self.log.unlink()
         judge2 = FakeJudge(verdict_ids={"toolu_A"})
         res, sink = self.run_job(self.engine(SimpleNamespace(server_url="http://127.0.0.1:1", judge=judge2)), self.job("ok"))
         self.assertTrue(res.ok)
         self.assertEqual(sink.of("judge.unavailable"), [])
+        self.assertEqual(judge2.unavailable, [])  # a judged call is never counted unavailable
 
     def test_judge_without_server_url_is_reported(self):
         judge = FakeJudge(verdict_ids={"toolu_A"})

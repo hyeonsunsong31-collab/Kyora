@@ -141,19 +141,27 @@ back to Claude; exit 1 = non-blocking error (the tool proceeds).
    Not JSON or not an object -> message on stderr, **exit 1**.
 2. `KYORA_JUDGE_URL` unset/empty -> line in `KYORA_HOME/logs/hook.log`, **exit 0**.
 3. `POST KYORA_JUDGE_URL` (system proxies bypassed) with
-   `{"hook_token","run_id","session_id","cwd","hook_event_name","tool_name","tool_use_id","tool_input"}`;
+   `{"hook_token","run_id","session_id","cwd","hook_event_name","tool_name","tool_use_id","tool_input","deadline_ms"}`;
    timeout `KYORA_HOOK_TIMEOUT_S` (default 280 s, below the settings' 300 s).
+   `deadline_ms` is that timeout minus a small margin (capped at 2 s, else
+   `timeout/10`): the budget the judge has to answer before this hook fails open.
 4. Verdict `{"decision":"deny","reason","source"}` -> stderr
    `Kyora judge (<source>) denied <tool>: <reason>`, **exit 2**.
    Any other decision -> **exit 0**.
 5. Fail-open, each logged to `hook.log` and **exit 0**: connection refused /
-   timeout / DNS errors, any non-200 status (500, 403 bad token, ...), a body
-   that is not a JSON object.
+   timeout / DNS errors, a 5xx (or any other non-200) status, a body that is not
+   a JSON object.
+6. Fail-closed on **401/403** (the server rejected an invalid/unknown hook
+   token, not an unreachable judge) -> reason on stderr, **exit 2**, so an
+   unauthenticated call cannot slip through unjudged.
 
 Fail-open is visible, never silent: after each `tool_result` of a judged tool the
 engine asks `judge.has_verdict(run_id, tool_use_id)`; without a journaled verdict
-it emits `judge.unavailable{reason,tool_name,tool_use_id}`. It also emits
-`judge.unavailable` once at start when there is no judge or no server URL.
+it emits `judge.unavailable{reason,tool_name,tool_use_id}` **and** counts the call
+on the run via `judge.record_unavailable(run_id)`, so `run.judge.unavailable`
+matches the number of unjudged calls (the Messages-API engine does the same when
+`judge.decide` raises). It also emits `judge.unavailable` once at start when there
+is no judge or no server URL.
 
 What Claude sees for a block (CLI 2.1.300, real): an error `tool_result`
 `PreToolUse:Write hook error: ["<python>" "<KYORA_HOME>/bin/kyora_hook.py"]: Kyora judge (rule) denied Write: <reason>`,
@@ -161,12 +169,24 @@ and the blocked call is listed in the result line's `permission_denials`.
 
 ## 6. Judge (`JudgeService`)
 
-`POST /api/judge` (auth `loopback`) calls `handle_request(payload)`:
+`POST /api/judge` (auth `any`; authenticated by the per-run `hook_token`, **not**
+by the peer address, so the hook reaches the judge even when Kyora binds a
+specific LAN IP such as `kyora hub --host <ip>`) calls `handle_request(payload)`:
 
 * payload not an object -> `400 {"error","decision":"deny"}`;
 * unknown run, missing or wrong `hook_token` (constant-time compare of UTF-8 bytes) -> `403`;
 * missing `tool_name` -> `400`;
 * otherwise `200` + verdict `{"decision","reason","risk","source","judge_model","latency_ms"[,"rule"|"cached_from"]}`.
+
+A positive `deadline_ms` bounds the slow Kimi path. A Kimi verdict whose own
+latency exceeds the deadline arrives after the hook already failed open and the
+tool ran, so it never governs the call: it is journaled with `"late":true,
+"governing":false` (and still seeds the cache), its `tool_use_id` is **not**
+registered and it is **not** counted, so `has_verdict` stays false and the engine
+counts the call as `unavailable` like any other unjudged call. The route returns
+`{"decision":"allow","source":"timeout"}` for it. The deterministic rules and the
+cache are instant and never late; the direct Messages-API path sends no deadline
+and waits for the verdict.
 
 `register_context(run_id, ctx)` returns the token; `forget(run_id)` drops
 context, token and cache (stats and verdict ids are kept). The context keys the

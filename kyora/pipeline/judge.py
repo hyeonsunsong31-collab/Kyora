@@ -98,28 +98,49 @@ _EXTERNAL_DEP_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"\bcargo\s+(?:install|add)\b|\bgo\s+(?:get|install)\b|\bgem\s+install\b"), "language package install"),
 )
 _GIT = r"^git\s+(?:-C\s+\S+\s+)?"
+# Allow-list of safe argument shapes. A read-only segment is one whose command matches ONE of these and
+# whose arguments carry none of the options that would run another program or write a file. Every entry is
+# deliberately shaped so the fast path cannot be turned into an arbitrary-program / file-write primitive:
+#   - no leading variable assignment (``FOO=bar cmd`` / a bare ``NAME=value``): deferred to Kimi, because an
+#     assignment can set GIT_*, LD_*, PATH, IFS, BASH_ENV, PYTHON*, NODE_OPTIONS, ... and steer the tool;
+#   - ``sort`` without ``-o``/``--output``/``--compress-program`` (the last spawns a program);
+#   - ``rg`` without ``--pre``/``--pre-glob``/``--hostname-bin`` (preprocessor / hostname program);
+#   - ``node``/``python`` only in their syntax-check and ``--version`` shapes, with no ``-e``/``--require``/
+#     ``-r``/``--import`` or any other flag that loads and runs code;
+#   - ``git`` read subcommands without ``--output``/``--ext-diff``/``--textconv`` (external diff / textconv
+#     filters run a program); ``git -c KEY=VAL`` / ``git --config-env`` / an explicit ``git --exec-path`` never
+#     match (only an optional ``-C DIR`` prefix is allowed), so a pager/fsmonitor/diff override is deferred;
+#   - ``find`` without ``-exec``/``-execdir``/``-ok``/``-okdir``/``-delete``/``-fprint*``/``-fls``;
+#   - ``date`` without ``-s``/``--set`` (setting the clock); pagers (``less``/``more``/``man``) are not here at
+#     all because they can spawn an editor or shell (``!cmd``, ``v``); ``env CMD`` / ``xargs`` / ``awk`` /
+#     ``sed`` / ``tar`` are likewise absent and always deferred.
 _READ_ONLY_CMD_RES: tuple[re.Pattern, ...] = (
-    # commands that only print; anything that can run another program or write a file is excluded
-    re.compile(r"^(?:ls|dir|cat|head|tail|wc|pwd|printf|echo|stat|file|du|df|which|type|whoami|uname|date|true|false|:|nl|cut|tr|od|hexdump|md5sum|sha1sum|sha256sum|basename|dirname|realpath|readlink|less|more)(?:\s|$)"),
+    # commands that only print; none of these has an option that runs a program or writes a file
+    re.compile(r"^(?:ls|dir|cat|head|tail|wc|pwd|printf|echo|stat|file|du|df|which|type|whoami|uname|true|false|:|nl|cut|tr|od|hexdump|md5sum|sha1sum|sha256sum|basename|dirname|realpath|readlink|comm)(?:\s|$)"),
+    re.compile(r"^date(?!.*(?:\s-s(?:\s|$)|--set))(?:\s|$)"),  # date -s / --set changes the clock
     re.compile(r"^env\s*$|^printenv(?:\s+[A-Za-z_][A-Za-z0-9_]*)*\s*$"),  # "env CMD" runs CMD
-    re.compile(r"^sort(?!.*\s-(?:-output|[A-Za-z]*o))(?:\s|$)"),  # sort -o FILE writes
+    re.compile(r"^sort(?!.*\s-(?:-output|-compress-program|[A-Za-z]*o))(?:\s|$)"),  # -o/--output write; --compress-program spawns
     re.compile(r"^(?:uniq|xxd)(?:\s+-\S+)*(?:\s+[^\s-]\S*)?(?:\s+-\S+)*\s*$"),  # a 2nd operand is an output file
     re.compile(r"^tree(?!.*\s-o(?:\s|$))(?:\s|$)"),  # tree -o FILE writes
-    re.compile(r"^(?:grep|egrep|fgrep|rg|ag|ack)(?:\s|$)"),
-    re.compile(r"^find(?:\s|$)(?!.*(?:-delete|-exec|-execdir|-ok|-fprint|-fls))"),
-    re.compile(r"^node\s+(?:--check|-c)\s+\S+"),
+    re.compile(r"^(?:grep|egrep|fgrep)(?:\s|$)"),
+    re.compile(r"^rg(?!.*(?:--pre(?:=|\s|-glob)|--hostname-bin))(?:\s|$)"),  # --pre / --hostname-bin run a program
+    re.compile(r"^find(?:\s|$)(?!.*(?:-delete|-exec|-execdir|-ok|-okdir|-fprint|-fprintf|-fls))"),
+    re.compile(r"^node\s+(?:--check|-c)(?:\s+[^\s-]\S*)+\s*$"),  # only a syntax check of files; no -e/--require
     re.compile(r"^node\s+(?:--version|-v)\s*$"),
-    re.compile(r"^(?:python3?|py)\s+-m\s+py_compile\s+\S+"),
+    re.compile(r"^(?:python3?|py)\s+-m\s+py_compile(?:\s+[^\s-]\S*)+\s*$"),  # only compile files; no trailing -c/-e
     re.compile(r"^(?:python3?|py)\s+(?:--version|-V)\s*$"),
-    re.compile(r"^npm\s+(?:--version|-v|ls|list)\s*"),
-    re.compile(_GIT + r"(?:status|diff|log|show|rev-parse|ls-files|describe|blame|shortlog)(?:\s|$)(?!.*--output)"),
+    re.compile(r"^npm\s+(?:--version|-v|ls|list)(?:\s|$)"),
+    re.compile(_GIT + r"(?:status|diff|log|show|rev-parse|ls-files|describe|blame|shortlog)(?:\s|$)(?!.*(?:--output|--ext-diff|--textconv))"),
     re.compile(_GIT + r"branch(?:\s+(?:-a|-r|-l|-v|-vv|--list|--all|--remotes|--verbose|--show-current|--no-color|--contains|--merged|--no-merged))*\s*$"),
     re.compile(_GIT + r"tag(?:\s+(?:-l|--list)(?:\s+\S+)?)?\s*$"),
     re.compile(_GIT + r"remote(?:\s+-v)?\s*$"),
     re.compile(r"^(?:test|\[)\s"),
     re.compile(r"^sleep\s+\d+(?:\.\d+)?\s*$"),
-    re.compile(r"^(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*=\S*\s*$"),
 )
+# A leading environment assignment turns any command into a non-read-only one (deferred to Kimi): it can set
+# GIT_CONFIG_*, GIT_EXTERNAL_DIFF, GIT_PAGER, LD_PRELOAD, PATH, IFS, BASH_ENV, ENV, PYTHON*, NODE_OPTIONS,
+# PERL5*, RUBYOPT, ... and make an otherwise read-only tool run an arbitrary program.
+_ASSIGN_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 
 
 # --------------------------------------------------------------------------- helpers
@@ -472,6 +493,8 @@ def _is_read_only_command(cmd: str, workspace: str, cwd: str | None) -> bool:
             if m and workspace and resolve_in_workspace(_strip_quotes(m.group(1)), workspace, cwd) is None:
                 return False
             continue
+        if _ASSIGN_PREFIX_RE.match(clean):
+            return False  # "FOO=bar ..." (or a bare assignment): an env var could steer a later tool
         if not any(r.match(clean) for r in _READ_ONLY_CMD_RES):
             return False
     return True
@@ -528,6 +551,45 @@ class JudgeService:
         with self._lock:
             return tool_use_id in self._verdict_ids.get(run_id, set())
 
+    def record_unavailable(self, run_id: str, *, allowed: bool = True) -> None:
+        """Count a judged tool call that never reached the judge (hook unreachable -> ran unjudged).
+
+        The engine calls this when a Write/Edit/Bash produced no journaled verdict, so the run's
+        ``unavailable`` counter matches the ``judge.unavailable`` events the engine emits. The call still
+        ran (fail-open), so it is also counted as ``allowed`` unless a block is reported.
+        """
+        if not run_id:
+            return
+        with self._lock:
+            stats = self._stats.setdefault(run_id, self._empty_stats())
+            stats["allowed" if allowed else "denied"] += 1
+            stats["unavailable"] += 1
+
+    def prime_stats(self, run_id: str, counters: Any) -> None:
+        """Seed a run's counters from a persisted record (on resume), without double-counting.
+
+        A resumed run starts a fresh process whose in-memory counters are empty; restoring the counts
+        saved in ``run.json`` keeps the total across the restart. It is a no-op once counting has begun in
+        this process (non-zero counters), so repeated build/fix calls never re-seed.
+        """
+        if not run_id or not isinstance(counters, dict):
+            return
+        seeded = self._empty_stats()
+        has_value = False
+        for key in seeded:
+            val = counters.get(key)
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                seeded[key] = int(val)
+                has_value = has_value or val > 0
+        if not has_value:
+            return
+        with self._lock:
+            cur = self._stats.get(run_id)
+            if cur is not None and any(cur.values()):
+                return  # already counting in this process; keep the live totals
+            self._stats[run_id] = seeded
+            self._stats.move_to_end(run_id)
+
     # ------------------------------------------------------------------ HTTP entry point
     def handle_request(self, payload: Any) -> tuple[int, dict]:
         """Validate a hook request and return ``(http_status, body)``."""
@@ -552,11 +614,24 @@ class JudgeService:
             "cwd": payload.get("cwd"),
             "hook_event_name": payload.get("hook_event_name") or "PreToolUse",
         }
-        return 200, self.decide(run_id, call)
+        # The hook sends the budget (ms) it will wait before failing open, a little under its own timeout.
+        # A Kimi verdict that arrives after it never governed the call, so it is recorded as late only.
+        deadline_ms = payload.get("deadline_ms")
+        if isinstance(deadline_ms, bool) or not isinstance(deadline_ms, (int, float)) or deadline_ms <= 0:
+            deadline_ms = None
+        return 200, self.decide(run_id, call, deadline_ms=deadline_ms)
 
     # ------------------------------------------------------------------ decision
-    def decide(self, run_id: str, call: dict) -> dict:
-        """Judge one tool call. Always returns a verdict dict (fail-open on judge errors)."""
+    def decide(self, run_id: str, call: dict, *, deadline_ms: float | None = None) -> dict:
+        """Judge one tool call. Always returns a verdict dict (fail-open on judge errors).
+
+        ``deadline_ms`` (sent by the hook, a little under its own timeout) bounds how long a Kimi verdict
+        may take before the hook gives up and the tool runs. A Kimi verdict that arrives after it did not
+        govern the call: it is journaled as late (and still seeds the cache) but is never counted and its
+        ``tool_use_id`` is never registered, so :meth:`has_verdict` stays ``False`` and the engine counts
+        the call as unavailable. ``None`` (the direct Messages-API path, which waits synchronously) applies
+        no deadline. The deterministic rules and the cache are instant, so only the Kimi path can be late.
+        """
         started = time.monotonic()
         with self._lock:
             ctx = dict(self._contexts.get(run_id) or {})
@@ -597,8 +672,18 @@ class JudgeService:
                     while len(cache) > CACHE_MAX:
                         cache.popitem(last=False)
 
-        verdict["latency_ms"] = int((time.monotonic() - started) * 1000)
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        verdict["latency_ms"] = elapsed_ms
         verdict.setdefault("judge_model", None)
+        # A Kimi verdict that only came back after the hook's deadline no longer governs the call: the hook
+        # has already failed open and the tool ran. Record it as a late audit entry (the cache was seeded
+        # above) and return a non-governing allow, so the call is counted as unavailable, never as a Kimi
+        # decision for a call that actually ran.
+        if deadline_ms is not None and verdict.get("source") == "kimi" and elapsed_ms >= deadline_ms:
+            self._record_late(run_id, ctx, call, summary, verdict, deadline_ms)
+            return make_verdict("allow", f"Kimi verdict arrived after the {int(deadline_ms)} ms hook deadline "
+                                f"({elapsed_ms} ms); the tool call ran unjudged", "timeout",
+                                risk="unknown", latency_ms=elapsed_ms, judge_model=verdict.get("judge_model"))
         self._record(run_id, ctx, call, summary, verdict)
         return verdict
 
@@ -655,6 +740,30 @@ class JudgeService:
                                       "source": source, "latency_ms": verdict.get("latency_ms"), "tool_name": tool_name,
                                       "tool_use_id": tool_use_id, "risk": verdict.get("risk"), "summary": summary},
                       run_id, ctx.get("project_id"))
+
+    def _record_late(self, run_id: str, ctx: dict, call: dict, summary: str, verdict: dict,
+                     deadline_ms: float) -> None:
+        """Journal a Kimi verdict that arrived after the hook deadline, without letting it govern the call.
+
+        The hook already failed open and the tool ran, so this verdict is NOT counted in the run's stats and
+        its ``tool_use_id`` is NOT registered: :meth:`has_verdict` stays ``False``, and the engine emits
+        ``judge.unavailable`` and counts the call as unavailable, exactly as for any call the hook could not
+        reach. Only the journal keeps the late verdict, for audit.
+        """
+        tool_use_id = str(call.get("tool_use_id") or "")
+        entry = {
+            "ts": now_iso(), "run_id": run_id, "tool_use_id": tool_use_id,
+            "tool_name": str(call.get("tool_name") or ""), "summary": summary,
+            "decision": verdict.get("decision"), "reason": verdict.get("reason"), "risk": verdict.get("risk"),
+            "source": verdict.get("source"), "rule": verdict.get("rule"), "judge_model": verdict.get("judge_model"),
+            "latency_ms": verdict.get("latency_ms"), "session_id": call.get("session_id"),
+            "late": True, "governing": False, "deadline_ms": int(deadline_ms),
+            "tool_input_excerpt": self._excerpt(call.get("tool_input")),
+        }
+        self._append_journal(ctx, entry)
+        log.warning("judge verdict for %s arrived after the %d ms hook deadline (%s ms); recorded late, not "
+                    "governing; the call ran unjudged", tool_use_id or "?", int(deadline_ms),
+                    verdict.get("latency_ms"))
 
     @staticmethod
     def _excerpt(tool_input: Any, limit: int = 1200) -> str:

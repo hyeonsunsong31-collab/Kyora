@@ -879,6 +879,10 @@ class ClaudeCodeEngine(CodeEngine):
             self._emit(sink, EngineEvent(JUDGE_UNAVAILABLE, {
                 "reason": f"no judge verdict recorded for {name} ({tid}): the hook could not reach the judge, the call ran unjudged",
                 "tool_name": name, "tool_use_id": tid}))
+            try:
+                judge.record_unavailable(job.run_id)  # the call ran unjudged; count it on the run
+            except Exception as exc:  # noqa: BLE001
+                log.warning("judge.record_unavailable failed: %s", exc)
 
     def _build_result(self, job: EngineJob, state: dict, attempt: _Attempt, started: float, attempts: int,
                       retries: list[dict], compat: dict, run_dir: Path) -> EngineResult:

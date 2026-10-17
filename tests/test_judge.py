@@ -11,6 +11,7 @@ import os
 import queue
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -202,6 +203,36 @@ class RuleTests(unittest.TestCase):
                     "git diff --output=patch.txt", "node build.js", "npm test", "cd /tmp && ls"):
             self.assertIsNone(self.v(bash(cmd, cwd=str(self.ws))), cmd)
 
+    def test_env_assignment_segments_are_not_read_only(self):
+        # Regression for security-judge-readonly-env-bypass: an assignment (export or bare, and leading env
+        # assignments on a command) can steer an otherwise read-only tool into running an arbitrary program,
+        # so the read-only fast path must never allow it; it defers to Kimi instead.
+        for cmd in (
+            "export GIT_CONFIG_COUNT=1; export GIT_CONFIG_KEY_0=core.fsmonitor; "
+            "export GIT_CONFIG_VALUE_0=touch${IFS}../PWNED; git status",
+            "export GIT_EXTERNAL_DIFF=touch${IFS}../x; git diff",
+            "GIT_PAGER=sh git log", "LD_PRELOAD=/tmp/e.so ls", "PATH=/tmp ls", "IFS=; ls",
+            "BASH_ENV=/tmp/e.sh cat index.html", "NODE_OPTIONS=--require=/tmp/e.js node --check src/a.js",
+            "PYTHONSTARTUP=/tmp/e.py python3 --version", "FOO=bar", "export FOO=bar", "x=1 y=2 ls",
+        ):
+            self.assertIsNone(self.v(bash(cmd, cwd=str(self.ws))), cmd)
+
+    def test_tool_subprocess_flags_are_not_read_only(self):
+        # Regression for security-judge-readonly-env-bypass: read-only tools whose flags can run another
+        # program or write a file must leave the read-only class (defer to Kimi).
+        for cmd in (
+            "rg --pre=sh pat src", "rg --pre sh pat src", "rg --hostname-bin /tmp/h pat",
+            "sort --compress-program=sh big.txt", "sort -S 1 --compress-program=sh big.txt",
+            "sort -o out.txt in.txt", "node --check src/a.js --require ./evil.cjs",
+            "node -c --require=./evil.cjs src/a.js", "node -c -e \"require('cp').execSync('id')\"",
+            "python3 -m py_compile a.py -c 'import os'", "git -c core.pager=sh log", "git diff --ext-diff",
+            "git log --textconv", "git --config-env=core.pager=X log", "find . -fprint0 /tmp/x",
+            "find . -fprintf /tmp/x '%p'", "find . -okdir rm {} ;", "date -s 2020-01-01", "date --set=now",
+            "less +!id src/a.js", "more src/a.js", "man ls", "xargs rm", "awk 'BEGIN{system(\"id\")}'",
+            "sed 'e id' src/a.js", "tar --to-command=sh -xf a.tar", "tar --use-compress-program=sh -cf a.tar .",
+        ):
+            self.assertIsNone(self.v(bash(cmd, cwd=str(self.ws))), cmd)
+
     def test_empty_bash_denied(self):
         self.assertEqual(self.v(bash("   ")), ("deny", "empty_command"))
         self.assertEqual(self.v({"tool_name": "Bash", "tool_input": {}}), ("deny", "empty_command"))
@@ -380,6 +411,95 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual((v["decision"], v["rule"]), ("deny", "missing_path"))
 
+    def test_judge_route_is_token_authenticated_not_loopback(self):
+        # Regression for protocol-judge-lan-host-fail-open: the /api/judge route must NOT be gated by a
+        # loopback peer (which 403s the hook when Kyora binds a specific LAN IP, making every tool call run
+        # unjudged). It is auth="any" so the request reaches handle_request, which authenticates the per-run
+        # hook token with a constant-time hmac compare.
+        from types import SimpleNamespace
+        from kyora.pipeline import routes as proutes
+        from kyora.server import Router
+        svc = self.service(ScriptedKimi())
+        token = self.register(svc)
+        app = SimpleNamespace(config=SimpleNamespace(hub=SimpleNamespace(token="", expose_ui=False)),
+                              judge=svc, missing={}, store=None, run_manager=None, bus=self.bus)
+        router = Router()
+        proutes.register_routes(router, app)
+        judge_routes = [r for r in router.routes if r.pattern == "/api/judge"]
+        self.assertEqual([r.auth for r in judge_routes], ["any"])
+        # a request carrying the valid token is judged (as it would be from a LAN peer), a bad token is 403ed
+        self.assertEqual(svc.handle_request({"hook_token": token, "run_id": "r_1", "tool_name": "Write",
+                                             "tool_input": {"file_path": str(self.ws / "src" / "game.js")},
+                                             "tool_use_id": "t1"})[0], 200)
+        self.assertEqual(svc.handle_request({"hook_token": "nope", "run_id": "r_1", "tool_name": "Write",
+                                             "tool_input": {}})[0], 403)
+
+    def test_late_kimi_verdict_does_not_govern_the_call(self):
+        # Regression for protocol-judge-late-verdict-recorded: a Kimi verdict that arrives after the hook
+        # deadline must NOT govern the call that already ran. It is journaled as late only: never counted in
+        # the run stats, its tool_use_id never registered (so has_verdict stays False and the engine counts
+        # the call as unavailable). An in-time verdict still governs, and the direct (no-deadline) path is
+        # unaffected. The cache is still seeded, so an identical later in-time call is judged instantly.
+        class SleepyKimi:
+            model = "moonshotai/kimi-k3"
+
+            def judge(self, ctx, call, run_id):
+                time.sleep(0.06)  # longer than the tiny deadline below, shorter than the governing one
+                return {"decision": "deny", "reason": "would delete user data", "risk": "high"}
+
+        svc = self.service(SleepyKimi())
+        self.register(svc)
+        late = svc.decide("r_1", {"tool_name": "Bash", "tool_use_id": "late1", "session_id": "s1",
+                                  "tool_input": {"command": "python3 cleanup.py --all"}}, deadline_ms=5)
+        self.assertEqual((late["decision"], late["source"]), ("allow", "timeout"))  # non-governing allow
+        self.assertFalse(svc.has_verdict("r_1", "late1"))  # id not registered -> engine counts it unavailable
+        self.assertEqual(svc.stats("r_1"), self.service(None)._empty_stats())  # nothing counted
+        entries = self.journal()
+        self.assertEqual(len(entries), 1)  # the late Kimi verdict is journaled, for audit
+        self.assertEqual((entries[0]["source"], entries[0]["decision"]), ("kimi", "deny"))
+        self.assertTrue(entries[0]["late"])
+        self.assertFalse(entries[0]["governing"])
+        self.assertEqual(entries[0]["deadline_ms"], 5)
+        # an identical call now hits the cache the late verdict seeded (in-time this time): it governs
+        hit = svc.decide("r_1", {"tool_name": "Bash", "tool_use_id": "cached1",
+                                 "tool_input": {"command": "python3 cleanup.py --all"}}, deadline_ms=60000)
+        self.assertEqual((hit["decision"], hit["source"], hit.get("cached_from")), ("deny", "cache", "kimi"))
+        self.assertTrue(svc.has_verdict("r_1", "cached1"))
+        self.assertEqual((svc.stats("r_1")["denied"], svc.stats("r_1")["cached"]), (1, 1))
+        # an in-time Kimi verdict for a different call governs and is counted
+        intime = svc.decide("r_1", {"tool_name": "Bash", "tool_use_id": "ok1",
+                                    "tool_input": {"command": "python3 other.py"}}, deadline_ms=60000)
+        self.assertEqual((intime["decision"], intime["source"]), ("deny", "kimi"))
+        self.assertTrue(svc.has_verdict("r_1", "ok1"))
+        # the direct Messages-API path (no deadline) is never treated as late, even for a slow verdict
+        direct = svc.decide("r_1", {"tool_name": "Bash", "tool_use_id": "api1",
+                                    "tool_input": {"command": "python3 third.py"}})
+        self.assertEqual((direct["decision"], direct["source"]), ("deny", "kimi"))
+        self.assertTrue(svc.has_verdict("r_1", "api1"))
+
+    def test_handle_request_passes_hook_deadline(self):
+        # Regression for protocol-judge-late-verdict-recorded: handle_request forwards a positive deadline_ms
+        # from the hook payload to decide(); a bad/absent/non-positive value means "no deadline".
+        class SleepyKimi:
+            model = "moonshotai/kimi-k3"
+
+            def judge(self, ctx, call, run_id):
+                time.sleep(0.06)
+                return {"decision": "deny", "reason": "nope", "risk": "high"}
+
+        svc = self.service(SleepyKimi())
+        token = self.register(svc)
+        base = {"hook_token": token, "run_id": "r_1", "tool_name": "Bash",
+                "tool_input": {"command": "python3 cleanup.py"}}
+        status, v = svc.handle_request(dict(base, tool_use_id="h1", deadline_ms=5))
+        self.assertEqual((status, v["decision"], v["source"]), (200, "allow", "timeout"))
+        self.assertFalse(svc.has_verdict("r_1", "h1"))
+        for bad in (None, 0, -10, "x", True):  # no finite deadline -> the verdict governs
+            status, v = svc.handle_request(dict(base, tool_use_id="h2", deadline_ms=bad,
+                                                tool_input={"command": "python3 x-%s.py" % bad}))
+            self.assertEqual((status, v["decision"], v["source"]), (200, "deny", "kimi"), repr(bad))
+            self.assertTrue(svc.has_verdict("r_1", "h2"), repr(bad))
+
     # ------------------------------------------------------------------ bookkeeping
     def test_journal_events_stats_and_has_verdict(self):
         svc = self.service(ScriptedKimi({"decision": "allow", "reason": "ok"}))
@@ -436,6 +556,39 @@ class ServiceTests(unittest.TestCase):
         v = svc.decide("r_1", self.call("notes/a.txt"))  # no bus: still a verdict, still journaled
         self.assertEqual(v["source"], "unavailable")
         self.assertEqual(len(self.journal()), 1)
+
+    def test_record_unavailable_counts_unjudged_calls(self):
+        # Regression for honesty-run-judge-stats-miss-unjudged-calls: a tool call that never reached the
+        # judge (hook unreachable) must still raise the run's unavailable counter.
+        svc = self.service(ScriptedKimi())
+        self.register(svc)
+        svc.decide("r_1", self.call("src/game.js", "t1"))  # rule allow
+        svc.record_unavailable("r_1")  # hook could not reach the judge; the call ran unjudged
+        svc.record_unavailable("r_1")
+        st = svc.stats("r_1")
+        self.assertEqual((st["allowed"], st["unavailable"]), (3, 2))
+        svc.record_unavailable("r_1", allowed=False)
+        self.assertEqual(svc.stats("r_1")["denied"], 1)
+        svc.record_unavailable("")  # no run id: no-op
+
+    def test_prime_stats_restores_persisted_counters_on_resume(self):
+        # Regression for honesty-run-judge-stats-miss-unjudged-calls: a resumed run (fresh process, empty
+        # in-memory counters) restores the counts saved with run.json, then keeps counting from there.
+        svc = self.service(ScriptedKimi())
+        svc.prime_stats("r_1", {"allowed": 5, "denied": 1, "unavailable": 2, "rule": 3, "kimi": 2})
+        self.assertEqual(svc.stats("r_1"), {"allowed": 5, "denied": 1, "unavailable": 2, "cached": 0,
+                                            "rule": 3, "kimi": 2})
+        self.register(svc)  # register_context must keep the primed counters (setdefault)
+        svc.decide("r_1", self.call("src/game.js", "t1"))  # rule allow -> builds on the restored total
+        self.assertEqual((svc.stats("r_1")["allowed"], svc.stats("r_1")["rule"]), (6, 4))
+        # once counting has begun this process, prime_stats is a no-op (no double-count)
+        svc.prime_stats("r_1", {"allowed": 100})
+        self.assertEqual(svc.stats("r_1")["allowed"], 6)
+        # all-zero / non-dict counters never create or clobber an entry
+        svc.prime_stats("r_2", {"allowed": 0})
+        self.assertEqual(svc.stats("r_2"), svc._empty_stats())
+        svc.prime_stats("r_3", "garbage")
+        self.assertEqual(svc.stats("r_3"), svc._empty_stats())
 
     def test_concurrent_decisions(self):
         kimi = ScriptedKimi()

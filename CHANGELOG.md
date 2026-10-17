@@ -21,6 +21,21 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - The `kyora_token` cookie is `HttpOnly`; main-origin HTML is sent with `X-Frame-Options: SAMEORIGIN`.
 - `GET /static/...` rejects backslashes, drive letters and streams, so a Windows source install can no
   longer be made to read files outside `kyora/web` (for example `config/keys.json`).
+- **The judge no longer waves through program-spawning "read-only" shell commands.** A segment with an
+  environment assignment (`export GIT_CONFIG_*=`, `GIT_EXTERNAL_DIFF=`, `GIT_PAGER=`, `LD_PRELOAD=`,
+  `PATH=`, `BASH_ENV=`, `NODE_OPTIONS=`, a bare `NAME=value`, ...) and tool flags that run another
+  program or write a file (`rg --pre`/`--hostname-bin`, `sort --compress-program`/`-o`, `git -c`/
+  `--config-env`/`--ext-diff`/`--textconv`, `find -exec`/`-ok`/`-delete`/`-fprint*`, `node`/`py_compile`
+  with code-loading flags, output redirections, `less`/`man`/`xargs`/`awk`/`sed`/`tar --to-command`, ...)
+  are no longer classed read-only; they defer to Kimi. Previously a command such as
+  `export GIT_CONFIG_COUNT=1; export GIT_CONFIG_KEY_0=core.fsmonitor; export GIT_CONFIG_VALUE_0=...; git status`
+  was approved as "read-only" while git ran the injected program outside the workspace. Genuinely
+  read-only commands stay on the instant path.
+- **The judge hook reaches the judge over a LAN bind.** `POST /api/judge` is authenticated by the
+  per-run hook token (constant-time compare) instead of requiring a loopback peer, so running
+  `kyora serve`/`hub --host <lan-ip>` no longer makes every tool call 403 at the route and run unjudged;
+  the hook now also fails **closed** (blocks the tool) on a 401/403, which means the server rejected the
+  token, not that the judge is down.
 
 ### Fixed
 
@@ -82,6 +97,16 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - **The deck credits only what ran.** An imported-ZIP slide's architecture slide now says "imported ZIP -
   no code engine ran" (or "not built yet") instead of drawing the Build step as Claude Code, and the
   tests slide lists the code-engine errors recorded for the run.
+- **Judge statistics count unjudged calls.** When the hook cannot reach the judge, the engine now counts
+  the call on the run's `unavailable` counter (the Messages-API engine does the same when `judge.decide`
+  raises), so `run.json`'s `judge` block matches the `judge.unavailable` events instead of recording zero.
+  A Hub build folds the hub's per-job judge delta into `run.judge`, and a resumed run restores the
+  counters persisted with the run instead of overwriting them with the smaller counts of the resumed leg.
+- **A late judge verdict never governs a call that already ran.** The hook sends a `deadline_ms` budget
+  (a little under its timeout); a Kimi verdict slower than that arrives after the hook has failed open and
+  the tool has run, so it is journaled as `late` (and still seeds the cache) but is not counted and its
+  `tool_use_id` is not registered. The call is counted as unavailable, as the documented guarantee
+  requires; before, such a verdict was recorded as the deciding `deny`/`allow` with `unavailable: 0`.
 
 ## 0.1.0 - 2026-10-15
 

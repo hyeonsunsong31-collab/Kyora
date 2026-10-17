@@ -37,11 +37,16 @@ source.
   files are measured and the failure stays recorded in `run.json` (`extra.engine_failures`) and in
   the project deck.
 * **The judge is real or visibly absent.** Each Write/Edit/Bash of Claude Code goes through a
-  PreToolUse hook to `POST /api/judge`. Deterministic local rules answer the obvious cases (reads are
-  allowed; path escapes, `sudo`, `git push`, writes into `.git/` are denied), repeated calls hit a
-  verdict cache, everything else is decided by Kimi K3. If the judge cannot be reached, the hook
-  lets the tool run (fail-open, so a network blip does not kill a build) **and** Kyora emits
-  `judge.unavailable`; the run's judge statistics count it. Details:
+  PreToolUse hook to `POST /api/judge`, authenticated by a per-run token (so it works even when Kyora
+  binds a specific LAN IP). Deterministic local rules answer the obvious cases (reads are allowed; path
+  escapes, `sudo`, `git push`, writes into `.git/` are denied; a shell command is only treated as
+  read-only when its whole argument shape is safe, never when it sets an environment variable or a
+  subprocess-spawning flag), repeated calls hit a verdict cache, everything else is decided by Kimi K3.
+  Each decision has a deadline below the hook timeout: a verdict that arrives after the hook gave up is
+  logged as late and never governs the call. If the judge cannot be reached, the hook lets the tool run
+  (fail-open, so a network blip does not kill a build) **and** Kyora emits `judge.unavailable`; the
+  run's judge statistics count it, including Hub builds and across a resume. A request the server
+  *rejects* (bad token) fails closed instead. Details:
   [`claude-code-engine.md`](claude-code-engine.md).
 * **The model that served is the model shown.** `claude-fable-5-1` is not available on every Claude
   account. Kyora asks for it first and falls back to `claude-opus-5-5`, then `claude-sonnet-5-5`; the

@@ -14,17 +14,23 @@ the Claude Code repository:
 * exit 1  -> non-blocking error; stderr is shown to the user, the tool proceeds.
 
 The script POSTs ``{hook_token, run_id, session_id, cwd, hook_event_name,
-tool_name, tool_use_id, tool_input}`` to ``KYORA_JUDGE_URL`` (Kyora's
-``POST /api/judge``, loopback only) and maps the verdict:
+tool_name, tool_use_id, tool_input, deadline_ms}`` to ``KYORA_JUDGE_URL``
+(Kyora's ``POST /api/judge``, token-authenticated) and maps the verdict.
+``deadline_ms`` is the budget this hook will wait before failing open, a little
+under its own timeout: a Kimi verdict that arrives after it is recorded as late
+and never governs the call. The verdict maps as:
 
 * ``{"decision": "allow"}`` -> exit 0
 * ``{"decision": "deny", "reason": ...}`` -> reason on stderr, exit 2
 
-Fail-open: when the judge is unreachable, times out, answers with a non-200
-status or an unparsable body, a line is appended to ``KYORA_HOME/logs/hook.log``
-and the tool call is allowed (exit 0). Kyora's engine notices tool calls that
-have no journaled verdict and emits ``judge.unavailable`` so a silent bypass is
-never possible.
+Fail-open: when the judge is unreachable, times out, answers with a 5xx (or any
+other non-200) status or an unparsable body, a line is appended to
+``KYORA_HOME/logs/hook.log`` and the tool call is allowed (exit 0). Kyora's
+engine notices tool calls that have no journaled verdict and emits
+``judge.unavailable`` so a silent bypass is never possible. A 401/403 is the one
+exception: it means the server REJECTED the request (an invalid or unknown hook
+token), not that the judge is down, so the hook fails CLOSED (exit 2) instead of
+letting an unauthenticated call run.
 
 Environment: ``KYORA_JUDGE_URL``, ``KYORA_RUN_ID``, ``KYORA_HOOK_TOKEN``,
 ``KYORA_HOME`` (log location, default ``~/.kyora``), optional
@@ -128,6 +134,12 @@ def main() -> int:
     except ValueError:
         timeout_s = DEFAULT_TIMEOUT_S
 
+    # The budget the judge has to answer before this hook gives up and the tool runs: a little under the
+    # hook's own timeout (small margin for the response trip). A Kimi verdict that arrives after it is
+    # recorded as late by the server, never as the decision that governed a call that already ran.
+    timeout_ms = int(timeout_s * 1000)
+    deadline_ms = max(1, timeout_ms - min(2000, max(0, timeout_ms // 10)))
+
     payload = {
         "hook_token": os.environ.get("KYORA_HOOK_TOKEN", ""),
         "run_id": run_id,
@@ -137,6 +149,7 @@ def main() -> int:
         "tool_name": tool_name,
         "tool_use_id": tool_use_id,
         "tool_input": data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {},
+        "deadline_ms": deadline_ms,
     }
 
     started = time.monotonic()
@@ -148,6 +161,15 @@ def main() -> int:
             detail = exc.read()[:300].decode("utf-8", "replace")
         except Exception:
             pass
+        if exc.code in (401, 403):
+            # The server positively REJECTED this request (an invalid or unknown hook token), which is a
+            # misconfiguration or tampering, not an unreachable judge: fail CLOSED so the call cannot slip
+            # through unjudged. Exit 2 blocks the tool and shows the reason to Claude.
+            _log(f"judge rejected the request HTTP {exc.code}; BLOCKING (fail-closed) {detail}".rstrip(),
+                 run_id, tool_name, tool_use_id)
+            print(f"Kyora judge rejected the hook request (HTTP {exc.code}); blocking "
+                  f"{tool_name or 'this tool call'}", file=sys.stderr)
+            return EXIT_BLOCK
         _log(f"judge answered HTTP {exc.code}; allowing (fail-open) {detail}".rstrip(), run_id, tool_name, tool_use_id)
         return EXIT_ALLOW
     except (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError, OSError) as exc:

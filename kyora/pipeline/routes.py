@@ -1,8 +1,13 @@
 """Pipeline HTTP routes: start/inspect/control runs, browser results, the judge hook endpoint, Tokkio actions.
 
-``POST /api/judge`` is loopback-only: it is called by the Claude Code
-PreToolUse hook running on this machine. Everything else uses the server's
-``local`` access level (loopback, or a valid hub token when the UI is exposed).
+``POST /api/judge`` is authenticated by the per-run hook token, not by the peer
+address: ``JudgeService.handle_request`` verifies the token with a constant-time
+``hmac`` compare and answers 403 otherwise. It is registered ``auth="any"`` so
+the request reaches that check even when Kyora binds a specific LAN IP (``kyora
+hub --host <ip>``): a loopback-only route would otherwise 403 the hook, which
+then failed open and ran every tool call unjudged. Everything else uses the
+server's ``local`` access level (loopback, or a valid hub token when the UI is
+exposed).
 """
 from __future__ import annotations
 
@@ -104,6 +109,8 @@ def register_routes(router: Router, app) -> None:
         return Response.json({"ok": True})
 
     def judge(req: Request, params: dict) -> Response:
+        # Authenticated by the per-run hook token inside handle_request (constant-time hmac), not by the
+        # peer address, so the hook reaches the judge even when Kyora binds a specific LAN IP.
         svc = need("judge")
         try:
             payload = req.json()
@@ -154,7 +161,7 @@ def register_routes(router: Router, app) -> None:
     router.add("POST", "/api/runs/{id}/approve", wrap(control("approve")))
     router.add("POST", "/api/runs/{id}/resume", wrap(control("resume")))
     router.add("POST", "/api/runs/{id}/browser-results", wrap(browser_results))
-    router.add("POST", "/api/judge", wrap(judge), auth="loopback")
+    router.add("POST", "/api/judge", wrap(judge), auth="any")  # token-authenticated inside handle_request
     router.add("POST", "/api/actions", wrap(actions))
 
 
