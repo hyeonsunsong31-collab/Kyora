@@ -11,6 +11,7 @@ import os
 import queue
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -432,6 +433,72 @@ class ServiceTests(unittest.TestCase):
                                              "tool_use_id": "t1"})[0], 200)
         self.assertEqual(svc.handle_request({"hook_token": "nope", "run_id": "r_1", "tool_name": "Write",
                                              "tool_input": {}})[0], 403)
+
+    def test_late_kimi_verdict_does_not_govern_the_call(self):
+        # Regression for protocol-judge-late-verdict-recorded: a Kimi verdict that arrives after the hook
+        # deadline must NOT govern the call that already ran. It is journaled as late only: never counted in
+        # the run stats, its tool_use_id never registered (so has_verdict stays False and the engine counts
+        # the call as unavailable). An in-time verdict still governs, and the direct (no-deadline) path is
+        # unaffected. The cache is still seeded, so an identical later in-time call is judged instantly.
+        class SleepyKimi:
+            model = "moonshotai/kimi-k3"
+
+            def judge(self, ctx, call, run_id):
+                time.sleep(0.06)  # longer than the tiny deadline below, shorter than the governing one
+                return {"decision": "deny", "reason": "would delete user data", "risk": "high"}
+
+        svc = self.service(SleepyKimi())
+        self.register(svc)
+        late = svc.decide("r_1", {"tool_name": "Bash", "tool_use_id": "late1", "session_id": "s1",
+                                  "tool_input": {"command": "python3 cleanup.py --all"}}, deadline_ms=5)
+        self.assertEqual((late["decision"], late["source"]), ("allow", "timeout"))  # non-governing allow
+        self.assertFalse(svc.has_verdict("r_1", "late1"))  # id not registered -> engine counts it unavailable
+        self.assertEqual(svc.stats("r_1"), self.service(None)._empty_stats())  # nothing counted
+        entries = self.journal()
+        self.assertEqual(len(entries), 1)  # the late Kimi verdict is journaled, for audit
+        self.assertEqual((entries[0]["source"], entries[0]["decision"]), ("kimi", "deny"))
+        self.assertTrue(entries[0]["late"])
+        self.assertFalse(entries[0]["governing"])
+        self.assertEqual(entries[0]["deadline_ms"], 5)
+        # an identical call now hits the cache the late verdict seeded (in-time this time): it governs
+        hit = svc.decide("r_1", {"tool_name": "Bash", "tool_use_id": "cached1",
+                                 "tool_input": {"command": "python3 cleanup.py --all"}}, deadline_ms=60000)
+        self.assertEqual((hit["decision"], hit["source"], hit.get("cached_from")), ("deny", "cache", "kimi"))
+        self.assertTrue(svc.has_verdict("r_1", "cached1"))
+        self.assertEqual((svc.stats("r_1")["denied"], svc.stats("r_1")["cached"]), (1, 1))
+        # an in-time Kimi verdict for a different call governs and is counted
+        intime = svc.decide("r_1", {"tool_name": "Bash", "tool_use_id": "ok1",
+                                    "tool_input": {"command": "python3 other.py"}}, deadline_ms=60000)
+        self.assertEqual((intime["decision"], intime["source"]), ("deny", "kimi"))
+        self.assertTrue(svc.has_verdict("r_1", "ok1"))
+        # the direct Messages-API path (no deadline) is never treated as late, even for a slow verdict
+        direct = svc.decide("r_1", {"tool_name": "Bash", "tool_use_id": "api1",
+                                    "tool_input": {"command": "python3 third.py"}})
+        self.assertEqual((direct["decision"], direct["source"]), ("deny", "kimi"))
+        self.assertTrue(svc.has_verdict("r_1", "api1"))
+
+    def test_handle_request_passes_hook_deadline(self):
+        # Regression for protocol-judge-late-verdict-recorded: handle_request forwards a positive deadline_ms
+        # from the hook payload to decide(); a bad/absent/non-positive value means "no deadline".
+        class SleepyKimi:
+            model = "moonshotai/kimi-k3"
+
+            def judge(self, ctx, call, run_id):
+                time.sleep(0.06)
+                return {"decision": "deny", "reason": "nope", "risk": "high"}
+
+        svc = self.service(SleepyKimi())
+        token = self.register(svc)
+        base = {"hook_token": token, "run_id": "r_1", "tool_name": "Bash",
+                "tool_input": {"command": "python3 cleanup.py"}}
+        status, v = svc.handle_request(dict(base, tool_use_id="h1", deadline_ms=5))
+        self.assertEqual((status, v["decision"], v["source"]), (200, "allow", "timeout"))
+        self.assertFalse(svc.has_verdict("r_1", "h1"))
+        for bad in (None, 0, -10, "x", True):  # no finite deadline -> the verdict governs
+            status, v = svc.handle_request(dict(base, tool_use_id="h2", deadline_ms=bad,
+                                                tool_input={"command": "python3 x-%s.py" % bad}))
+            self.assertEqual((status, v["decision"], v["source"]), (200, "deny", "kimi"), repr(bad))
+            self.assertTrue(svc.has_verdict("r_1", "h2"), repr(bad))
 
     # ------------------------------------------------------------------ bookkeeping
     def test_journal_events_stats_and_has_verdict(self):

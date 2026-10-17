@@ -141,8 +141,10 @@ back to Claude; exit 1 = non-blocking error (the tool proceeds).
    Not JSON or not an object -> message on stderr, **exit 1**.
 2. `KYORA_JUDGE_URL` unset/empty -> line in `KYORA_HOME/logs/hook.log`, **exit 0**.
 3. `POST KYORA_JUDGE_URL` (system proxies bypassed) with
-   `{"hook_token","run_id","session_id","cwd","hook_event_name","tool_name","tool_use_id","tool_input"}`;
+   `{"hook_token","run_id","session_id","cwd","hook_event_name","tool_name","tool_use_id","tool_input","deadline_ms"}`;
    timeout `KYORA_HOOK_TIMEOUT_S` (default 280 s, below the settings' 300 s).
+   `deadline_ms` is that timeout minus a small margin (capped at 2 s, else
+   `timeout/10`): the budget the judge has to answer before this hook fails open.
 4. Verdict `{"decision":"deny","reason","source"}` -> stderr
    `Kyora judge (<source>) denied <tool>: <reason>`, **exit 2**.
    Any other decision -> **exit 0**.
@@ -175,6 +177,16 @@ specific LAN IP such as `kyora hub --host <ip>`) calls `handle_request(payload)`
 * unknown run, missing or wrong `hook_token` (constant-time compare of UTF-8 bytes) -> `403`;
 * missing `tool_name` -> `400`;
 * otherwise `200` + verdict `{"decision","reason","risk","source","judge_model","latency_ms"[,"rule"|"cached_from"]}`.
+
+A positive `deadline_ms` bounds the slow Kimi path. A Kimi verdict whose own
+latency exceeds the deadline arrives after the hook already failed open and the
+tool ran, so it never governs the call: it is journaled with `"late":true,
+"governing":false` (and still seeds the cache), its `tool_use_id` is **not**
+registered and it is **not** counted, so `has_verdict` stays false and the engine
+counts the call as `unavailable` like any other unjudged call. The route returns
+`{"decision":"allow","source":"timeout"}` for it. The deterministic rules and the
+cache are instant and never late; the direct Messages-API path sends no deadline
+and waits for the verdict.
 
 `register_context(run_id, ctx)` returns the token; `forget(run_id)` drops
 context, token and cache (stats and verdict ids are kept). The context keys the

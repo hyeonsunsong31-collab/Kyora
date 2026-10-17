@@ -144,8 +144,21 @@ class HookTests(unittest.TestCase):
         self.assertEqual(req["json"], {
             "hook_token": "tok-abc", "run_id": "r_hook", "session_id": "sess-1", "cwd": "/work/game",
             "hook_event_name": "PreToolUse", "tool_name": "Write", "tool_use_id": "toolu_77",
-            "tool_input": {"file_path": "/work/game/forbidden.txt", "content": "NO"}})
+            "tool_input": {"file_path": "/work/game/forbidden.txt", "content": "NO"},
+            "deadline_ms": 278000})  # default 280 s timeout minus a 2 s response margin
         self.assertEqual(self.hook_log(), "")
+
+    def test_deadline_ms_is_sent_a_little_under_the_timeout(self):
+        # Regression for protocol-judge-late-verdict-recorded: the hook tells the judge how long it will wait
+        # (a little under its own timeout), so a verdict that arrives after it is recorded as late, never as
+        # the decision that governed a call that already ran. The margin is capped at 2 s for the long
+        # default and scales down (timeout/10) for a short timeout so a fast judge still governs.
+        for timeout_s, expected in (("280", 278000), ("30", 28000), ("10", 9000), ("1", 900)):
+            with self.subTest(timeout_s=timeout_s):
+                self.stub.requests.clear()
+                rc, _, err = self.run_hook(json.dumps(CALL), KYORA_HOOK_TIMEOUT_S=timeout_s)
+                self.assertEqual(rc, 0, err)
+                self.assertEqual(self.stub.requests[-1]["json"]["deadline_ms"], expected)
 
     def test_deny_exits_2_with_reason_on_stderr(self):
         self.stub.respond({"decision": "deny", "reason": "forbidden.txt is not part of the plan", "source": "kimi"})

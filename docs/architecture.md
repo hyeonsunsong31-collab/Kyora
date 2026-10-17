@@ -115,7 +115,7 @@ browser-results POSTs. On the main listener `GET /preview/...` and `GET /runner/
 
 `kyora/pipeline/routes.py`: `POST /api/projects/{id}/runs` (json: prompt, kind=generate|modify, parent_slide, attachment_ids,
 options{engine_pref, import_zip_attachment}), `GET /api/runs/{id}`, `POST /api/runs/{id}/cancel`, `POST /api/runs/{id}/approve`,
-`POST /api/runs/{id}/resume`, `POST /api/runs/{id}/browser-results`, `POST /api/judge` (auth=loopback),
+`POST /api/runs/{id}/resume`, `POST /api/runs/{id}/browser-results`, `POST /api/judge` (auth=any; the per-run `hook_token` authenticates it, so the hook reaches it even when Kyora binds a LAN IP),
 `POST /api/actions` (auth=local; Tokkio button actions), `GET /api/runs` (recent).
 
 `kyora/hub.py`: `GET /api/code-engine/status`, `POST /api/code-engine/jobs` (multipart: `job` json + `workspace` zip),
@@ -181,8 +181,9 @@ Types and payloads:
 `design.json`: `{gdd_markdown, narrative, dialogue:[{speaker,line}], presenter_intro}`;
 `ui_spec.json`: `{tokens:{color:{},type:{},spacing:{},radius:{}}, screens:[{id,name,purpose,components:[...]}], copy:{}}`.
 
-Judge request (hook -> `POST /api/judge`): `{"hook_token","run_id","session_id","cwd","hook_event_name":"PreToolUse","tool_name","tool_use_id","tool_input":{...}}`
-Verdict: `{"decision":"allow|deny","reason":"...","risk":"low|medium|high","source":"kimi|rule|cache","judge_model":"moonshotai/kimi-k3","latency_ms":2210}`
+Judge request (hook -> `POST /api/judge`): `{"hook_token","run_id","session_id","cwd","hook_event_name":"PreToolUse","tool_name","tool_use_id","tool_input":{...},"deadline_ms":278000}`
+Verdict: `{"decision":"allow|deny","reason":"...","risk":"low|medium|high","source":"kimi|rule|cache|timeout","judge_model":"moonshotai/kimi-k3","latency_ms":2210}`
+(`deadline_ms` = the hook's wait budget, a little under `KYORA_HOOK_TIMEOUT_S`; a Kimi verdict slower than it is journaled `late`, never governs, and the route answers `source:"timeout"` allow.)
 
 Browser test result (iframe -> harness -> `POST /api/runs/{rid}/browser-results`):
 ```json
@@ -212,12 +213,12 @@ Never `--bare`. On stderr `unknown option '--max-turns'|'--append-system-prompt-
 and no `--max-turns` (own turn watchdog). Model problem (`not found|restricted|not available`) before `init` -> retry next model.
 
 settings JSON: `{"hooks":{"PreToolUse":[{"matcher":"Write|Edit|MultiEdit|NotebookEdit|Bash","hooks":[{"type":"command","command":"\"<python>\" \"<KYORA_HOME>/bin/kyora_hook.py\"","timeout":300}]}]},"permissions":{"deny":["WebFetch","WebSearch"]}}`
-env: `KYORA_JUDGE_URL=http://127.0.0.1:<port>/api/judge`, `KYORA_RUN_ID`, `KYORA_HOOK_TOKEN`, `KYORA_HOME`.
+env: `KYORA_JUDGE_URL=http://<server host>:<port>/api/judge` (`127.0.0.1` for a loopback bind, else the bound LAN host so the hook reaches the judge), `KYORA_RUN_ID`, `KYORA_HOOK_TOKEN`, `KYORA_HOME`.
 
 Hook protocol (`kyora/runners/kyora_hook.py`, standalone stdlib): read JSON from stdin (fields `tool_name`, `tool_input`,
-`tool_use_id`, `session_id`, `cwd`, `hook_event_name`); POST to `KYORA_JUDGE_URL` with the token; verdict allow -> exit 0;
+`tool_use_id`, `session_id`, `cwd`, `hook_event_name`); POST to `KYORA_JUDGE_URL` with the token and the `deadline_ms` budget; verdict allow -> exit 0;
 deny -> print reason to stderr, exit 2 (blocks the tool and feeds the reason back to Claude); invalid stdin JSON -> stderr + exit 1;
-judge unreachable/timeout -> log to `KYORA_HOME/logs/hook.log`, exit 0 (fail-open; engine emits judge.unavailable).
+judge unreachable/timeout/5xx -> log to `KYORA_HOME/logs/hook.log`, exit 0 (fail-open; engine emits judge.unavailable); 401/403 (bad token) -> exit 2 (fail-closed).
 
 stream-json (one JSON per line): `{"type":"system","subtype":"init","session_id","model","tools","permissionMode","cwd"}`,
 `{"type":"assistant","message":{"model","content":[{"type":"text|tool_use|thinking",...}],"usage"}}`,

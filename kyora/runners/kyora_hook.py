@@ -14,8 +14,11 @@ the Claude Code repository:
 * exit 1  -> non-blocking error; stderr is shown to the user, the tool proceeds.
 
 The script POSTs ``{hook_token, run_id, session_id, cwd, hook_event_name,
-tool_name, tool_use_id, tool_input}`` to ``KYORA_JUDGE_URL`` (Kyora's
-``POST /api/judge``, loopback only) and maps the verdict:
+tool_name, tool_use_id, tool_input, deadline_ms}`` to ``KYORA_JUDGE_URL``
+(Kyora's ``POST /api/judge``, token-authenticated) and maps the verdict.
+``deadline_ms`` is the budget this hook will wait before failing open, a little
+under its own timeout: a Kimi verdict that arrives after it is recorded as late
+and never governs the call. The verdict maps as:
 
 * ``{"decision": "allow"}`` -> exit 0
 * ``{"decision": "deny", "reason": ...}`` -> reason on stderr, exit 2
@@ -131,6 +134,12 @@ def main() -> int:
     except ValueError:
         timeout_s = DEFAULT_TIMEOUT_S
 
+    # The budget the judge has to answer before this hook gives up and the tool runs: a little under the
+    # hook's own timeout (small margin for the response trip). A Kimi verdict that arrives after it is
+    # recorded as late by the server, never as the decision that governed a call that already ran.
+    timeout_ms = int(timeout_s * 1000)
+    deadline_ms = max(1, timeout_ms - min(2000, max(0, timeout_ms // 10)))
+
     payload = {
         "hook_token": os.environ.get("KYORA_HOOK_TOKEN", ""),
         "run_id": run_id,
@@ -140,6 +149,7 @@ def main() -> int:
         "tool_name": tool_name,
         "tool_use_id": tool_use_id,
         "tool_input": data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {},
+        "deadline_ms": deadline_ms,
     }
 
     started = time.monotonic()

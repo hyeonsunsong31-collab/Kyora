@@ -614,11 +614,24 @@ class JudgeService:
             "cwd": payload.get("cwd"),
             "hook_event_name": payload.get("hook_event_name") or "PreToolUse",
         }
-        return 200, self.decide(run_id, call)
+        # The hook sends the budget (ms) it will wait before failing open, a little under its own timeout.
+        # A Kimi verdict that arrives after it never governed the call, so it is recorded as late only.
+        deadline_ms = payload.get("deadline_ms")
+        if isinstance(deadline_ms, bool) or not isinstance(deadline_ms, (int, float)) or deadline_ms <= 0:
+            deadline_ms = None
+        return 200, self.decide(run_id, call, deadline_ms=deadline_ms)
 
     # ------------------------------------------------------------------ decision
-    def decide(self, run_id: str, call: dict) -> dict:
-        """Judge one tool call. Always returns a verdict dict (fail-open on judge errors)."""
+    def decide(self, run_id: str, call: dict, *, deadline_ms: float | None = None) -> dict:
+        """Judge one tool call. Always returns a verdict dict (fail-open on judge errors).
+
+        ``deadline_ms`` (sent by the hook, a little under its own timeout) bounds how long a Kimi verdict
+        may take before the hook gives up and the tool runs. A Kimi verdict that arrives after it did not
+        govern the call: it is journaled as late (and still seeds the cache) but is never counted and its
+        ``tool_use_id`` is never registered, so :meth:`has_verdict` stays ``False`` and the engine counts
+        the call as unavailable. ``None`` (the direct Messages-API path, which waits synchronously) applies
+        no deadline. The deterministic rules and the cache are instant, so only the Kimi path can be late.
+        """
         started = time.monotonic()
         with self._lock:
             ctx = dict(self._contexts.get(run_id) or {})
@@ -659,8 +672,18 @@ class JudgeService:
                     while len(cache) > CACHE_MAX:
                         cache.popitem(last=False)
 
-        verdict["latency_ms"] = int((time.monotonic() - started) * 1000)
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        verdict["latency_ms"] = elapsed_ms
         verdict.setdefault("judge_model", None)
+        # A Kimi verdict that only came back after the hook's deadline no longer governs the call: the hook
+        # has already failed open and the tool ran. Record it as a late audit entry (the cache was seeded
+        # above) and return a non-governing allow, so the call is counted as unavailable, never as a Kimi
+        # decision for a call that actually ran.
+        if deadline_ms is not None and verdict.get("source") == "kimi" and elapsed_ms >= deadline_ms:
+            self._record_late(run_id, ctx, call, summary, verdict, deadline_ms)
+            return make_verdict("allow", f"Kimi verdict arrived after the {int(deadline_ms)} ms hook deadline "
+                                f"({elapsed_ms} ms); the tool call ran unjudged", "timeout",
+                                risk="unknown", latency_ms=elapsed_ms, judge_model=verdict.get("judge_model"))
         self._record(run_id, ctx, call, summary, verdict)
         return verdict
 
@@ -717,6 +740,30 @@ class JudgeService:
                                       "source": source, "latency_ms": verdict.get("latency_ms"), "tool_name": tool_name,
                                       "tool_use_id": tool_use_id, "risk": verdict.get("risk"), "summary": summary},
                       run_id, ctx.get("project_id"))
+
+    def _record_late(self, run_id: str, ctx: dict, call: dict, summary: str, verdict: dict,
+                     deadline_ms: float) -> None:
+        """Journal a Kimi verdict that arrived after the hook deadline, without letting it govern the call.
+
+        The hook already failed open and the tool ran, so this verdict is NOT counted in the run's stats and
+        its ``tool_use_id`` is NOT registered: :meth:`has_verdict` stays ``False``, and the engine emits
+        ``judge.unavailable`` and counts the call as unavailable, exactly as for any call the hook could not
+        reach. Only the journal keeps the late verdict, for audit.
+        """
+        tool_use_id = str(call.get("tool_use_id") or "")
+        entry = {
+            "ts": now_iso(), "run_id": run_id, "tool_use_id": tool_use_id,
+            "tool_name": str(call.get("tool_name") or ""), "summary": summary,
+            "decision": verdict.get("decision"), "reason": verdict.get("reason"), "risk": verdict.get("risk"),
+            "source": verdict.get("source"), "rule": verdict.get("rule"), "judge_model": verdict.get("judge_model"),
+            "latency_ms": verdict.get("latency_ms"), "session_id": call.get("session_id"),
+            "late": True, "governing": False, "deadline_ms": int(deadline_ms),
+            "tool_input_excerpt": self._excerpt(call.get("tool_input")),
+        }
+        self._append_journal(ctx, entry)
+        log.warning("judge verdict for %s arrived after the %d ms hook deadline (%s ms); recorded late, not "
+                    "governing; the call ran unjudged", tool_use_id or "?", int(deadline_ms),
+                    verdict.get("latency_ms"))
 
     @staticmethod
     def _excerpt(tool_input: Any, limit: int = 1200) -> str:
