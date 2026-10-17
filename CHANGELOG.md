@@ -51,6 +51,37 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   selected, naming the real backend (Claude Code, the Anthropic API engine or Claude Code on the
   Kyora Hub) and the configured effort; it says "maximum effort" only when the effort is `max`, and
   says nothing when the run blocks for lack of an engine.
+- **A failed code-engine call no longer finishes a run.** When BUILD or FIX returns an error (usage
+  limit, HTTP 429, lost Hub contact, expired login) and the engine changed no file of the work tree
+  (content hash before and after the call), the run is `blocked` with the engine error and can be
+  resumed; before, a modify run measured the unchanged parent game and ended `complete` with a new
+  slide. Every failed call is recorded in `run.json` (`extra.engine_failures`, `tree_changed`).
+- **Skipped acceptance tests no longer pass the gate.** A plan acceptance test reported as skipped
+  (`test.skip`, `test.todo`, TAP `# SKIP` / `# TODO`, harness `skip`) and any required check that was
+  skipped or deferred now count as failed with the detail "did not run"; an acceptance id counts as
+  reported only with a pass or fail result.
+- **Node acceptance tests without Node.** Kimi K3's plan input now says whether Node is installed on
+  the device that runs TEST; without Node only browser acceptance tests are accepted (one repair
+  round, then the run blocks), and a plan with Node tests blocks at PLAN or TEST with an explicit
+  reason instead of spending every fix iteration on tests that can never report.
+- **The deck in a slide describes that slide's run.** FINALIZE passes the finalizing run to the deck
+  builder; before, a run queued for the same project (state `created`) was shown as "this build".
+- **An invalid Kimi K3 intake or review answer blocks the run** (resumable, like PLAN and DESIGN)
+  instead of failing it; before, a twice-unparseable review after a long build ended the run
+  `failed`, with no slide and no way to resume.
+- **Kyora Bench measures the bench, at the bench's threshold.** A bench run's gate is now scored on the
+  bench's own test ids (`passed / bench ids`, required checks still required); the tautological
+  `tests_present` checks of the injected test file and the engine's own Node tests no longer count, so
+  a task can no longer pass at "94 %" with 2 of 14 bench tests failing. The gate threshold of a bench
+  run is the task's `pass_rule.min_pass_rate` (never below 0.94) regardless of Settings, `task_passed`
+  also requires the recorded `pass_rate` and `threshold` to reach it, and `results.json` records the
+  threshold per task.
+- **One engine/model means every engine call.** Bench certification reads every entry of the run's
+  `extra.engine_runs` (BUILD and each FIX), so a task served by two models is mixed and blocks
+  certification; results list `served` pairs. Slides and the deck name every model that served a run.
+- **The deck credits only what ran.** An imported-ZIP slide's architecture slide now says "imported ZIP -
+  no code engine ran" (or "not built yet") instead of drawing the Build step as Claude Code, and the
+  tests slide lists the code-engine errors recorded for the run.
 
 ## 0.1.0 - 2026-10-15
 

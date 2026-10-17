@@ -38,7 +38,7 @@ _COLOR_RE = re.compile(r"^(#[0-9a-fA-F]{3,8}|(rgb|rgba|hsl|hsla)\([0-9\s.,%a-z/+
 _ITER_RE = re.compile(r"^iter-(\d+)$")
 _NOT_PENDING = frozenset({"complete", "failed_gate", "failed", "cancelled", "blocked"})
 _BACKEND_LABELS = {"claude_code": "Claude Code", "anthropic_api": "Anthropic API (Claude)", "hub": "Kyora Hub (Claude Code)",
-                   "import": "imported ZIP"}
+                   "import": "imported ZIP - no code engine ran"}
 
 
 def esc(value: Any) -> str:
@@ -49,6 +49,26 @@ def esc(value: Any) -> str:
 def attr(value: Any) -> str:
     """Escape text for a double-quoted HTML attribute."""
     return html.escape("" if value is None else str(value), quote=True)
+
+
+def _served_models(run: "Run | None") -> list[str]:
+    """Every model that served a code-engine call of ``run`` (``extra.engine_runs``), in order of first use."""
+    if run is None:
+        return []
+    calls = (getattr(run, "extra", None) or {}).get("engine_runs") or []
+    models = [c.get("active_model") for c in calls if isinstance(c, dict) and c.get("active_model")]
+    if not models and isinstance(run.engine, dict) and run.engine.get("active_model"):
+        models = [run.engine["active_model"]]
+    return list(dict.fromkeys(str(m) for m in models))
+
+
+def _run_engine(run: "Run | None") -> dict:
+    """The run's engine record with ``active_model`` naming every model that served it."""
+    eng = dict(run.engine) if run is not None and isinstance(run.engine, dict) else {}
+    models = _served_models(run)
+    if len(models) > 1:
+        eng["active_model"] = " + ".join(models)
+    return eng
 
 
 def _pct(rate: Any) -> str | None:
@@ -215,7 +235,7 @@ class DeckBuilder:
                     out.append((int(m.group(1)), d))
         return sorted(out)
 
-    def _collect(self, slide_n: int | None) -> dict:
+    def _collect(self, slide_n: int | None, pending_run: "Run | None" = None) -> dict:
         project = self._refresh()
         slides = sorted((dict(s) for s in project.slides), key=lambda s: int(s.get("number") or 0))
         data: dict[str, Any] = {"project": project, "slide": None, "run": None, "pending": None}
@@ -227,7 +247,8 @@ class DeckBuilder:
             data["run"] = self._run(slide.get("run_id"))
             data["slides"] = [s for s in slides if int(s.get("number") or 0) <= int(slide_n)]
         else:
-            run = self._latest_run()
+            # FINALIZE passes its own run: the newest-created run may be another one still queued
+            run = pending_run if pending_run is not None else self._latest_run()
             data["slides"] = slides
             if run is not None and run.result_slide is None and run.state not in _NOT_PENDING:
                 # FINALIZE writes the deck into the work tree right before the slide is committed
@@ -333,12 +354,13 @@ class DeckBuilder:
                      f"{'passed' if ok else 'below threshold'} · threshold {esc(_threshold_pct(gate.get('threshold')))}</span>")
         else:
             badge = "<span class=\"badge none\">Gate: not measured</span>"
-        engine = (run.engine if run is not None and isinstance(run.engine, dict) else None) or \
+        engine = _run_engine(run) or \
                  ((slide or {}).get("engine") if isinstance((slide or {}).get("engine"), dict) else None) or {}
         eng_line = ""
         if engine.get("backend"):
+            model = engine.get("active_model")
             eng_line = (f"<p class=\"muted\">Code engine: {esc(_BACKEND_LABELS.get(engine.get('backend'), engine.get('backend')))}"
-                        + (f" · model {esc(engine.get('active_model'))}" if engine.get("active_model") else "")
+                        + (f" · {'models' if ' + ' in str(model) else 'model'} {esc(model)}" if model else "")
                         + (" (fallback)" if engine.get("fallback_used") else "") + "</p>")
         return (f"<section id=\"cover\" class=\"slide cover\"><p class=\"eyebrow\">Kyora project deck · {esc(version)}</p>"
                 f"<h1>{esc(p.name)}</h1><p class=\"subtitle\">{esc(title)}</p>{badge}"
@@ -410,11 +432,19 @@ class DeckBuilder:
 
     def _architecture(self, d: dict) -> str:
         run, slide, gate = d["run"], d["slide"], d["gate"]
-        engine = (run.engine if run is not None and isinstance(run.engine, dict) else {}) or \
+        engine = _run_engine(run) or \
                  ((slide or {}).get("engine") if isinstance((slide or {}).get("engine"), dict) else {}) or {}
-        backend = engine.get("backend") if engine.get("backend") not in (None, "import") else "claude_code"
-        engine_label = _BACKEND_LABELS.get(backend, str(backend))
-        model = engine.get("active_model") or engine.get("requested_model") or "model not resolved"
+        backend = engine.get("backend")
+        models = [m for m in str(engine.get("active_model") or "").split(" + ") if m]
+        if backend == "import":  # a slide imported from a ZIP: no code engine built it
+            engine_label, model = "imported ZIP", "no code engine ran"
+        elif not backend:
+            engine_label, model = "not built yet", "no code engine ran"
+        else:
+            engine_label = _BACKEND_LABELS.get(backend, str(backend))
+            engine_label = engine_label if len(engine_label) <= 22 else "Claude Code"
+            model = (models[0] if len(models) == 1 else f"{len(models)} models (below)" if models
+                     else engine.get("requested_model") or "model not resolved")
         threshold = (gate or {}).get("threshold")
         if threshold is None and run is not None and isinstance(run.gate, dict):
             threshold = run.gate.get("threshold")
@@ -422,7 +452,7 @@ class DeckBuilder:
             ("Intake", "Kimi K3", "vision intake"),
             ("Plan", "Kimi K3", "plan + tests"),
             ("Design", "Nemotron-3-Ultra", "GDD + UI spec"),
-            ("Build", engine_label if len(engine_label) <= 22 else "Claude Code", str(model)[:24]),
+            ("Build", engine_label, str(model)[:24]),
             ("Test", "browser + node", "tests"),
             ("Gate", f"gate {_threshold_pct(threshold)}", "measured"),
             ("Finalize", "git slide", "+ deck"),
@@ -449,10 +479,12 @@ class DeckBuilder:
                    f"<text x=\"{(gx + bx + w) / 2:g}\" y=\"{y0 + h + 46}\" class=\"sys2\">below threshold: Kimi K3 review → fix</text>")
         svg.append(f"<text x=\"{bx + w / 2:g}\" y=\"{y0 - 14}\" class=\"sys2\">every tool call judged by Kimi K3</text>")
         svg.append("</svg>")
+        served = (f"<p class=\"muted\">Models that served the code engine for this version: {esc(', '.join(models))}.</p>"
+                  if len(models) > 1 else "")
         return ("<section id=\"architecture\" class=\"slide\"><h2>Architecture</h2>" + "".join(svg) +
                 "<p class=\"muted\">Fixed roles over their own APIs: Kimi K3 plans, judges and reviews; "
                 "NVIDIA Nemotron-3-Ultra writes the design; the code engine implements; tests run in a real "
-                "browser and Node; the gate decides from measured results.</p></section>")
+                "browser and Node; the gate decides from measured results.</p>" + served + "</section>")
 
     def _screenshots(self, d: dict) -> str:
         shots = d["screenshots"]
@@ -478,6 +510,13 @@ class DeckBuilder:
             extra += f"<h4>Required checks failing</h4>{_ul(gate.get('required_failures'))}"
         if gate.get("missing_spec_tests"):
             extra += f"<h4>Acceptance tests missing from the results</h4>{_ul(gate.get('missing_spec_tests'))}"
+        run = d["run"]
+        failures = (getattr(run, "extra", None) or {}).get("engine_failures") if run is not None else None
+        if failures:
+            extra += "<h4>Code engine errors in this run</h4>" + _ul(
+                f"{f.get('kind')} (iteration {f.get('iteration')}, {f.get('backend') or 'engine'}): {f.get('error')} - "
+                + ("it had changed files, which were measured" if f.get("tree_changed") else "no file changed")
+                for f in failures if isinstance(f, dict))
         checks = gate.get("checks") if isinstance(gate.get("checks"), list) else []
         table = ""
         if checks:
@@ -504,7 +543,7 @@ class DeckBuilder:
             run = pending["run"]
             final = run.gate.get("final") if isinstance(run.gate, dict) else None
             items.append(self._change_item(pending["number"], f"{pending['title']} ({pending['label']})", run.created_at,
-                                           final, run.engine, run.parent_slide))
+                                           final, _run_engine(run), run.parent_slide))
         body = ("<ol class=\"changelog\">" + "".join(items) + "</ol>") if items else _missing("No slides yet.")
         return f"<section id=\"changelog\" class=\"slide\"><h2>Changelog</h2>{body}</section>"
 
@@ -527,9 +566,13 @@ class DeckBuilder:
         return f"<section id=\"honesty\" class=\"slide end\"><footer class=\"honesty\"><p>{esc(HONESTY_TEXT)}</p></footer></section>"
 
     # ------------------------------------------------------------------ public
-    def build(self, slide_n: int | None = None) -> str:
-        """Return the deck as one standalone HTML document (no external requests)."""
-        d = self._collect(slide_n)
+    def build(self, slide_n: int | None = None, run: "Run | None" = None) -> str:
+        """Return the deck as one standalone HTML document (no external requests).
+
+        ``run`` is the run being finalized (its slide is not committed yet); without it
+        and without ``slide_n`` the project's newest run or current slide is shown.
+        """
+        d = self._collect(slide_n, run)
         p = d["project"]
         sections = [self._cover(d), self._concept(d), self._design(d), self._architecture(d), self._screenshots(d),
                     self._tests(d), self._changelog(d), self._honesty()]
@@ -543,10 +586,10 @@ class DeckBuilder:
                 + "\n".join(sections) +
                 f"</main><p class=\"hint\">← → switch sections · print for PDF</p><script>{_JS}</script></body></html>\n")
 
-    def write_into_workspace(self, workspace: Path | str, slide_n: int | None = None) -> Path:
-        """Write the deck to ``<workspace>/kyora/deck.html`` and return the path."""
+    def write_into_workspace(self, workspace: Path | str, slide_n: int | None = None, run: "Run | None" = None) -> Path:
+        """Write the deck to ``<workspace>/kyora/deck.html`` and return the path (``run``: see :meth:`build`)."""
         out = Path(workspace) / "kyora" / "deck.html"
-        atomic_write_text(out, self.build(slide_n))
+        atomic_write_text(out, self.build(slide_n, run))
         return out
 
 

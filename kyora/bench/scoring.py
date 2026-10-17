@@ -3,15 +3,22 @@
 Rules (documented in ``docs/bench.md``):
 
 * A task passes iff its pipeline run ended in state ``complete`` **and** the run's
-  final quality gate says ``ok is True``. When the runner could verify how many
-  of the bench's own browser tests appear in the gate results and that number is
-  below the task's ``min_browser_tests``, the task fails as well (the bench tests
-  demonstrably did not run, so the gate did not measure the bench).
+  final quality gate says ``ok is True`` **and** that gate measured
+  ``pass_rate >= rule`` with a ``threshold >= rule``, where ``rule`` is the task's
+  ``pass_rule.min_pass_rate`` and never below 0.94 (so a lowered Settings gate can
+  never pass a bench task). For bench runs the gate scores only the bench's own
+  test ids (``passed bench ids / bench ids``) and still requires every required
+  check. When the runner could verify how many of the bench's own browser tests
+  appear in the gate results and that number is below the task's
+  ``min_browser_tests``, the task fails as well (the bench tests demonstrably did
+  not run, so the gate did not measure the bench).
 * ``pass_rate = passed / run`` over the distinct task ids that ran in this bench
   run (floored to 4 decimals, never rounded up).
 * ``certified`` iff the suite is complete (all ``total_suite`` distinct task ids ran
-  in this one bench run), a single engine/model pair served every task, and
-  ``pass_rate >= threshold`` (0.94). ``reason`` explains every ``False``.
+  in this one bench run), a single engine/model pair served every engine call of
+  every task (``TaskResult.served``, from the run's ``extra.engine_runs``; a task
+  served by two models is mixed), and ``pass_rate >= threshold`` (0.94).
+  ``reason`` explains every ``False``.
 
 Nothing here invents a number: a score is only ever computed from recorded
 results.
@@ -53,6 +60,9 @@ class TaskResult:
     bench_tests_seen: int | None = None
     started_at: str | None = None
     finished_at: str | None = None
+    min_pass_rate: float | None = None
+    threshold: float | None = None
+    served: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """JSON-ready dict of every field."""
@@ -79,13 +89,34 @@ class TaskResult:
 
     def evaluate(self) -> bool:
         """Recompute :attr:`passed` from the recorded state and gate."""
-        self.passed = task_passed(self.state, self.gate, self.bench_tests_seen, self.min_browser_tests)
+        self.passed = task_passed(self.state, self.gate, self.bench_tests_seen, self.min_browser_tests,
+                                  self.min_pass_rate)
         return self.passed
+
+    def pairs(self) -> list[str]:
+        """Every ``engine/model`` pair that served this task (falls back to the last call's model)."""
+        if self.served:
+            return list(dict.fromkeys(str(p) for p in self.served))
+        return [f"{self.engine or '?'}/{self.active_model}"] if self.active_model else []
+
+
+def task_rule(min_pass_rate: Any = None) -> float:
+    """A task's pass rule: its ``pass_rule.min_pass_rate``, never below :data:`THRESHOLD`."""
+    try:
+        rule = float(min_pass_rate) if min_pass_rate is not None else THRESHOLD
+    except (TypeError, ValueError):
+        rule = THRESHOLD
+    return max(THRESHOLD, min(1.0, rule)) if math.isfinite(rule) else THRESHOLD
+
+
+def _num(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
 def task_passed(state: str | None, gate: Mapping | None, bench_tests_seen: int | None = None,
-                min_browser_tests: int | None = None) -> bool:
-    """A task passes iff ``state == 'complete'`` and ``gate.final.ok is True``.
+                min_browser_tests: int | None = None, min_pass_rate: float | None = None) -> bool:
+    """A task passes iff ``state == 'complete'``, ``gate.final.ok is True`` and the gate
+    measured ``pass_rate >= rule`` against a ``threshold >= rule`` (:func:`task_rule`).
 
     When ``bench_tests_seen`` is known (not None) and below ``min_browser_tests``
     the task fails: the gate did not contain the bench's own tests.
@@ -95,6 +126,11 @@ def task_passed(state: str | None, gate: Mapping | None, bench_tests_seen: int |
     tr = TaskResult(task_id="_", state=state or "", gate=dict(gate) if isinstance(gate, Mapping) else None)
     final = tr.final_gate()
     if not final or final.get("ok") is not True:
+        return False
+    rule = task_rule(min_pass_rate)
+    threshold = final.get("threshold", (gate or {}).get("threshold"))
+    pass_rate = final.get("pass_rate")
+    if not _num(threshold) or threshold + 1e-9 < rule or not _num(pass_rate) or pass_rate + 1e-9 < rule:
         return False
     if bench_tests_seen is not None and min_browser_tests is not None and bench_tests_seen < min_browser_tests:
         return False
@@ -148,7 +184,8 @@ def score(results: Iterable[TaskResult | Mapping], total_suite: int = SUITE_SIZE
         by_id[r.task_id] = r
     items = list(by_id.values())
     run = len(items)
-    ok_ids = {r.task_id for r in items if task_passed(r.state, r.gate, r.bench_tests_seen, r.min_browser_tests)}
+    ok_ids = {r.task_id for r in items if task_passed(r.state, r.gate, r.bench_tests_seen, r.min_browser_tests,
+                                                      r.min_pass_rate)}
     passed = len(ok_ids)
     pass_rate = _floor4(passed / run) if run else 0.0
 
@@ -158,12 +195,13 @@ def score(results: Iterable[TaskResult | Mapping], total_suite: int = SUITE_SIZE
     else:
         suite_complete = run >= total_suite
 
-    pairs = sorted({f"{r.engine or '?'}/{r.active_model}" for r in items if r.active_model})
-    passing_without_model = [r.task_id for r in items if r.task_id in ok_ids and not r.active_model]
+    pairs = sorted({p for r in items for p in r.pairs()})
+    mixed = sorted(r.task_id for r in items if len(r.pairs()) > 1)
+    passing_without_model = [r.task_id for r in items if r.task_id in ok_ids and not r.pairs()]
     single_model = len(pairs) == 1 and not passing_without_model
     if len(pairs) == 1:
-        only = next(r for r in items if r.active_model)
-        engine_out, model_out = only.engine or engine, only.active_model
+        engine_out, model_out = pairs[0].split("/", 1)
+        engine_out = engine_out if engine_out != "?" else engine
     else:
         engine_out, model_out = engine, model
 
@@ -175,7 +213,8 @@ def score(results: Iterable[TaskResult | Mapping], total_suite: int = SUITE_SIZE
             reasons.append(f"suite incomplete: {run}/{total_suite} distinct tasks ran in this bench run "
                            f"(all {total_suite} are required)")
         if len(pairs) > 1:
-            reasons.append("more than one engine/model served the tasks: " + ", ".join(pairs))
+            reasons.append("more than one engine/model served the tasks: " + ", ".join(pairs)
+                           + (f" (mixed within {', '.join(mixed)})" if mixed else ""))
         elif not pairs:
             reasons.append("no task recorded the model that served it")
         elif passing_without_model:

@@ -252,6 +252,29 @@ class DeckTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             DeckBuilder(p.id, self.store).build(7)
 
+    def test_imported_slide_is_not_credited_to_a_code_engine(self):
+        p = self.store.create("Imported")
+        sm = self.store.slide_manager(p.id)
+        (sm.work_tree() / "index.html").write_text("<canvas></canvas>", encoding="utf-8")
+        sm.commit_slide(None, "imported", None, {"backend": "import"}, [])
+        html_text = DeckBuilder(p.id, self.store).build()
+        arch = html_text.split('id="architecture"', 1)[1].split("</section>", 1)[0]
+        self.assertIn(">imported ZIP<", arch)
+        self.assertIn(">no code engine ran<", arch)
+        self.assertNotIn(">Claude Code<", arch)
+        self.assertNotIn("model not resolved", arch)
+        self.assertIn("Code engine: imported ZIP - no code engine ran", html_text)
+
+    def test_engine_errors_of_the_run_are_listed(self):
+        p, run, _gate = self._populate()
+        run.extra["engine_failures"] = [{"kind": "fix", "iteration": 1, "backend": "claude_code",
+                                         "error": "error_max_turns", "tree_changed": True}]
+        self.store.save_run(run)
+        tests = DeckBuilder(p.id, self.store).build().split('id="tests"', 1)[1].split("</section>", 1)[0]
+        self.assertIn("Code engine errors in this run", tests)
+        self.assertIn("fix (iteration 1, claude_code): error_max_turns - it had changed files, which were measured",
+                      tests)
+
     def test_empty_project_deck_is_honest(self):
         p = self.store.create("Nothing yet")
         html_text = DeckBuilder(p, self.store).build()
