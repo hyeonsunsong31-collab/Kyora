@@ -104,7 +104,8 @@ _GIT = r"^git\s+(?:-C\s+\S+\s+)?"
 #   - no leading variable assignment (``FOO=bar cmd`` / a bare ``NAME=value``): deferred to Kimi, because an
 #     assignment can set GIT_*, LD_*, PATH, IFS, BASH_ENV, PYTHON*, NODE_OPTIONS, ... and steer the tool;
 #   - ``sort`` without ``-o``/``--output``/``--compress-program`` (the last spawns a program);
-#   - ``rg`` without ``--pre``/``--pre-glob``/``--hostname-bin`` (preprocessor / hostname program);
+#   - ``rg`` without ``--pre``/``--pre-glob``/``--hostname-bin`` (preprocessor / hostname program) or
+#     ``-z``/``--search-zip`` (also inside a short-flag cluster like ``-nz``; spawns external decompressors);
 #   - ``node``/``python`` only in their syntax-check and ``--version`` shapes, with no ``-e``/``--require``/
 #     ``-r``/``--import`` or any other flag that loads and runs code;
 #   - ``git`` read subcommands without ``--output``/``--ext-diff``/``--textconv`` (external diff / textconv
@@ -123,7 +124,8 @@ _READ_ONLY_CMD_RES: tuple[re.Pattern, ...] = (
     re.compile(r"^(?:uniq|xxd)(?:\s+-\S+)*(?:\s+[^\s-]\S*)?(?:\s+-\S+)*\s*$"),  # a 2nd operand is an output file
     re.compile(r"^tree(?!.*\s-o(?:\s|$))(?:\s|$)"),  # tree -o FILE writes
     re.compile(r"^(?:grep|egrep|fgrep)(?:\s|$)"),
-    re.compile(r"^rg(?!.*(?:--pre(?:=|\s|-glob)|--hostname-bin))(?:\s|$)"),  # --pre / --hostname-bin run a program
+    # --pre / --hostname-bin run a program; -z / --search-zip (also inside -nz) spawns decompressors
+    re.compile(r"^rg(?!.*(?:--pre(?:=|\s|-glob)|--hostname-bin|\s-(?:-search-zip|[A-Za-z]*z)))(?:\s|$)"),
     re.compile(r"^find(?:\s|$)(?!.*(?:-delete|-exec|-execdir|-ok|-okdir|-fprint|-fprintf|-fls))"),
     re.compile(r"^node\s+(?:--check|-c)(?:\s+[^\s-]\S*)+\s*$"),  # only a syntax check of files; no -e/--require
     re.compile(r"^node\s+(?:--version|-v)\s*$"),

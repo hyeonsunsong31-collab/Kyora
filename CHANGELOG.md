@@ -32,6 +32,8 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   `export GIT_CONFIG_COUNT=1; export GIT_CONFIG_KEY_0=core.fsmonitor; export GIT_CONFIG_VALUE_0=...; git status`
   was approved as "read-only" while git ran the injected program outside the workspace. Genuinely
   read-only commands stay on the instant path.
+- `rg -z`/`--search-zip` (also inside a short-flag cluster such as `-nz`) is no longer classed
+  read-only: it spawns external decompressors, so it now defers to Kimi like `rg --pre`.
 - **The judge hook reaches the judge over a LAN bind.** `POST /api/judge` is authenticated by the
   per-run hook token (constant-time compare) instead of requiring a loopback peer, so running
   `kyora serve`/`hub --host <lan-ip>` no longer makes each judged call get a 403 at the route and run unjudged;
