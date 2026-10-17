@@ -1,7 +1,9 @@
 /* Pure SVG renderer for the Kyora pipeline chart.
    renderPipelineChart(stages, opts) -> SVG markup string.
    stages: { intake:{status,pct,message,ms}, plan:{...}, ... }
-   status: idle|running|done|failed|blocked|skipped. No DOM access; safe to unit test. */
+   status: idle|running|done|failed|blocked|skipped. No DOM access; safe to unit test.
+   opts: {width, threshold (0..1, the run's recorded gate threshold), backend (engine backend of the run)};
+   the Gate and Build/Fix labels come from these, never from a fixed value. */
 (function () {
   'use strict';
   const K = (window.Kyora = window.Kyora || {});
@@ -10,15 +12,43 @@
     { id: 'intake', label: 'Intake', who: 'Kimi K3' },
     { id: 'plan', label: 'Plan', who: 'Kimi K3' },
     { id: 'design', label: 'Design', who: 'Nemotron' },
-    { id: 'build', label: 'Build', who: 'Claude Code' },
+    { id: 'build', label: 'Build', who: 'code engine' },
     { id: 'test', label: 'Test', who: 'browser + node' },
-    { id: 'gate', label: 'Gate', who: '>= 94 %' },
+    { id: 'gate', label: 'Gate', who: 'measured gate' },
     { id: 'finalize', label: 'Finalize', who: 'slide + deck' }
   ];
   const LOOP = [
     { id: 'review', label: 'Review', who: 'Kimi K3' },
-    { id: 'fix', label: 'Fix', who: 'Claude Code' }
+    { id: 'fix', label: 'Fix', who: 'code engine' }
   ];
+
+  /* Display name of a code-engine backend as recorded by the run (engine.session / run.engine). */
+  const ENGINE_LABELS = {
+    claude_code: 'Claude Code', anthropic_api: 'Anthropic API', hub: 'Kyora Hub',
+    'hub:claude_code': 'Claude Code (Hub)', 'hub:anthropic_api': 'Anthropic API (Hub)'
+  };
+  function engineLabel(backend) {
+    if (!backend) return '';
+    return ENGINE_LABELS[backend] || String(backend);
+  }
+
+  /* 0.94 -> "94", 0.825 -> "82.5"; null when the threshold is unknown. */
+  function thresholdPct(threshold) {
+    if (typeof threshold !== 'number' || isNaN(threshold)) return null;
+    return String(Math.round(Math.max(0, Math.min(1, threshold)) * 1000) / 10);
+  }
+
+  /* Stage definitions labelled from the run: gate threshold and code-engine backend. */
+  function stageDefs(opts) {
+    const pct = thresholdPct(opts.threshold);
+    const eng = engineLabel(opts.backend);
+    const label = (def) => {
+      if (def.id === 'gate' && pct != null) return Object.assign({}, def, { who: '>= ' + pct + ' %' });
+      if ((def.id === 'build' || def.id === 'fix') && eng) return Object.assign({}, def, { who: eng });
+      return def;
+    };
+    return { main: MAIN.map(label), loop: LOOP.map(label), loopLabel: pct != null ? 'below ' + pct + ' %' : 'below threshold' };
+  }
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -63,7 +93,8 @@
     return '<defs><marker id="pc-arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path class="pc-arrow" d="M0,0 L8,4 L0,8 z"/></marker></defs>';
   }
 
-  function horizontal(stages, width) {
+  function horizontal(stages, width, defs) {
+    const MAIN = defs.main, LOOP = defs.loop;
     const n = MAIN.length;
     const gap = 18;
     const padX = 8;
@@ -91,7 +122,7 @@
     out += '<path class="pc-edge loop" marker-end="url(#pc-arrowhead)" d="M' + (xs[gateI] + nodeW / 2) + ' ' + (topY + nodeH) + ' V' + (midY) + ' H' + (reviewX + loopW + 2) + '"/>';
     out += '<path class="pc-edge loop" marker-end="url(#pc-arrowhead)" d="M' + reviewX + ' ' + midY + ' H' + (fixX + loopW + 2) + '"/>';
     out += '<path class="pc-edge loop" marker-end="url(#pc-arrowhead)" d="M' + fixX + ' ' + midY + ' H' + (xs[testI] + nodeW / 2) + ' V' + (topY + nodeH + 2) + '"/>';
-    out += '<text class="pc-loop-label" x="' + (xs[gateI] + nodeW / 2 + 6) + '" y="' + (topY + nodeH + 30) + '">below 94 %</text>';
+    out += '<text class="pc-loop-label" x="' + (xs[gateI] + nodeW / 2 + 6) + '" y="' + (topY + nodeH + 30) + '">' + esc(defs.loopLabel) + '</text>';
     MAIN.forEach((def, i) => { out += node(xs[i], topY, nodeW, nodeH, def, norm(stages[def.id]), nodeW < 96); });
     out += node(reviewX, loopY, loopW, nodeH, LOOP[0], norm(stages.review), loopW < 96);
     out += node(fixX, loopY, loopW, nodeH, LOOP[1], norm(stages.fix), loopW < 96);
@@ -99,7 +130,8 @@
     return out;
   }
 
-  function vertical(stages, width) {
+  function vertical(stages, width, defs) {
+    const MAIN = defs.main, LOOP = defs.loop;
     const padX = 6;
     const nodeW = width - padX * 2 - 70; // room for the loop on the right
     const nodeH = 46;
@@ -135,8 +167,9 @@
     stages = stages || {};
     opts = opts || {};
     const width = Math.max(280, Math.floor(opts.width || 720));
-    if (width < 640) return vertical(stages, width);
-    return horizontal(stages, width);
+    const defs = stageDefs(opts);
+    if (width < 640) return vertical(stages, width, defs);
+    return horizontal(stages, width, defs);
   }
 
   /* Gauge: semicircular arc, value 0..1, threshold marker. */
@@ -166,5 +199,7 @@
   K.renderPipelineChart = renderPipelineChart;
   K.renderGauge = renderGauge;
   K.PIPELINE_STAGES = MAIN.concat(LOOP).map((d) => d.id);
+  K.engineLabel = engineLabel;
+  K.thresholdPct = thresholdPct;
   K.fmtMs = fmtMs;
 })();

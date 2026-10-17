@@ -1,7 +1,8 @@
 # Claude Code engine, judge hook and judge
 
-How Kyora drives the Claude Code CLI as its code engine, how every tool call is
-judged, and what the real-CLI smoke test observed. Code:
+How Kyora drives the Claude Code CLI as its code engine, how its Write, Edit,
+MultiEdit, NotebookEdit and Bash calls are judged (local rules, a per-run cache, then
+Kimi K3; Read, Glob and Grep are not judged), and what the real-CLI smoke test observed. Code:
 `kyora/models/claude_code.py` (`ClaudeCodeEngine`), `kyora/runners/kyora_hook.py`
 (PreToolUse hook), `kyora/pipeline/judge.py` (`JudgeService`). Tests:
 `tests/test_claude_code_parser.py`, `tests/test_hook.py`, `tests/test_judge.py`,
@@ -302,7 +303,9 @@ Kill = `SIGTERM` to the process group (POSIX) / `taskkill /T /F` (Windows),
   result's `modelUsage`; a model named in `init` that was refused is not active.
   `fallback_used` = `active_model` is not the requested model.
 * `duration_ms` from the result line, else measured wall time; `cost_usd` =
-  `total_cost_usd` as reported by the CLI; `permission_denials` from the result.
+  `total_cost_usd` as reported by the CLI (computed at API list prices, `costBasis: list`: an
+  API-equivalent estimate, not a charge; a subscription login is not billed per run, so the UI shows
+  it as "API-equiv. est." with that explanation); `permission_denials` from the result.
 * `raw`: `rc, attempts, retries, compat, run_dir, stream, stderr, tool_uses,
   malformed_lines, model_usage, duration_api_ms, stderr_tail, api_error, rate_limits`.
 

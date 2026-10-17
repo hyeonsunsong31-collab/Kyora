@@ -14,7 +14,7 @@ with real tools, real builds and real tests:
 | Role | System | How Kyora reaches it |
 |---|---|---|
 | Text and design director: game design document, narrative, dialogue, UI/UX spec with design tokens and copy, presenter narration | NVIDIA Nemotron-3-Ultra (`nvidia/nemotron-3-ultra-550b-a55b`) | `https://integrate.api.nvidia.com/v1`, OpenAI-compatible chat completions |
-| Planner and judge: intake of your prompt and attachments (with vision), plan with task graph and acceptance tests, instant judgement of every Write/Edit/Bash the code engine attempts, review of failed gates | Moonshot Kimi K3 (`moonshotai/kimi-k3`, `reasoning_effort` max) | same NVIDIA endpoint |
+| Planner and judge: intake of your prompt and attachments (with vision), plan with task graph and acceptance tests, judgement of the Write/Edit/Bash calls the code engine attempts that local rules do not settle (rules allow standard game paths and read-only commands; Read, Glob and Grep are not judged), review of failed gates | Moonshot Kimi K3 (`moonshotai/kimi-k3`, `reasoning_effort` max) | same NVIDIA endpoint |
 | Code engine: implements, debugs, tests and builds the game | Claude Code CLI at `--effort max` | `claude -p ... --effort max --model claude-fable-5-1 --fallback-model claude-opus-5-5,claude-sonnet-5-5`, logged in with your Claude subscription |
 | Presenter: the avatar narrates the run and shows previews | NVIDIA Tokkio 5.0.0-ga + Kyora overlay | a cluster you deploy; Kyora streams events to it |
 

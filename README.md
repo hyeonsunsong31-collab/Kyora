@@ -3,7 +3,9 @@
 Kyora is an **orchestration application** for making browser games with AI. It calls four external
 systems over their own APIs, each in a fixed role: **NVIDIA Nemotron-3-Ultra** writes the design
 (game design document, narrative, UI spec, copy, narration), **Moonshot Kimi K3** plans the work,
-judges every action of the code engine in real time and reviews failed results, **Claude Code** (CLI,
+judges the code engine's file writes and shell commands that Kyora's local rules do not settle (rules
+allow standard game paths and read-only commands; reads are not judged) and reviews failed results,
+**Claude Code** (CLI,
 `--effort max`, your Claude subscription) writes, tests and fixes the game, and **NVIDIA Tokkio**
 (optional, on your own GPU cluster) presents the run as a talking avatar. Kyora runs the real tests
 in a real browser and only calls a project finished when at least **94 % of that project's measured
@@ -137,8 +139,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\kyora.ps1 hub
 The Hub binds `0.0.0.0`, creates a hub token and prints the LAN URL, a pairing link and a QR code.
 Start Kyora on the phone, scan the QR code (or open the link) and the phone saves the Hub URL and
 token. The phone then runs intake, plan, design, tests, gate, review, slides and deck itself and
-sends only BUILD and FIX to the Hub (`/api/code-engine/*`, bearer token). The Hub judges every tool
-call with its own Kimi K3 settings. The token grants use of your Claude Code and NVIDIA quota: share
+sends only BUILD and FIX to the Hub (`/api/code-engine/*`, bearer token). The Hub judges the engine's
+Write/Edit/Bash calls itself (local rules, then its own Kimi K3 settings). The token grants use of your Claude Code and NVIDIA quota: share
 it only with your own devices. Details: [`docs/hub-mode.md`](docs/hub-mode.md).
 
 ## Tokkio presenter
@@ -244,9 +246,13 @@ decides who counts as "the same machine" carefully.
   UI shows the model that **actually** served each run (`engine.model_resolved`), never the requested
   one as if it had served. Details: [`docs/claude-code-engine.md`](docs/claude-code-engine.md).
 * **Kimi K3** (`moonshotai/kimi-k3`): temperature 1.0, top_p 1.0, `reasoning_effort` max for
-  planning, judging and reviewing. Judging every tool call at max effort is slow (seconds per call);
-  lower `kimi.judge_reasoning_effort` to `high` or `low` for faster builds. Local rules and a verdict
-  cache answer obvious cases instantly.
+  planning, judging and reviewing. Only Write, Edit, MultiEdit, NotebookEdit and Bash calls pass
+  through the judge (Read, Glob and Grep are not judged). Local rules answer the obvious ones
+  instantly (planned files, standard game paths such as `index.html`, `src/`, `assets/`, `tests/`,
+  read-only commands; path escapes and destructive commands are denied), a per-run cache repeats
+  earlier Kimi verdicts, and Kimi K3 decides the rest. A Kimi verdict at max effort takes seconds;
+  lower `kimi.judge_reasoning_effort` to `high` or `low` for faster builds. The Pipeline view's
+  Judge card counts how many verdicts came from rules, the cache and Kimi K3.
 * **Nemotron-3-Ultra** (`nvidia/nemotron-3-ultra-550b-a55b`): thinking on (temperature 1.0, top_p
   0.95) for design and UI spec, off (temperature 0.2) for narration. Reference and published scores:
   [`docs/nemotron-reference.md`](docs/nemotron-reference.md).

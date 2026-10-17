@@ -140,7 +140,8 @@ own container is at least 640 px wide, so it adapts to the column, not the windo
   harness and renders its posted results (per test, syntax checks, screenshots).
 - **Slides**: the version strip with lineage connectors (branches on their own row), gate
   badge per slide, Preview / Stack change or Branch from here / ZIP / Deck, ZIP import.
-- **Presenter**: the deployed Tokkio UI in a frame, or an explanation of what Tokkio needs;
+- **Presenter**: the deployed Tokkio UI in a frame (only when its URL answered 2xx/3xx), or
+  "Tokkio not deployed" with the reason (no answer, or the HTTP error status) and what Tokkio needs;
   below, the views and narration the overlay sends to the avatar.
 - **Check**: the self-check table, platform facts, LAN addresses with QR codes, hub link.
 - **Bench**: task selection, cost/time confirmation, progress, results, and the score.
@@ -162,6 +163,14 @@ These are deliberate, visible design rules rather than copy choices:
   Self-check measured them.
 - **Resolved model, not requested model.** The Claude tile and run chips show the model the
   engine actually used, and flag "fallback from ..." when it differs.
+- **Estimates say so.** The code-engine tile shows Claude Code's `total_cost_usd` as
+  "API-equiv. est." (`~$`), explained as the CLI's list-price estimate, never as a measured cost.
+- **Labels from the run, not from constants.** The stage chart's Gate node and fix-loop label, the
+  gauge and the gate texts use the threshold the run recorded (`run.gate.threshold`, the gate
+  result's `threshold`); Build/Fix and the code-engine tile name the run's backend (`engine.session`,
+  `run.engine.backend`) and its recorded effort (`run.engine.effort`, the BUILD/FIX
+  `stage.progress{backend, effort}`). Texts about the next run (prompt help, Honesty card) show the
+  configured Settings values. No label says "94 %", "effort max" or "Claude Code" unless the run did.
 - **No badge without a measurement.** A slide shows a green gate badge only when its gate
   passed at or above the threshold; otherwise "below 94%" with the measured rate, or "no gate"
   for imports. The Bench certified badge and the large pass-rate number appear only when the

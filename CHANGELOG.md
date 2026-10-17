@@ -145,6 +145,27 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   answers absolute URLs under the host the caller used (previews and the harness on the preview listener,
   the ZIP on the main one), the overlay rewrites a loopback host to its `events_url` host, and a pressed
   button adds `<label>: <url>` to the view.
+- **Honest judge wording.** The Judge card, the capability chip, README, docs, the deck's
+  architecture slide and the engine's system prompt no longer say that Kimi K3 judges each tool call.
+  They now say what happens: Write, Edit, MultiEdit, NotebookEdit and Bash pass through the judge,
+  local rules allow planned files, standard game paths and read-only commands (and deny escapes and
+  destructive commands), a per-run cache repeats Kimi verdicts, Kimi K3 decides the rest, and Read,
+  Glob and Grep are not judged. The Judge card also counts verdicts by rule, cache and Kimi K3.
+- **Gate, engine and effort labels come from the run.** The stage chart's Gate node and fix-loop
+  label use the run's recorded threshold (they always said 94 %), Build/Fix and the code-engine tile
+  name the run's backend (Claude Code, Anthropic API, via the Hub) and recorded effort (the tile
+  always said "effort max"), and the prompt help and Honesty card show the configured effort and
+  gate from Settings. The engine call records its effort in `run.json` (`engine.effort`) and announces
+  `backend`/`effort` in its first `stage.progress`. A bench run records the bench threshold from the
+  start, and the gate narration and Tokkio slide view name the gate the run applied, not Settings.
+- **Claude Code's cost is labelled as an estimate.** The code-engine tile showed the CLI's
+  `total_cost_usd` as "cost", as if Kyora had measured a charge. It is computed by the CLI at API list
+  prices and a subscription login is not billed per run, so the tile now shows it as
+  "API-equiv. est." (`~$`) with that explanation.
+- **An HTTP error from the Tokkio URL is not a deployment.** The Presenter framed the Tokkio URL and
+  said "Served by your Tokkio deployment" whenever the URL answered at all, including `502` from an
+  ingress with no running pods or `404` from another service. It now shows the Tokkio UI only for a
+  2xx/3xx answer (`ui.ok`) and otherwise says "Tokkio not deployed" with the HTTP status.
 
 ## 0.1.0 - 2026-10-15
 
@@ -157,8 +178,8 @@ First release.
   and SSE replay, stdlib HTTP server, CLI `kyora serve | hub | selfcheck | bench | version`.
 - **Model roles over their own APIs**: NVIDIA Nemotron-3-Ultra (`nvidia/nemotron-3-ultra-550b-a55b`)
   for design document, narrative, UI spec, copy and narration; Moonshot Kimi K3 (`moonshotai/kimi-k3`,
-  `reasoning_effort` max) for intake with vision, plan and acceptance tests, instant judgement of every
-  code-engine tool call and review; both through `https://integrate.api.nvidia.com/v1` with measured
+  `reasoning_effort` max) for intake with vision, plan and acceptance tests, judgement of the code
+  engine's Write/Edit/Bash calls that local rules do not settle, and review; both through `https://integrate.api.nvidia.com/v1` with measured
   time to first token, latency, token counts and tokens/s.
 - **Code engine**: Claude Code CLI at `--effort max` with the user's subscription login, model
   fallback chain (`claude-fable-5-1` -> `claude-opus-5-5` -> `claude-sonnet-5-5`) with the served model

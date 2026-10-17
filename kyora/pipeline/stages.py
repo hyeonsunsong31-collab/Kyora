@@ -261,12 +261,14 @@ def run_engine(ctx: StageContext, kind: str, prompt: str) -> EngineResult:
                        "iteration": ctx.run.iteration, "run_dir": str(ctx.run_dir), "project_id": ctx.project_id,
                        "test_spec": [t["id"] for t in plan_tests(plan)], "plan_title": plan.get("title")},
     )
-    ctx.publish(ev.STAGE_PROGRESS, {"stage": kind, "pct": 1, "message": f"{eng.name}: starting ({cc.model}, effort {cc.effort})"})
+    ctx.publish(ev.STAGE_PROGRESS, {"stage": kind, "pct": 1, "message": f"{eng.name}: starting ({cc.model}, effort {cc.effort})",
+                                    "backend": eng.name, "effort": job.effort})
     base = tree_fingerprint(ctx.workspace)
     result = eng.run(job, BusSink(ctx.bus, ctx.run_id, ctx.project_id), ctx.cancel)
     changed = tree_fingerprint(ctx.workspace) != base
     info = result.to_dict()
     info["backend_name"] = eng.name
+    info["effort"] = job.effort  # recorded so the UI labels the run's real effort, not today's Settings
     info["tree_changed"] = changed
     ctx.last_engine = info
     ctx.run.engine = info

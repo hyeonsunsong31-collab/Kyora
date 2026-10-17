@@ -13,7 +13,7 @@ An orchestration application. Four external systems in fixed roles over their ow
 | Role | System | Access |
 |---|---|---|
 | Text/design director: GDD prose, narrative, dialogue, UI/UX spec + design tokens + copy, presenter narration | NVIDIA Nemotron-3-Ultra | `https://integrate.api.nvidia.com/v1`, model `nvidia/nemotron-3-ultra-550b-a55b`, OpenAI-compatible chat completions |
-| Planner + judge: intake (vision), plan + task graph + acceptance tests, instant judgement of each code-engine tool call, final review | Moonshot Kimi-K3 | same endpoint, model `moonshotai/kimi-k3` |
+| Planner + judge: intake (vision), plan + task graph + acceptance tests, judgement of the code engine's Write/Edit/Bash calls that local rules do not settle, final review | Moonshot Kimi-K3 | same endpoint, model `moonshotai/kimi-k3` |
 | Code engine: implement, debug, test, build | Claude Code CLI at `--effort max` (subscription login) ; optional Messages-API engine ; remote Kyora Hub | subprocess / official `anthropic` SDK / HTTP |
 | Presenter + custom-view output channel | NVIDIA Tokkio 5.0.0-ga (vendored, unmodified) + Kyora overlay processor | deployed by the user on an NVIDIA-GPU Kubernetes cluster |
 
@@ -135,7 +135,7 @@ options{engine_pref, import_zip_attachment}), `GET /api/runs/{id}`, `POST /api/r
 
 Types and payloads:
 - `run.created|run.state{state,iteration}|run.blocked{reason}|run.completed{slide}|run.failed{error}|run.cancelled|run.awaiting_approval`
-- `stage.started{stage}`, `stage.progress{stage,pct,message}`, `stage.finished{stage,ok,ms}`
+- `stage.started{stage}`, `stage.progress{stage,pct,message}` (BUILD/FIX start also carries `backend`, `effort`), `stage.finished{stage,ok,ms}`
 - `model.request{role,model}`, `model.delta{role,model,content?,reasoning?}` (not persisted), `model.metrics{role,model,ttft_ms,total_ms,prompt_tokens,completion_tokens,tps,tokens_source}`, `model.done{role,model}`, `model.error{role,model,error,status}`
 - `engine.session{session_id,model,tools,permission_mode,cwd,backend}`, `engine.model_resolved{requested,active,fallback_used}`, `engine.text{text}`, `engine.thinking{text}`, `engine.tool_use{id,name,summary}`, `engine.tool_result{tool_use_id,is_error,excerpt}`, `engine.result{subtype,is_error,num_turns,duration_ms,cost_usd,result}`, `engine.error{error}`, `engine.compat_retry{reason,argv_change}`, `engine.stderr{line}`
 - `judge.request{tool_name,summary}`, `judge.verdict{decision,reason,source,latency_ms,tool_name}`, `judge.unavailable{reason}`
@@ -163,9 +163,9 @@ Types and payloads:
  "iteration":1,"stages":{"intake":{"status":"done|running|failed|skipped","started":"...","finished":"...","metrics":{}}},
  "artifacts":{"intake":"intake.json","plan":"plan.json","design":"design.json","ui_spec":"ui_spec.json"},
  "engine":{"backend":"claude_code","requested_model":"claude-fable-5-1","active_model":"...","fallback_used":false,"session_id":"...",
-           "num_turns":31,"duration_ms":812000,"cost_usd":null,"permission_denials":0},
+           "num_turns":31,"duration_ms":812000,"cost_usd":null,"permission_denials":0,"effort":"max"},
  "iterations":[{"n":0,"kind":"build","commit":"...","gate":{"passed":41,"total":46,"pass_rate":0.891,"ok":false}}],
- "gate":{"threshold":0.94,"final":null},"judge":{"allowed":57,"denied":3,"unavailable":0},
+ "gate":{"threshold":0.94,"final":null},"judge":{"allowed":57,"denied":3,"unavailable":0,"cached":4,"rule":49,"kimi":7},
  "result_slide":null,"error":null,"blocked_reason":null,"created_at":"...","finished_at":null}
 ```
 `plan.json` (Kimi output, validated by `kimi.plan`)
