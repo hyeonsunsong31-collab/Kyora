@@ -133,6 +133,11 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   (`measured.effort_best_effort`), Kimi's `model.request`/`model.metrics`/`model.done`/`model.error`
   events (new `effort_sent`, plus `effort_best_effort` and `effort_note` in that mode), the Settings
   help, README and docs/honesty.md say so; none claims the level was applied.
+- Live Judge card: a call the engine found unjudged (the hook never reached the judge) was counted
+  only as unavailable in the UI, while the server counts it allowed + unavailable. The engines'
+  (Claude Code, Messages API, relayed unchanged by the Hub) per-call `judge.unavailable` events now
+  carry `ran_unjudged: true`, and the card counts those as allowed too; the judge's own
+  `judge.unavailable` + `judge.verdict` (source `unavailable`) pair is still counted once.
 - Windows npm install (`claude.cmd`): the prompt went into argv, where `cmd.exe` cut it at the first
   line break and dropped every later flag (stream-json, `--tools`, `--settings` with the judge hook).
   A `.cmd`/`.bat` shim now always gets the prompt on stdin and the system prompt only as a file, and

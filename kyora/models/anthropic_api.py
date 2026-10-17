@@ -484,8 +484,9 @@ class AnthropicAPIEngine(CodeEngine):
                                                   "tool_use_id": tool_use_id, "cwd": _posix(workspace)})
         except Exception as exc:  # noqa: BLE001 - fail open like the hook, and say so
             log.exception("judge.decide failed for %s", tool_name)
+            # ran_unjudged: counted allowed + unavailable (record_unavailable below), and so in the UI
             self._emit(sink, JUDGE_UNAVAILABLE, {"reason": f"judge error: {type(exc).__name__}: {exc}; tool call ran unjudged",
-                                                 "tool_name": tool_name, "tool_use_id": tool_use_id})
+                                                 "tool_name": tool_name, "tool_use_id": tool_use_id, "ran_unjudged": True})
             try:
                 self.judge.record_unavailable(job.run_id)  # the call ran unjudged; count it on the run
             except Exception as exc2:  # noqa: BLE001

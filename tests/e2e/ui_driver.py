@@ -79,6 +79,21 @@ def scripted_events(run_id: str) -> list[tuple[str, dict]]:
     add("judge.verdict", {"decision": "deny", "reason": "network install is not allowed", "source": "rule",
                           "latency_ms": 3, "tool_name": "Bash"})
     add("engine.tool_result", {"tool_use_id": "tu_2", "is_error": True, "excerpt": "blocked by judge"})
+    # the judge's own unavailable path: judge.unavailable, then a judge.verdict (source "unavailable") that
+    # carries the allow - counted allowed once + unavailable once
+    add("engine.tool_use", {"id": "tu_3", "name": "Edit", "summary": "src/game.js"})
+    add("judge.unavailable", {"reason": "Kimi judge failed: NIMUnreachable: timed out", "tool_name": "Edit",
+                              "tool_use_id": "tu_3"})
+    add("judge.verdict", {"decision": "allow", "reason": "Kimi judge failed; tool call allowed unjudged",
+                          "source": "unavailable", "tool_name": "Edit", "tool_use_id": "tu_3"})
+    add("engine.tool_result", {"tool_use_id": "tu_3", "is_error": False, "excerpt": "File edited"})
+    # an engine-detected unjudged call (the hook never reached the judge): no judge.verdict, ran_unjudged set,
+    # counted allowed + unavailable exactly like JudgeService.record_unavailable on the server
+    add("engine.tool_use", {"id": "tu_4", "name": "Write", "summary": "src/levels.js"})
+    add("engine.tool_result", {"tool_use_id": "tu_4", "is_error": False, "excerpt": "File created"})
+    add("judge.unavailable", {"reason": "no judge verdict recorded for Write (tu_4): the hook could not reach the "
+                              "judge, the call ran unjudged", "tool_name": "Write", "tool_use_id": "tu_4",
+                              "ran_unjudged": True})
     add("stage.progress", {"stage": "build", "pct": 80, "message": "writing tests"})
     # cost_usd is the CLI's list-price total_cost_usd (an estimate; the UI must label it so)
     add("engine.result", {"subtype": "success", "is_error": False, "num_turns": 31, "duration_ms": 812000,
