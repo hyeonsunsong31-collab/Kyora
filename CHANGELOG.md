@@ -172,6 +172,10 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   said "Served by your Tokkio deployment" whenever the URL answered at all, including `502` from an
   ingress with no running pods or `404` from another service. It now shows the Tokkio UI only for a
   2xx/3xx answer (`ui.ok`) and otherwise says "Tokkio not deployed" with the HTTP status.
+- **The Tokkio docs no longer say Kimi K3 grades the game.** `tokkio-kyora/README.md` and
+  `docs/tokkio-overlay.md` now say what happens: the code engine implements the UI, the measured gate
+  decides, and Kimi K3 reviews failed gates and judges the writes and shell commands the local rules
+  do not settle. `tests/test_ui_labels.py` catches the old phrasing.
 
 ## 0.1.0 - 2026-10-15
 

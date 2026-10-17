@@ -33,6 +33,9 @@ EVERY_CALL_CLAIMS = re.compile(
     r"every tool call|judges every|judged by Kimi K3|every action of the code engine|on every tool call|"
     r"judgement of every|every code-engine tool call|Every Write/Edit/Bash of the code engine is judged",
     re.IGNORECASE)
+# Kimi K3 does not judge the finished game: the measured gate decides, Kimi K3 reviews failed gates and
+# judges the writes/shell commands the local rules do not settle.
+JUDGES_OUTPUT_CLAIMS = re.compile(r"Kimi\s+K3\s+judges\s+(?:it\b|the\s+result|the\s+game)", re.IGNORECASE)
 
 
 def run_node(files: list[str], expr: str):
@@ -66,6 +69,16 @@ class JudgeWordingTests(unittest.TestCase):
             text = (REPO / rel).read_text(encoding="utf-8")
             hits = [m.group(0) for m in EVERY_CALL_CLAIMS.finditer(text)]
             self.assertEqual(hits, [], f"{rel} still claims Kimi K3 judges every tool call")
+
+    def test_no_surface_claims_kimi_judges_the_game(self):
+        self.assertTrue(JUDGES_OUTPUT_CLAIMS.search("Claude Code implements it, Kimi K3 judges\nit)."))
+        self.assertTrue(JUDGES_OUTPUT_CLAIMS.search("Kimi K3 judges the result"))
+        self.assertIsNone(JUDGES_OUTPUT_CLAIMS.search("Kimi K3 judges the writes the local rules do not settle"))
+        for rel in self.SURFACES + ["tokkio-kyora/README.md", "docs/tokkio-overlay.md",
+                                    "tokkio-kyora/configs/config.kyora.yaml"]:
+            text = (REPO / rel).read_text(encoding="utf-8")
+            hits = [m.group(0) for m in JUDGES_OUTPUT_CLAIMS.finditer(text)]
+            self.assertEqual(hits, [], f"{rel} still says Kimi K3 judges the game")
 
     def test_surfaces_say_what_is_judged(self):
         html = (WEB / "index.html").read_text(encoding="utf-8")

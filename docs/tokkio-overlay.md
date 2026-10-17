@@ -35,9 +35,11 @@ Kyora's link or QR code; a cookie covers both ports of the host) unless it runs 
 Allow both ports in the PC's firewall.
 
 Tokkio is **not** a UI generator and is not part of the code path. Game UI is produced by Kyora's
-pipeline: Nemotron-3-Ultra writes the UI spec, tokens and copy; Claude Code implements real
-HTML5/Canvas/WebGL; Kimi K3 judges the result; tests and the 94 % gate measure it. When no Tokkio is
-deployed, the Presenter panel shows **"Tokkio not deployed"** and every other feature works.
+pipeline: Nemotron-3-Ultra writes the UI spec, tokens and copy; the code engine (Claude Code by
+default) implements real HTML5/Canvas/WebGL; tests and the measured quality gate (default 94 %,
+`quality.min_pass_rate`) decide whether it is complete; Kimi K3 reviews failed gates and judges the
+writes and shell commands the local rules do not settle. When no Tokkio is deployed, the Presenter
+panel shows **"Tokkio not deployed"** and every other feature works.
 
 ## 2. Prerequisites (NVIDIA's requirements, not Kyora's)
 
