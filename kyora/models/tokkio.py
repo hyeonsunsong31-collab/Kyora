@@ -72,7 +72,8 @@ def strip_data_url(value: str) -> str:
 
 
 def _norm_preview_url(value: Any) -> str:
-    """Accept absolute http(s) URLs and site-relative paths (``/preview/...``); drop anything else."""
+    """Accept absolute http(s) URLs (Kyora sends the preview listener's ``<preview origin>/preview/...``)
+    and site-relative paths (``/preview/...``); drop anything else."""
     url = str(value or "").strip()
     if not url:
         return ""

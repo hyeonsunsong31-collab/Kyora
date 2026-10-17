@@ -1,7 +1,9 @@
 """HTTP routes for projects, attachments, slides, previews, the test harness page and the deck.
 
 All routes use ``auth='local'`` (loopback, or a valid hub token when the UI is
-exposed). Response shapes:
+exposed). Game files and the harness are untrusted code: they are served only by
+the preview listener (a separate origin, :func:`register_preview_routes`); on the
+main listener ``/preview/...`` and ``/runner/...`` redirect there. Response shapes:
 
 * ``GET /api/projects`` -> ``{"projects": [project]}``
 * ``POST /api/projects`` ``{name}`` -> 201 ``{"project": project}``
@@ -11,9 +13,10 @@ exposed). Response shapes:
 * ``GET /api/projects/{id}/attachments/{aid}`` -> the file (``?download=1`` forces a download)
 * ``GET /api/projects/{id}/slides`` -> ``{"slides", "current_slide", "repo"}``
 * ``GET /api/projects/{id}/slides/{n}/download`` -> ``<slug>-v<n>.zip``
+* ``GET /api/projects/{id}/preview-check?ref=`` -> ``{"ok", "ref", "error"}`` (is there an index.html to preview?)
 * ``POST /api/projects/{id}/import`` (multipart ``file`` zip, optional ``parent``) -> 201 ``{"slide", "files", "project"}``
-* ``GET /preview/{id}/{ref}/{path}`` with ref ``v<n>`` | ``work`` | ``run-<rid>``
-* ``GET /runner/{id}/{ref}`` -> the browser test harness page
+* ``GET /preview/{id}/{ref}/{path}`` with ref ``v<n>`` | ``work`` | ``run-<rid>`` (preview listener)
+* ``GET /runner/{id}/{ref}`` -> the browser test harness page (preview listener)
 * ``GET /projects/{id}/deck`` (``?slide=n``, ``?download=1``) -> deck HTML
 * ``POST /api/projects/{id}/slides/{n}/browser-results`` -> ``{"ok": true, ...}``
 """
@@ -26,7 +29,7 @@ import urllib.parse
 from pathlib import Path
 
 from ..pipeline.events import SLIDE_CREATED, TEST_BROWSER_RESULT
-from ..server import Request, Response, Router, resource_response
+from ..server import Request, Response, Router, parse_host, resource_response
 from ..util.fs import atomic_write_json, safe_join
 from ..util.ids import now_iso, slug
 from .deck import CSP as DECK_CSP
@@ -294,6 +297,27 @@ class ProjectRoutes:
         loc = req.path + "/" + (("?" + req.raw_query) if req.raw_query else "")
         return Response.redirect(loc, 301)
 
+    def to_preview_origin(self, req: Request, params: dict) -> Response:
+        """Main listener: game bytes never render on the API's origin; send the browser to the preview listener."""
+        port = getattr(self.app, "preview_port", None)
+        if not port:
+            return Response.error(503, "the preview listener is not running")
+        host = parse_host(req.headers.get("host") or "") or "127.0.0.1"  # the Host passed the allow-list
+        host = f"[{host}]" if ":" in host else host
+        return Response.redirect(f"http://{host}:{port}{req.path}" + (("?" + req.raw_query) if req.raw_query else ""))
+
+    def preview_check(self, req: Request, params: dict) -> Response:
+        """Whether ``ref`` has an ``index.html`` to preview (the UI cannot read the cross-origin frame)."""
+        self._project(params["id"])
+        ref = req.query.get("ref") or "work"
+        try:
+            root = self._preview_root(params["id"], ref)
+            ok = (root / "index.html").is_file()
+            error = None if ok else "no index.html"
+        except (FileNotFoundError, VersionError) as exc:
+            ok, error = False, str(exc) or "not found"
+        return Response.json({"ok": ok, "ref": ref, "error": error})
+
     def runner(self, req: Request, params: dict) -> Response:
         self._project(params["id"])
         resp = resource_response("runner/harness.html")
@@ -329,7 +353,7 @@ def _wrap(fn):
 
 
 def register_routes(router: Router, app) -> None:
-    """Register the project, slide, preview, runner and deck routes on ``router``."""
+    """Register the project, slide and deck routes (and redirects to the preview listener) on ``router``."""
     h = ProjectRoutes(app)
     add = lambda method, pattern, fn: router.add(method, pattern, _wrap(fn), auth="local")  # noqa: E731
     add("GET", "/api/projects", h.list_projects)
@@ -342,8 +366,20 @@ def register_routes(router: Router, app) -> None:
     add("GET", "/api/projects/{id}/slides/{n}/download", h.download_slide)
     add("POST", "/api/projects/{id}/slides/{n}/browser-results", h.slide_browser_results)
     add("POST", "/api/projects/{id}/import", h.import_zip)
+    add("GET", "/api/projects/{id}/preview-check", h.preview_check)
+    add("GET", "/preview/{path:path}", h.to_preview_origin)
+    add("GET", "/runner/{path:path}", h.to_preview_origin)
+    add("GET", "/projects/{id}/deck", h.deck)
+
+
+def register_preview_routes(router: Router, app) -> None:
+    """Register the preview listener's game, harness and slide-result routes on ``router``."""
+    h = ProjectRoutes(app)
+    add = lambda method, pattern, fn: router.add(method, pattern, _wrap(fn), auth="local")  # noqa: E731
     add("GET", "/preview/{id}/{ref}/", h.preview)
     add("GET", "/preview/{id}/{ref}/{path:path}", h.preview)
     add("GET", "/preview/{id}/{ref}", h.preview_bare)
     add("GET", "/runner/{id}/{ref}", h.runner)
-    add("GET", "/projects/{id}/deck", h.deck)
+    router.add("GET", "/static/runner/{path:path}",
+               lambda req, params: resource_response("runner/" + params["path"], cache="public, max-age=300"), auth="any")
+    add("POST", "/api/projects/{id}/slides/{n}/browser-results", h.slide_browser_results)

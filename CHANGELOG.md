@@ -2,6 +2,32 @@
 
 All notable changes to Kyora. Versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Security
+
+- Game code runs on its own origin: a second listener on `server.preview_port` (default port + 1,
+  `kyora serve --preview-port N`) serves only `/preview/...`, the test harness `/runner/...`, its
+  scripts and the browser-results endpoints. On the main port those paths redirect there, the UI
+  frames games from that origin, accepts test-result messages only from it and asks the new
+  `GET /api/projects/{id}/preview-check` whether a ref has an `index.html`. `/api/status` reports
+  `preview_port` and `preview_url`. Previously a generated or imported game ran on the API's origin
+  and could read every key and change the engine command.
+- DNS rebinding: requests whose `Host` is not this machine get `403` (new `server.allowed_hosts` for
+  extra names); state-changing requests with a foreign `Origin` get `403`; JSON bodies must be sent
+  as `application/json`.
+- `claude_code.command` and `claude_code.extra_args` can no longer be changed through
+  `PUT /api/settings` (the Settings tab shows them read-only); edit `settings.json` instead.
+- The `kyora_token` cookie is `HttpOnly`; main-origin HTML is sent with `X-Frame-Options: SAMEORIGIN`.
+- `GET /static/...` rejects backslashes, drive letters and streams, so a Windows source install can no
+  longer be made to read files outside `kyora/web` (for example `config/keys.json`).
+
+### Fixed
+
+- Windows: a second Kyora on the same port no longer starts silently next to the first one (and marks
+  its running builds interrupted); listeners claim their ports with `SO_EXCLUSIVEADDRUSE` and
+  `kyora serve`/`hub` report a busy port clearly and exit.
+
 ## 0.1.0 - 2026-10-15
 
 First release.

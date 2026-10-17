@@ -35,7 +35,9 @@ DEFAULT_KEYS: dict = {
 }
 
 DEFAULT_SETTINGS: dict = {
-    "server": {"host": "127.0.0.1", "port": 8765, "workers": 2},
+    # preview_port: the second listener (separate origin) for game previews and browser tests;
+    # null = port + 1. allowed_hosts: extra Host names accepted besides loopback/LAN (reverse proxies).
+    "server": {"host": "127.0.0.1", "port": 8765, "preview_port": None, "allowed_hosts": [], "workers": 2},
     "claude_code": {
         "command": ["claude"],
         "model": "claude-fable-5-1",
@@ -61,6 +63,8 @@ DEFAULT_SETTINGS: dict = {
 }
 
 # Settings paths the UI may change (dotted). Everything else is read-only from the UI.
+# claude_code.command / extra_args are the argv of a process Kyora executes: changing them over HTTP
+# would be command execution, so they are edited only in settings.json (FILE_ONLY_SETTINGS).
 PATCHABLE_KEYS = {
     "nvidia.base_url", "nvidia.nemotron.model", "nvidia.nemotron.api_key",
     "nvidia.kimi.model", "nvidia.kimi.api_key", "anthropic.api_key",
@@ -68,15 +72,15 @@ PATCHABLE_KEYS = {
 }
 PATCHABLE_SETTINGS = {
     "server.port", "server.host",
-    "claude_code.command", "claude_code.model", "claude_code.fallback_models", "claude_code.effort",
+    "claude_code.model", "claude_code.fallback_models", "claude_code.effort",
     "claude_code.max_turns", "claude_code.timeout_s", "claude_code.idle_timeout_s", "claude_code.resume_for_fixes",
-    "claude_code.extra_args",
     "kimi.reasoning_effort", "kimi.judge_reasoning_effort", "kimi.effort_field",
     "nemotron.thinking_for_design",
     "quality.min_pass_rate", "quality.max_fix_iterations", "quality.browser_wait_s",
     "quality.require_plan_approval", "quality.auto_run_browser_tests",
     "hub.expose_ui",
 }
+FILE_ONLY_SETTINGS = {"claude_code.command", "claude_code.extra_args"}
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 KIMI_EFFORTS = ("low", "high", "max")
 
@@ -147,6 +151,8 @@ class ServerCfg:
     host: str
     port: int
     workers: int
+    preview_port: int | None = None  # None = port + 1
+    allowed_hosts: list[str] = field(default_factory=list)
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -337,7 +343,11 @@ class Config:
     @property
     def server(self) -> ServerCfg:
         s = self.raw_settings["server"]
-        return ServerCfg(host=s.get("host", "127.0.0.1"), port=int(s.get("port", 8765)), workers=int(s.get("workers", 2)))
+        pp = s.get("preview_port")
+        hosts = s.get("allowed_hosts") or []
+        return ServerCfg(host=s.get("host", "127.0.0.1"), port=int(s.get("port", 8765)), workers=int(s.get("workers", 2)),
+                         preview_port=None if pp in (None, "") else int(pp),
+                         allowed_hosts=[str(h) for h in hosts] if isinstance(hosts, list) else [])
 
     # ------------------------------------------------------------------ UI support
     def to_public(self, reveal: bool = False) -> dict:
@@ -362,6 +372,11 @@ class Config:
         for section, allowed, target in (("keys", PATCHABLE_KEYS, self.raw_keys), ("settings", PATCHABLE_SETTINGS, self.raw_settings)):
             items = _flatten(patch.get(section) or {})
             for dotted, value in items.items():
+                if section == "settings" and dotted in FILE_ONLY_SETTINGS:
+                    if _get(target, dotted) == value:
+                        continue  # an unchanged round trip is not a change
+                    raise ValueError(f"settings.{dotted} cannot be changed over HTTP (it is a command Kyora runs); "
+                                     f"edit {self.settings_path} and restart Kyora")
                 if dotted not in allowed:
                     raise ValueError(f"not patchable: {section}.{dotted}")
                 if isinstance(value, str) and "…" in value:

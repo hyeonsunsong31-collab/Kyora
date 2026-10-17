@@ -8,6 +8,8 @@
 
   const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
   const KIMI_EFFORTS = ['low', 'high', 'max'];
+  /* The server refuses these over HTTP: they are the argv of a process Kyora runs. */
+  const FILE_ONLY_NOTE = 'Not editable over HTTP: this is a command Kyora executes. Edit it in settings.json in the config folder and restart Kyora.';
 
   /* section: 'keys' (keys.json) or 'settings' (settings.json); path: dotted path inside it. */
   const GROUPS = [
@@ -22,7 +24,7 @@
       { s: 'keys', p: 'anthropic.api_key', label: 'Anthropic API key', type: 'secret', help: 'Only for the optional Messages-API engine. The default code engine is the Claude Code CLI with your subscription login (claude login).' }
     ] },
     { title: 'Claude Code', hint: 'code engine', fields: [
-      { s: 'settings', p: 'claude_code.command', label: 'Command (JSON array)', type: 'json', help: 'e.g. ["claude"] or ["npx","@anthropic-ai/claude-code"]' },
+      { s: 'settings', p: 'claude_code.command', label: 'Command (JSON array)', type: 'json', help: 'e.g. ["claude"] or ["npx","@anthropic-ai/claude-code"].', ro: FILE_ONLY_NOTE },
       { s: 'settings', p: 'claude_code.model', label: 'Model', type: 'text', help: 'Requested model; the model actually used is shown on every run.' },
       { s: 'settings', p: 'claude_code.fallback_models', label: 'Fallback models (comma separated)', type: 'csv' },
       { s: 'settings', p: 'claude_code.effort', label: 'Effort', type: 'select', options: EFFORTS },
@@ -30,7 +32,7 @@
       { s: 'settings', p: 'claude_code.timeout_s', label: 'Wall timeout (s)', type: 'int' },
       { s: 'settings', p: 'claude_code.idle_timeout_s', label: 'Idle timeout (s)', type: 'int' },
       { s: 'settings', p: 'claude_code.resume_for_fixes', label: 'Resume the session for fixes', type: 'bool' },
-      { s: 'settings', p: 'claude_code.extra_args', label: 'Extra CLI arguments (JSON array)', type: 'json', help: 'Appended to every invocation, e.g. ["--verbose"].' },
+      { s: 'settings', p: 'claude_code.extra_args', label: 'Extra CLI arguments (JSON array)', type: 'json', help: 'Appended to every invocation, e.g. ["--verbose"].', ro: FILE_ONLY_NOTE },
       { s: 'settings', p: 'claude_code.judge_tools', label: 'Judged tools', type: 'json' }
     ] },
     { title: 'Kimi K3', hint: 'planner + judge', fields: [
@@ -60,6 +62,8 @@
     { title: 'Server', hint: 'restart required', fields: [
       { s: 'settings', p: 'server.host', label: 'Bind host', type: 'text', help: '127.0.0.1 keeps Kyora local; 0.0.0.0 listens on the LAN.' },
       { s: 'settings', p: 'server.port', label: 'Port', type: 'int', min: 1, max: 65535 },
+      { s: 'settings', p: 'server.preview_port', label: 'Preview port', type: 'int', help: 'Separate origin for game previews and browser tests; empty = port + 1.' },
+      { s: 'settings', p: 'server.allowed_hosts', label: 'Allowed host names (JSON array)', type: 'json', help: 'Extra Host names accepted besides localhost and this machine\'s LAN names, e.g. a reverse proxy.' },
       { s: 'settings', p: 'server.workers', label: 'Run workers', type: 'int' }
     ] }
   ];
@@ -98,7 +102,7 @@
     const id = fid(f);
     const ro = !editable(f);
     const dis = ro ? ' disabled' : '';
-    const help = (f.help || '') + (ro ? (f.help ? ' ' : '') + 'Read-only here; edit ' + (f.s === 'keys' ? 'keys.json' : 'settings.json') + ' in the config folder.' : '');
+    const help = (f.help || '') + (ro ? (f.help ? ' ' : '') + (f.ro || 'Read-only here; edit ' + (f.s === 'keys' ? 'keys.json' : 'settings.json') + ' in the config folder.') : '');
     const attrs = ' id="' + id + '" data-s="' + f.s + '" data-p="' + U().esc(f.p) + '" data-type="' + f.type + '"' + dis;
     let control;
     if (f.type === 'bool') {
