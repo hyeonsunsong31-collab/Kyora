@@ -4,8 +4,84 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 
 ## Unreleased
 
+### Security
+
+- Game code runs on its own origin: a second listener on `server.preview_port` (default port + 1,
+  `kyora serve --preview-port N`) serves only `/preview/...`, the test harness `/runner/...`, its
+  scripts and the browser-results endpoints. On the main port those paths redirect there, the UI
+  frames games from that origin, accepts test-result messages only from it and asks the new
+  `GET /api/projects/{id}/preview-check` whether a ref has an `index.html`. `/api/status` reports
+  `preview_port` and `preview_url`. Previously a generated or imported game ran on the API's origin
+  and could read every key and change the engine command.
+- DNS rebinding: requests whose `Host` is not this machine get `403` (new `server.allowed_hosts` for
+  extra names); state-changing requests with a foreign `Origin` get `403`; JSON bodies must be sent
+  as `application/json`.
+- `claude_code.command` and `claude_code.extra_args` can no longer be changed through
+  `PUT /api/settings` (the Settings tab shows them read-only); edit `settings.json` instead.
+- The `kyora_token` cookie is `HttpOnly`; main-origin HTML is sent with `X-Frame-Options: SAMEORIGIN`.
+- `GET /static/...` rejects backslashes, drive letters and streams, so a Windows source install can no
+  longer be made to read files outside `kyora/web` (for example `config/keys.json`).
+
 ### Fixed
 
+- Windows: a second Kyora on the same port no longer starts silently next to the first one (and marks
+  its running builds interrupted); listeners claim their ports with `SO_EXCLUSIVEADDRUSE` and
+  `kyora serve`/`hub` report a busy port clearly and exit.
+- **Slides keep ignored game files**: slide commits (and so ZIP downloads and previews) now include
+  files named by the game's `.gitignore`, `.git/info/exclude` or the user's global excludes file, as
+  the snapshot backend always did; the gate measured them, so the saved slide now matches the
+  measured game. Resets and checkouts also remove ignored leftovers, so a cancelled run's ignored
+  files cannot reach the next slide.
+- **Unfinished runs no longer share a lineage branch**: a run whose branch (`lineage/main` for a
+  first generation, or the head branch of the parent slide) is held by another unfinished run, or
+  an import in that situation, gets its own `lineage/<rid>` branch. Each run records the commit it
+  last left on its branch (`options.tip`); resume restores exactly that commit and blocks with a
+  clear reason when the branch moved on, so a resumed run never tests or commits another run's game.
+  Rollback only resets a branch whose tip is still the run's own commit, so cancelling an older run
+  can no longer delete the branch that holds a newer slide.
+- **Cancelling a queued or blocked run no longer resets a running run's work**: a never-started
+  run needs no rollback, and while another run of the project is executing the cancel only moves
+  the cancelled run's own branch ref; it never resets, cleans or checks out the shared work tree.
+- **Stopping Kyora keeps runs resumable**: Ctrl+C (`App.stop()` / `RunManager.stop()`) used to cancel
+  active runs, rolling back their built work. Runs now end `blocked` with the reason
+  "interrupted: Kyora stopped ...", their work and iteration commits kept, and Resume continues them.
+  A queued run that was waiting for its project when Kyora stopped is no longer started during
+  shutdown; the next start marks it `blocked` (resumable).
+- **Honest build narration**: the presenter announces the build only after a code engine was
+  selected, naming the real backend (Claude Code, the Anthropic API engine or Claude Code on the
+  Kyora Hub) and the configured effort; it says "maximum effort" only when the effort is `max`, and
+  says nothing when the run blocks for lack of an engine.
+- **A failed code-engine call no longer finishes a run.** When BUILD or FIX returns an error (usage
+  limit, HTTP 429, lost Hub contact, expired login) and the engine changed no file of the work tree
+  (content hash before and after the call), the run is `blocked` with the engine error and can be
+  resumed; before, a modify run measured the unchanged parent game and ended `complete` with a new
+  slide. Every failed call is recorded in `run.json` (`extra.engine_failures`, `tree_changed`).
+- **Skipped acceptance tests no longer pass the gate.** A plan acceptance test reported as skipped
+  (`test.skip`, `test.todo`, TAP `# SKIP` / `# TODO`, harness `skip`) and any required check that was
+  skipped or deferred now count as failed with the detail "did not run"; an acceptance id counts as
+  reported only with a pass or fail result.
+- **Node acceptance tests without Node.** Kimi K3's plan input now says whether Node is installed on
+  the device that runs TEST; without Node only browser acceptance tests are accepted (one repair
+  round, then the run blocks), and a plan with Node tests blocks at PLAN or TEST with an explicit
+  reason instead of spending every fix iteration on tests that can never report.
+- **The deck in a slide describes that slide's run.** FINALIZE passes the finalizing run to the deck
+  builder; before, a run queued for the same project (state `created`) was shown as "this build".
+- **An invalid Kimi K3 intake or review answer blocks the run** (resumable, like PLAN and DESIGN)
+  instead of failing it; before, a twice-unparseable review after a long build ended the run
+  `failed`, with no slide and no way to resume.
+- **Kyora Bench measures the bench, at the bench's threshold.** A bench run's gate is now scored on the
+  bench's own test ids (`passed / bench ids`, required checks still required); the tautological
+  `tests_present` checks of the injected test file and the engine's own Node tests no longer count, so
+  a task can no longer pass at "94 %" with 2 of 14 bench tests failing. The gate threshold of a bench
+  run is the task's `pass_rule.min_pass_rate` (never below 0.94) regardless of Settings, `task_passed`
+  also requires the recorded `pass_rate` and `threshold` to reach it, and `results.json` records the
+  threshold per task.
+- **One engine/model means every engine call.** Bench certification reads every entry of the run's
+  `extra.engine_runs` (BUILD and each FIX), so a task served by two models is mixed and blocks
+  certification; results list `served` pairs. Slides and the deck name every model that served a run.
+- **The deck credits only what ran.** An imported-ZIP slide's architecture slide now says "imported ZIP -
+  no code engine ran" (or "not built yet") instead of drawing the Build step as Claude Code, and the
+  tests slide lists the code-engine errors recorded for the run.
 - NVIDIA streaming parser: a delta that carries both `reasoning_content` and `reasoning` (vLLM 0.11
   and later sends one as a copy of the other) is now taken once, so the reasoning trace, the UI stream
   and the assistant message Kimi K3 echoes back on the next turn are no longer doubled.

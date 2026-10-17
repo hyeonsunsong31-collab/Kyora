@@ -161,6 +161,13 @@ REVIEW_SCHEMA: dict = {
 }
 
 INTAKE_TOOL = function_tool("emit_intake", "Emit the intake record for the planner.", INTAKE_SCHEMA)
+NODE_RULES = {
+    True: "- Node.js is available on the device that runs the tests: kind \"node\" tests run with `node --test`.",
+    False: ("- Node.js is NOT available on the device that runs the tests (for example iSH on iPhone, or Windows "
+            "without Node): every acceptance test must have kind \"browser\". Do not plan kind \"node\" tests; "
+            "they could never run and would block completion."),
+    None: "",
+}
 PLAN_TOOL = function_tool("emit_plan", "Emit the complete plan: files, contract, task DAG, acceptance tests, constraints, "
                                        "design brief.", PLAN_SCHEMA)
 VERDICT_TOOL = function_tool("verdict", "Allow or deny the code engine's pending tool call.", VERDICT_SCHEMA)
@@ -968,19 +975,30 @@ class Kimi:
 
     # ------------------------------------------------------------------ plan
     def plan(self, intake: dict, run_id: str | None = None, project_id: str | None = None,
-             cancel: threading.Event | None = None, min_tests: int = 6) -> dict:
+             cancel: threading.Event | None = None, min_tests: int = 6, node_available: bool | None = None) -> dict:
         """Intake -> validated ``plan.json`` content (see :func:`normalize_plan`).
 
-        One repair request is made when the first answer is missing or invalid;
-        afterwards ``ValueError`` is raised with the validation problems.
+        ``node_available`` is what Kyora measured on the device that runs TEST
+        (``find_node()``); ``False`` forbids kind ``node`` acceptance tests, which
+        could never run there. One repair request is made when the first answer is
+        missing or invalid; afterwards ``ValueError`` is raised with the problems.
         """
         min_tests = max(1, int(min_tests))
         system = render_prompt("kimi_plan.md", intake_json=json_for_prompt(intake or {}),
-                               allowed_engines=", ".join(f'"{e}"' for e in ENGINES), min_tests=min_tests)
-        user = (f"Write the plan for this intake now (at least {min_tests} acceptance tests, index.html in files) "
-                "and call emit_plan with the complete plan.")
-        obj, _ = self._structured(PLAN_TOOL, system=system, user_content=user, purpose="plan",
-                                  validate=lambda o: normalize_plan(o, min_tests=min_tests),
+                               allowed_engines=", ".join(f'"{e}"' for e in ENGINES), min_tests=min_tests,
+                               node_rule=NODE_RULES[node_available])
+        user = (f"Write the plan for this intake now (at least {min_tests} acceptance tests, index.html in files"
+                + ("; every acceptance test of kind \"browser\"" if node_available is False else "")
+                + ") and call emit_plan with the complete plan.")
+
+        def validate(o: Mapping) -> dict:
+            out = normalize_plan(o, min_tests=min_tests)
+            node_ids = [t["id"] for t in out["acceptance_tests"] if t["kind"] == "node"]
+            if node_available is False and node_ids:
+                raise ValueError(f"Node.js is not available where the tests run, so kind 'node' acceptance tests "
+                                 f"can never run: change {', '.join(node_ids)} to kind 'browser'")
+            return out
+        obj, _ = self._structured(PLAN_TOOL, system=system, user_content=user, purpose="plan", validate=validate,
                                   max_tokens=self.MAX_TOKENS["plan"], run_id=run_id, project_id=project_id,
                                   cancel=cancel)
         return obj

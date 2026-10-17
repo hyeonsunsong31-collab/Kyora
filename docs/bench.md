@@ -20,10 +20,20 @@ place (`kyora/bench/tasks/<id>.browser-tests.js`). The plan's acceptance tests a
 test ids, so the gate requires every bench test to report a result. The generated tests still exist in the
 workspace but are not scored.
 
+A bench run's gate is **scored on the bench's own tests only**: `pass_rate = passed bench test ids / bench
+test ids` (a failed, skipped or missing bench test counts as not passed), and every required check (files
+exist, HTML well-formed, manifest valid, JavaScript syntax) must still pass. Checks the measured engine could
+inflate are left out of the score: the `tests_present:<id>` checks (the bench injected the file, so they
+would only confirm that the bench's file contains the bench's ids) and the engine's own
+`tests/logic-tests.mjs` Node tests, which are still run and listed but not counted. The gate threshold of a
+bench run is the task's `pass_rule.min_pass_rate`, never below 0.94, whatever Settings > Quality gate
+says; the gate result records it (`threshold`) and `scope: "bench_tests"`.
+
 **A task passes** iff its run ends in state `complete` **and** the run's final gate says `ok: true`
-(pass rate >= 0.94 over all counted static, Node and browser checks, every required check passing, every
-bench test id present). If the runner can see the final gate's checks and fewer of the bench's browser tests
-than the task's `min_browser_tests` appear in them, the task fails too: the bench was not actually measured.
+**and** that gate measured `pass_rate >= rule` against a recorded `threshold >= rule` (`rule` = the task's
+`pass_rule.min_pass_rate`, never below 0.94), with every required check passing and every bench test id
+reported. If the runner can see the final gate's checks and fewer of the bench's browser tests than the
+task's `min_browser_tests` appear in them, the task fails too: the bench was not actually measured.
 
 ## The 24 tasks
 
@@ -133,7 +143,9 @@ Every bench run writes `KYORA_HOME/bench/<timestamp>/`:
 - `results.json` - rewritten after every task, so a crash keeps what was measured: `bench_id`, start and end
   times, `kyora_version`, `platform`, the SHA-256 of each composed prompt and of the harness rules, `skipped`
   task ids, and per task `{task_id, run_id, project_id, state, gate, passed, duration_s, engine, active_model,
-  error, bench_tests_seen, ...}`, plus the `score`.
+  served, threshold, min_pass_rate, error, bench_tests_seen, ...}`, plus the `score`. `threshold` is the
+  threshold the run's gate used, `min_pass_rate` the task's rule, and `served` every `engine/model` pair
+  that answered one of the run's engine calls (BUILD and every FIX); `active_model` names all of them.
 - `report.html` - a standalone page (no scripts, no external URLs) with the per-task table: result, state,
   gate %, time, engine/model and error, ending with *"Measured by Kyora Bench on <date> with
   <engine>/<model> on this machine. No number here is estimated."*
@@ -146,8 +158,9 @@ The badge says **certified** only when all of these hold for a single bench run:
 
 1. the suite is complete: all 24 distinct task ids ran in that run (partial runs, or results merged from
    several runs, never certify);
-2. one engine/model pair served every task (the model is read from what actually answered, so a fallback
-   model on some tasks breaks the badge);
+2. one engine/model pair served every engine call of every task (the model is read from what actually
+   answered each BUILD and FIX call, `extra.engine_runs` of the run, so a fallback model on any call, even
+   one FIX of one task, breaks the badge);
 3. the measured pass rate is at least 0.94 (23 of 24 tasks = 0.958 certifies; 22 of 24 = 0.917 does not).
 
 Otherwise the badge shows "not certified" with the reason, or "no bench run yet". The badge is recomputed

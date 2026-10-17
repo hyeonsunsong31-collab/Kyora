@@ -508,7 +508,7 @@ class PromptHelperTests(unittest.TestCase):
 
     def test_all_kimi_templates_render(self):
         render_prompt("kimi_intake.md", attachment_summary="(none)", imported_base_hint="absent")
-        render_prompt("kimi_plan.md", intake_json="{}", allowed_engines='"vanilla"', min_tests=6)
+        render_prompt("kimi_plan.md", intake_json="{}", allowed_engines='"vanilla"', min_tests=6, node_rule="")
         render_prompt("kimi_review.md", screenshot_count=0, run_summary_json="{}", gate_json="{}")
 
     def test_json_for_prompt_truncates_visibly(self):

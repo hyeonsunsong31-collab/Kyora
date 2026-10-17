@@ -9,7 +9,9 @@
  *   /static/runner/*                    -> kyora/web/runner/*
  *   /preview/p1/<ref>/*                 -> a fixture game (see REFS below)
  *   POST /api/runs/<rid>/browser-results, POST /api/projects/p1/slides/<n>/browser-results -> recorded
- * and every scenario asserts on window.__kyoraResult and on the recorded POST body. The posted
+ * plus a second server on another port that plays the Kyora UI and frames the harness cross-origin
+ * (as Kyora's main origin frames its preview listener), and every scenario asserts on
+ * window.__kyoraResult and on the recorded POST body. The posted
  * payload of the good game is also fed to kyora.pipeline.quality (python3) to prove the JS
  * message and the Python collector agree. Exit code 0 = all scenarios passed.
  */
@@ -61,7 +63,7 @@ if (fs.existsSync(path.join(GAME_OK, 'index.html'))) REFS.v4 = GAME_OK;
 if (fs.existsSync(path.join(GAME_BROKEN, 'index.html'))) REFS.v5 = GAME_BROKEN;
 
 /* ------------------------------------------------------------------ server */
-const posted = []; // {url, body}
+const posted = []; // {url, body, origin}
 
 function sendFile(res, file) {
   fs.readFile(file, (err, data) => {
@@ -87,7 +89,7 @@ const server = http.createServer((req, res) => {
       if (!ok) { res.writeHead(404); res.end('{}'); return; }
       let body = null;
       try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) { body = { parse_error: String(e) }; }
-      posted.push({ url: p, body });
+      posted.push({ url: p, body, origin: req.headers.origin || null });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     });
@@ -105,6 +107,18 @@ const server = http.createServer((req, res) => {
   }
   res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('not found');
+});
+
+/* The Kyora UI lives on another origin than the harness (Kyora's preview listener is a separate
+   port): this second server plays the UI and frames the harness cross-origin. */
+const uiServer = http.createServer((req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  if (url.pathname !== '/ui') { res.writeHead(404); res.end(); return; }
+  const src = url.searchParams.get('src') || '';
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end('<!doctype html><title>ui</title><script>window.__msgs = [];' +
+    'window.addEventListener("message", function (e) { window.__msgs.push({ origin: e.origin, data: e.data }); });' +
+    '</script><iframe id="h" style="width:390px;height:700px" src="' + src.replace(/"/g, '&quot;') + '"></iframe>');
 });
 
 /* ------------------------------------------------------------------ helpers */
@@ -171,7 +185,9 @@ async function main() {
   const pw = loadPlaywright();
   if (!pw) throw new Error('playwright not found (set NODE_PATH=$(npm root -g))');
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  await new Promise((r) => uiServer.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
+  const uiBase = `http://127.0.0.1:${uiServer.address().port}`;
   console.log(`# fixture server ${base}; refs ${Object.keys(REFS).join(', ')}`);
   const browser = await launchChromium(pw);
   const context = await browser.newContext({ viewport: { width: 390, height: 760 }, hasTouch: true });
@@ -199,6 +215,24 @@ async function main() {
       assert.deepEqual(errors, [], 'no page errors');
       assert.equal(await page.locator('#results li .badge.pass').count(), 9);
       goodResult = result;
+      await page.close();
+    });
+
+    await scenario('cross-origin UI: the harness frame reports to its parent and posts to its own origin', async () => {
+      const page = await context.newPage();
+      const src = base + '/runner/p1/v1?run=r8&iter=1&auto=1&post=1';
+      await page.goto(uiBase + '/ui?src=' + encodeURIComponent(src), { waitUntil: 'domcontentloaded' });
+      await page.waitForFunction(() => window.__msgs.some((m) => m.data && m.data.type === 'kyora:test-result'), null, { timeout: 60000, polling: 100 });
+      const msgs = await page.evaluate(() => window.__msgs.filter((m) => m.data && m.data.type === 'kyora:test-result'));
+      assert.equal(msgs.length, 1);
+      assert.equal(msgs[0].origin, base, 'the UI checks e.origin against the preview origin');
+      assert.equal(msgs[0].data.run_id, 'r8');
+      assert.equal(msgs[0].data.summary.total, 9);
+      const deadline = Date.now() + 10000;
+      while (!posted.some((x) => x.url === '/api/runs/r8/browser-results') && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+      const post = posted.filter((x) => x.url === '/api/runs/r8/browser-results').pop();
+      assert.ok(post, 'results POSTed');
+      assert.equal(post.origin, base, 'the harness posts to its own (preview) origin');
       await page.close();
     });
 
@@ -322,6 +356,7 @@ async function main() {
   } finally {
     await browser.close().catch(() => {});
     server.close();
+    uiServer.close();
     fs.rmSync(TMP, { recursive: true, force: true });
   }
   console.log(failures ? `# ${failures} scenario(s) FAILED` : '# all scenarios passed');
@@ -330,6 +365,6 @@ async function main() {
 
 main().then((code) => { process.exitCode = code; }, (e) => {
   console.error(e && e.stack ? e.stack : e);
-  try { server.close(); fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+  try { server.close(); uiServer.close(); fs.rmSync(TMP, { recursive: true, force: true }); } catch (_) { /* ignore */ }
   process.exitCode = 1;
 });

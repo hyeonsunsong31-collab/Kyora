@@ -50,11 +50,19 @@ class ConfigTests(unittest.TestCase):
             cfg.apply_patch({"settings": {"claude_code": {"effort": "ultra"}}})
         with self.assertRaises(ValueError):
             cfg.apply_patch({"settings": {"server": {"workers": 9}}})  # not patchable
-        cfg.apply_patch({"settings": {"claude_code": {"command": ["proot-distro", "login", "ubuntu", "--", "claude"]}}})
+        # the engine command is argv Kyora executes: never patchable over HTTP, only in settings.json
+        with self.assertRaises(ValueError) as ctx:
+            cfg.apply_patch({"settings": {"claude_code": {"command": ["proot-distro", "login", "ubuntu", "--", "claude"]}}})
+        self.assertIn("settings.json", str(ctx.exception))
+        self.assertEqual(cfg.apply_patch({"settings": {"claude_code": {"command": ["claude"], "extra_args": []}}}), [])
         cfg.save()
         again = Config.load(self.dir)
-        self.assertEqual(again.claude_code.command[0], "proot-distro")
+        self.assertEqual(again.claude_code.command, ["claude"])
         self.assertEqual(again.quality.min_pass_rate, 0.95)
+        settings = read_json(self.dir / "settings.json")
+        settings["claude_code"]["command"] = ["proot-distro", "login", "ubuntu", "--", "claude"]
+        atomic_write_json(self.dir / "settings.json", settings)
+        self.assertEqual(Config.load(self.dir).claude_code.command[0], "proot-distro")
 
     def test_env_overrides(self):
         os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test"

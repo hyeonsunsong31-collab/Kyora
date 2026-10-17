@@ -1,0 +1,8 @@
+{
+  "entry": "index.html",
+  "engine": "vanilla",
+  "scripts": ["src/game.js"],
+  "modules": ["src/util.mjs", "src/main.mjs"],
+  "tests": ["tests/browser-tests.js", "tests/logic-tests.mjs"],
+  "version": 1
+}

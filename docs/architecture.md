@@ -47,7 +47,7 @@ KYORA_HOME/bench/<timestamp>/
   judge_tools, extra_args), `.kimi` (reasoning_effort, judge_reasoning_effort, effort_field), `.nemotron`
   (thinking_for_design), `.quality` (min_pass_rate, max_fix_iterations, browser_wait_s, require_plan_approval,
   auto_run_browser_tests), `.hub` (url, token, expose_ui), `.tokkio` (ui_url, configurator_url), `.server`
-  (host, port, workers); `to_public(reveal)`, `apply_patch(patch)`, `save()`.
+  (host, port, workers, preview_port, allowed_hosts); `to_public(reveal)`, `apply_patch(patch)`, `save()`.
 - `kyora.pipeline.events.EventBus`: `publish(type, data, run_id=, project_id=, persist=)`, `subscribe(run_id=,
   project_id=, types=[...,'engine.*'])` -> Subscription(.queue, .close()), `replay(since_id, ...)`, `last_id()`,
   `wait_for(type, pred, timeout, run_id=)`. `DeltaCoalescer(bus, run_id=, project_id=, role=, model=)` for token deltas.
@@ -57,14 +57,27 @@ KYORA_HOME/bench/<timestamp>/
 - `kyora.server`: `Request` (method, path, query, headers, body, client_ip; `.json()`, `.multipart()` -> `[Part]`,
   `.bearer()`, `.cookies()`, `.is_loopback()`), `Response.json/text/html/bytes/file/redirect/sse/error`, `Router.add(method,
   pattern, handler, auth='local'|'any'|'loopback'|'hub')` with `{name}` and `{name:path}` params, `event_stream(bus, ...)`,
-  `resource_response(rel)`, `lan_addresses()`.
+  `resource_response(rel)` (`safe_resource_rel` rejects `..`, `\\`, `:` and NUL), `lan_addresses()`.
+  `KyoraServer(app, host, port, router, *, preview_port=None, preview_router=None)` runs two listeners on the same
+  bind address: the main one (UI + API) and the **preview listener** (`server.preview_port`, `null` = port + 1; an
+  ephemeral port when that is busy; `0` = ephemeral), a separate origin for untrusted game code whose router comes
+  from `App.register_preview_routes`. Every request first passes the origin guard: `Host` must name this machine
+  (loopback names, the address the request arrived on, LAN addresses/hostname/`.local`/FQDN when bound beyond
+  loopback, `server.allowed_hosts`) else `403`; a non-GET/HEAD/OPTIONS request with an `Origin` must come from the
+  listener's own origin (`null` refused) else `403`; `Request.json()` requires `application/json` (or `*+json`)
+  for a non-empty body (`400`). Main-listener HTML gets `X-Frame-Options: SAMEORIGIN`. Listeners never share a
+  port (`SO_EXCLUSIVEADDRUSE` on Windows).
 - `kyora.app.App`: attributes `config, home, bus, platform, store, nemotron, kimi, judge, claude_engine, anthropic_engine,
-  hub_client, hub_worker, tokkio, run_manager, selfcheck, bench, browser_results, server_url, hub_mode, missing`;
-  `engine()`; `status()`. `App.register_routes` calls `register_routes(router, app)` from `kyora.projects.routes`,
-  `kyora.pipeline.routes`, `kyora.hub`, `kyora.selfcheck`, `kyora.bench.routes`, `kyora.models.tokkio` when present.
+  hub_client, hub_worker, tokkio, run_manager, selfcheck, bench, browser_results, server_url, preview_url,
+  preview_port, hub_mode, missing`; `engine()`; `status()` (includes `preview_url`, `preview_port`);
+  `start(server_url, preview_url=None)`; `register_preview_routes(router, main_router)` (game files, harness,
+  `/static/runner/*`, both browser-results POSTs, `/favicon.ico` - nothing else). `App.register_routes` calls
+  `register_routes(router, app)` from `kyora.projects.routes`, `kyora.pipeline.routes`, `kyora.hub`, `kyora.selfcheck`,
+  `kyora.bench.routes`, `kyora.models.tokkio` when present.
   Core routes already provided: `GET /`, `GET /static/{path}`, `GET /api/status`, `GET|PUT /api/settings`,
   `GET /api/events` (SSE: `?run=&project=&types=a,b,engine.*&since=`), `GET /api/events.json`, `GET /api/lan-urls`,
-  `GET /api/qr.svg?text=`.
+  `GET /api/qr.svg?text=`. `PUT /api/settings` refuses `claude_code.command` / `claude_code.extra_args` (they are
+  argv Kyora executes; edited only in `settings.json`). The `kyora_token` cookie is `HttpOnly`.
 - `kyora.util`: `fs` (atomic_write_json, read_json, safe_join, rm_tree, which, platform_info, kyora_home),
   `ids` (new_id, now_iso, slug), `sse` (encode_event, parse_sse), `procs` (popen, kill_tree, run).
 
@@ -91,9 +104,14 @@ ProjectStore(projects_root, db_path)                                    kyora/pr
 `kyora/projects/routes.py`: `GET|POST /api/projects`, `GET|DELETE /api/projects/{id}`,
 `POST /api/projects/{id}/attachments` (multipart `file` parts; `role` field), `GET /api/projects/{id}/attachments/{aid}`,
 `GET /api/projects/{id}/slides`, `GET /api/projects/{id}/slides/{n}/download` (zip), `POST /api/projects/{id}/import`
-(multipart zip -> new slide "imported"), `GET /preview/{id}/{ref}/{path:path}` (ref = `v3` or `run-<rid>` or `work`),
-`GET /runner/{id}/{ref}` (browser test harness page), `GET /projects/{id}/deck` (deck HTML), `POST /api/projects/{id}/slides/{n}/browser-results`.
-Static for the harness: `GET /static/runner/*` (already served from kyora/web/runner).
+(multipart zip -> new slide "imported"), `GET /api/projects/{id}/preview-check?ref=` (`{ok, ref, error}`, never file
+contents), `GET /projects/{id}/deck` (deck HTML), `POST /api/projects/{id}/slides/{n}/browser-results`.
+Preview listener only (`register_preview_routes`): `GET /preview/{id}/{ref}/{path:path}` (ref = `v3` or `run-<rid>` or
+`work`), `GET /runner/{id}/{ref}` (browser test harness page), `GET /static/runner/*` (from kyora/web/runner) and both
+browser-results POSTs. On the main listener `GET /preview/...` and `GET /runner/...` are `302` redirects to
+`http://<request host>:<preview_port><same path and query>`. The UI builds the preview origin from
+`/api/status.preview_port` and accepts `kyora:test-result` messages only from it; the headless driver opens
+`app.preview_url + runner_url`; `tokkio.view.preview_url` is absolute on the preview origin.
 
 `kyora/pipeline/routes.py`: `POST /api/projects/{id}/runs` (json: prompt, kind=generate|modify, parent_slide, attachment_ids,
 options{engine_pref, import_zip_attachment}), `GET /api/runs/{id}`, `POST /api/runs/{id}/cancel`, `POST /api/runs/{id}/approve`,
@@ -213,9 +231,28 @@ created->INTAKE->PLAN->[AWAITING_APPROVAL]->DESIGN->BUILD->TEST->GATE -ok-> FINA
 GATE fail & iteration<max_fix_iterations -> REVIEW(Kimi) -fix-> FIX(engine) -> TEST -> GATE
 GATE fail & iteration==max -> FINALIZE(below_threshold) -> FAILED_GATE (slide still committed)
 no engine -> BLOCKED (resumable); no browser in browser_wait_s -> BLOCKED; exception -> FAILED; cancel -> CANCELLED (tree reset)
+Kyora stopping (App.stop -> RunManager.stop) -> BLOCKED "interrupted: Kyora stopped ..." (no rollback, resumable)
 ```
 Gate: total = counted checks (static non-skipped + browser + node); pass_rate = passed/total; ok iff pass_rate >= min_pass_rate
 AND required checks pass (index.html exists, html well-formed, js syntax, manifest valid) AND every plan acceptance id present in results.
+
+Stopping Kyora is not a cancel: `RunManager.stop()` sets its stopping flag before the runs' cancel events, and a
+runner that sees both ends the run BLOCKED with its built work and iteration commits kept. A queued run is not
+started once the flag is set. Runs that a hard kill (or the stop) leaves in an active or `created` state are
+marked BLOCKED with the same reason on the next start.
+
+Lineage branches: a run works on `lineage/main` (first generation), on the head branch of its parent slide
+(modify), or on its own `lineage/<rid>`. A branch held by another unfinished run (prepared, not ended, no slide
+committed yet) is never shared: the new run (or an import) gets its own `lineage/<rid>` instead. `run.options.tip`
+records the commit the run last left on its branch (its base until its first commit). Resume restores exactly
+that commit (forced checkout, untracked and ignored leftovers removed); when the branch no longer points there the
+run BLOCKS with a reason instead of testing someone else's game. Rollback only resets a branch whose tip is still
+the run's own commit.
+
+Cancel: a running run gets its cancel event (it rolls back itself). A queued run that was never prepared left
+nothing to roll back. A blocked or queued prepared run is rolled back under the per-project lock; while another
+run of the project holds that lock (it is executing in the shared work tree), only the cancelled run's branch ref
+moves and the work tree is never touched.
 
 ## Hub protocol (hub.py)
 

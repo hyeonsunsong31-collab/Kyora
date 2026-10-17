@@ -508,17 +508,39 @@ class GateTests(unittest.TestCase):
         plan = {"acceptance_tests": [{"id": "at-01", "kind": "browser"}, {"id": "at-02", "kind": "browser", "required": True},
                                      {"id": "at-03", "kind": "node"}, {"id": "at-04", "kind": "manual"}]}
         checks = [ck(f"c{i}") for i in range(40)] + [ck("at-01", group="browser"),
-                                                     ck("at-03", "skip", group="node")]  # skipped still 'reported'
+                                                     ck("at-03", "skip", group="node")]  # skipped = did not run
         g = QualityGate(self.cfg, plan).evaluate(checks)
         self.assertEqual(g.missing_spec_tests, ["at-02"])
         self.assertFalse(g.ok)
         missing = [c for c in g.checks if c.id == "missing:at-02"][0]
         self.assertEqual((missing.status, missing.group, missing.required), ("fail", "browser", True))
         self.assertIn("missing:at-02", g.required_failures)
-        self.assertEqual(g.total, 42)  # 41 passes + the missing failure
+        skipped = [c for c in g.checks if c.id == "at-03"][0]
+        self.assertEqual(skipped.status, "fail")
+        self.assertIn("did not run", skipped.detail)
+        self.assertEqual(g.total, 43)  # 41 passes + the skipped plan test + the missing failure
         # a static check with the same id does not satisfy the spec
         g2 = QualityGate(self.cfg, {"acceptance_tests": [{"id": "x-1", "kind": "browser"}]}).evaluate([ck("x-1")])
         self.assertEqual(g2.missing_spec_tests, ["x-1"])
+
+    def test_skipped_or_todo_acceptance_tests_never_pass(self):
+        plan = {"acceptance_tests": [{"id": "at-07", "kind": "node", "required": True},
+                                     {"id": "at-08", "kind": "node", "required": True},
+                                     {"id": "at-09", "kind": "browser"}]}
+        checks = [ck(f"c{i}") for i in range(60)] + [ck("at-07", "skip", "node", detail="skipped/todo"),
+                                                     ck("at-08", "skip", "node"), ck("at-09", "skip", "browser"),
+                                                     ck("lt-9", "skip", "node")]
+        g = QualityGate(self.cfg, plan).evaluate(checks)
+        self.assertFalse(g.ok)
+        self.assertEqual(sorted(g.required_failures), ["at-07", "at-08"])
+        st = {c.id: c for c in g.checks}
+        self.assertEqual([st[i].status for i in ("at-07", "at-08", "at-09")], ["fail"] * 3)
+        self.assertEqual(st["at-07"].detail, "did not run (skipped/todo)")
+        self.assertEqual(st["lt-9"].status, "skip")  # a skipped test outside the plan is just not counted
+        self.assertEqual((g.passed, g.total), (60, 63))
+        # a required check of any group that was skipped or deferred is a failure too
+        g2 = QualityGate(self.cfg, {}).evaluate([ck(f"c{i}") for i in range(60)] + [ck("r", "skip", required=True)])
+        self.assertEqual((g2.ok, g2.required_failures), (False, ["r"]))
 
     def test_required_acceptance_test_failure_blocks(self):
         plan = {"acceptance_tests": [{"id": "at-01", "kind": "browser", "required": True}]}

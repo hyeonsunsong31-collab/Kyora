@@ -515,6 +515,31 @@ class KimiPlanTests(_MockCase):
         self.assertEqual(self.mock.requests[1]["tool_choice"]["function"]["name"], "emit_plan")
         self.assertIsNotNone(kimi.last_metrics("plan"))
 
+    def test_plan_without_node_forbids_node_tests(self):
+        with_node = valid_plan()
+        with_node["acceptance_tests"][1]["kind"] = "node"
+        browser_only = valid_plan()
+
+        def handler(req):
+            return tool_response("emit_plan", browser_only if _has_tool_message(req) else with_node)
+        self.handler = handler
+        out = self.kimi().plan({"goal": "runner"}, node_available=False)
+        self.assertEqual({t["kind"] for t in out["acceptance_tests"]}, {"browser"})
+        self.assertIn("Node.js is NOT available", _system_text(self.mock.requests[0]))
+        self.assertEqual(len(self.mock.requests), 2)
+        self.assertIn("at-02", self.mock.requests[1]["messages"][3]["content"])
+        # a model that insists on node tests is refused with the reason (the PLAN stage then blocks)
+        self.mock.requests.clear()
+        self.handler = lambda req: tool_response("emit_plan", with_node)
+        with self.assertRaises(ValueError) as cm:
+            self.kimi().plan({"goal": "runner"}, node_available=False)
+        self.assertIn("Node.js is not available", str(cm.exception))
+        # with Node the same plan is fine and Kimi is told that node tests can run
+        self.mock.requests.clear()
+        out = self.kimi().plan({"goal": "runner"}, node_available=True)
+        self.assertEqual(out["acceptance_tests"][1]["kind"], "node")
+        self.assertIn("Node.js is available", _system_text(self.mock.requests[0]))
+
     def test_plan_raises_after_failed_repair(self):
         self.handler = lambda req: tool_response("emit_plan", valid_plan(n_tests=3))
         with self.assertRaises(ValueError) as cm:
