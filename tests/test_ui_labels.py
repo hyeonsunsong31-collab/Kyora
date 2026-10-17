@@ -180,6 +180,20 @@ class RunLabelRenderTests(unittest.TestCase):
         self.assertIn("threshold: gateThreshold(ctx), backend:", app)
         self.assertIn("K.metrics.renderTiles(ctx ? ctx.metrics : K.metrics.emptyMetrics(), ctx ? ctx.engine : null)", app)
 
+    def test_docs_do_not_fix_the_gate_or_the_fix_rounds(self):
+        fixed = {
+            "README.md": ("at least **94 % of that project", "GATE (>= 94 %)", "against 94 %", "up to 3 rounds"),
+            "docs/honesty.md": ("below 94 % - not complete", "`pass_rate >= 0.94`"),
+            "docs/ui-design.md": ('"below 94%"',),
+        }
+        for rel, phrases in fixed.items():
+            text = " ".join((REPO / rel).read_text(encoding="utf-8").split())
+            for phrase in phrases:
+                self.assertNotIn(phrase, text, f"{rel} presents a configurable gate value as fixed")
+            self.assertIn("94 % by default" if rel.startswith("docs/") else "quality.min_pass_rate", text)
+        readme = " ".join((REPO / "README.md").read_text(encoding="utf-8").split())
+        self.assertIn("up to `quality.max_fix_iterations` rounds (default 3)", readme)
+
     def test_bench_warning_names_the_configured_effort_and_engine(self):
         out = run_node(["js/bench.js"], """{
             cc: K.modules.bench.warning('high', 'claude_code'),

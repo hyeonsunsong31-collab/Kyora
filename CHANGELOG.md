@@ -183,6 +183,10 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - **The Tokkio presenter persona no longer fixes the gate or the engine.** It said the gate passes at
   ninety four percent and that Claude Code writes the code; it now says the gate passes at the
   threshold Kyora reports for the run (94 % by default) and names a code engine, Claude Code by default.
+- **The docs no longer present the gate threshold and the fix rounds as fixed.** `README.md`,
+  `docs/honesty.md` and `docs/ui-design.md` say "at least the configured pass rate (default 94 %,
+  `quality.min_pass_rate`)", "up to `quality.max_fix_iterations` rounds (default 3)" and that a slide
+  below the gate is labelled "below <threshold> %".
 
 ## 0.1.0 - 2026-10-15
 

@@ -66,7 +66,7 @@ source.
    syntax), Node checks when Node is present (`node --check`, `node --test`), and the plan's
    acceptance tests run **in a real browser** through Kyora's harness page (your phone's browser,
    Safari on iOS, or headless Chromium where available). `pass_rate = passed / counted checks`. The
-   gate passes only if `pass_rate >= 0.94` (`settings.quality.min_pass_rate`) **and** every required
+   gate passes only if `pass_rate >= settings.quality.min_pass_rate` (default 0.94) **and** every required
    check passes **and** every acceptance test id from Kimi K3's plan has a pass or fail result. A
    check that could not run is reported as skipped and is not counted; a required check that never
    ran (skipped or deferred) and a plan acceptance test that was skipped (`test.skip`, `test.todo`,
@@ -75,7 +75,8 @@ source.
    Windows without Node) it must plan browser tests only, and a plan that still contains Node tests
    is `blocked` with that reason instead of looping fixes for tests no device can run. Below the threshold, Kimi K3 reviews the results and screenshots and Claude Code fixes,
    for at most `settings.quality.max_fix_iterations` (default 3) rounds. If the gate still fails,
-   the slide is committed and labelled **below 94 % - not complete** (state `failed_gate`).
+   the slide is committed and labelled **below <threshold> % - not complete** (the run's threshold,
+   94 % by default; state `failed_gate`).
 2. **Kyora Bench certification threshold.** Kyora Bench runs the full pipeline on a fixed task set
    with bench-owned browser tests. A task passes when at least 94 % of **the bench's own tests** pass
    (the engine's own tests and the tautological "test id is in the injected file" checks are not
