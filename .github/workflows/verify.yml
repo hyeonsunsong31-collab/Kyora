@@ -1,0 +1,231 @@
+# Verification on real platforms and real services that a development sandbox cannot reach:
+# Windows (PowerShell 5.1 and 7), macOS, Linux on Python 3.10 and 3.13, Android Termux (bionic
+# libc, real pkg), 32-bit Alpine (the iSH userland, real apk), the browser end-to-end tests, the
+# release build, the live NVIDIA API with the committed keys, and the Tokkio overlay inside the
+# real nvidia-pipecat / pipecat-ai libraries.
+name: Kyora verification
+
+on:
+  push:
+    branches: ["claude/**", "main", "master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: unit (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: git identity for slide commits
+        run: |
+          git config --global user.name "Kyora CI"
+          git config --global user.email "ci@kyora.invalid"
+      - name: unit tests
+        run: python -m unittest discover -s tests -v
+
+  windows-launchers:
+    name: Windows launchers (PowerShell 5.1 and 7) and release
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: git identity
+        run: |
+          git config --global user.name "Kyora CI"
+          git config --global user.email "ci@kyora.invalid"
+      - name: Windows PowerShell 5.1 - version and self-check
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          "PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"
+          $env:KYORA_HOME = Join-Path $env:RUNNER_TEMP "kyora-home-ps5"
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\kyora.ps1 version
+          if ($LASTEXITCODE -ne 0) { throw "kyora.ps1 version failed: $LASTEXITCODE" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\kyora.ps1 selfcheck --no-probe
+          "selfcheck exit code: $LASTEXITCODE (1 = some check failed, e.g. no Claude Code on the runner)"
+      - name: PowerShell 7 - version
+        shell: pwsh
+        run: |
+          "PowerShell $($PSVersionTable.PSVersion)"
+          pwsh -NoProfile -File ./launchers/kyora.ps1 version
+          if ($LASTEXITCODE -ne 0) { throw "kyora.ps1 version failed under pwsh: $LASTEXITCODE" }
+      - name: Windows PowerShell 5.1 - serve (two listeners), one Kyora per home
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $env:KYORA_HOME = Join-Path $env:RUNNER_TEMP "kyora-home-serve"
+          $p = Start-Process -FilePath powershell -PassThru -WindowStyle Hidden `
+               -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','launchers\kyora.ps1','serve','--no-open','--port','18765' `
+               -RedirectStandardOutput serve.log -RedirectStandardError serve.err
+          $ok = $false
+          foreach ($i in 1..40) { Start-Sleep 1; try { $s = Invoke-RestMethod http://127.0.0.1:18765/api/status; $ok = $true; break } catch {} }
+          Get-Content serve.log -TotalCount 15
+          if (-not $ok) { Get-Content serve.err; throw "serve did not answer /api/status" }
+          "preview_port=$($s.preview_port) platform=$($s.platform.kind)"
+          $h = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$($s.preview_port)/static/runner/harness.html"
+          "preview listener harness: HTTP $($h.StatusCode)"
+          try { Invoke-WebRequest -UseBasicParsing -Headers @{Host='rebind.attacker.example:18765'} http://127.0.0.1:18765/api/settings?reveal=1 | Out-Null; throw "foreign Host was accepted" }
+          catch { if ($_.Exception.Response.StatusCode.value__ -ne 403) { throw $_ } else { "foreign Host refused with 403" } }
+          python -m kyora serve --port 18775 2> second.err
+          $second = $LASTEXITCODE
+          Get-Content second.err
+          "second Kyora on the same home exit code: $second"
+          taskkill /PID $p.Id /T /F | Out-Null
+          if ($second -ne 2 -or -not (Select-String -Path second.err -Pattern "Another Kyora is already running" -Quiet)) { throw "a second Kyora on the same KYORA_HOME was not refused" }
+      - name: install.ps1 -SkipClaude (winget path)
+        shell: powershell
+        continue-on-error: true
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\install.ps1 -SkipClaude
+          "install.ps1 exit code: $LASTEXITCODE"
+      - name: release build with checks on Windows
+        run: python scripts/build_release.py --check --build-dir "${{ runner.temp }}/build" --dist-dir "${{ runner.temp }}/dist"
+
+  macos-ports:
+    name: macOS port sharing and the home lock
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: hub on 0.0.0.0 and serve on 127.0.0.1, same port, different homes (diagnostic)
+        run: |
+          python -m kyora hub --home "$RUNNER_TEMP/hA" --port 18765 > hub.log 2>&1 &
+          sleep 8
+          python -m kyora serve --home "$RUNNER_TEMP/hB" --host 127.0.0.1 --port 18765 > serve.log 2>&1 &
+          sleep 8
+          echo "--- hub"; head -5 hub.log; echo "--- second (different home)"; head -5 serve.log
+          if grep -q "cannot listen" serve.log; then echo "RESULT: macOS refused the second listener"; else echo "RESULT: macOS let a second listener share the port (documented: only a different KYORA_HOME can do this)"; fi
+      - name: same home is refused by kyora.lock
+        run: |
+          set +e
+          python -m kyora serve --home "$RUNNER_TEMP/hA" --port 18785 2> second.err
+          rc=$?
+          echo "exit code $rc"; cat second.err
+          test "$rc" = "2" && grep -q "Another Kyora is already running with this home" second.err
+
+  termux:
+    name: Android Termux (bionic libc, real pkg)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: install-termux.sh, unit tests and launcher inside termux-docker
+        run: |
+          docker run --rm -v "$PWD:/src:ro" termux/termux-docker:x86_64 bash -c '
+            set -e
+            export DEBIAN_FRONTEND=noninteractive
+            cp -r /src "$HOME/kyora" && cd "$HOME/kyora"
+            yes | sh launchers/install-termux.sh
+            git config --global user.name "Kyora CI"; git config --global user.email ci@kyora.invalid
+            python -c "import sys, platform; print(sys.version, platform.libc_ver(), platform.machine())"
+            python -m unittest discover -s tests 2>&1 | tail -40
+            sh launchers/kyora-termux.sh version
+            python -m kyora selfcheck --no-probe || true
+          '
+
+  ish-alpine-386:
+    name: iSH userland (32-bit Alpine, musl, real apk)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: install-ish.sh, unit tests and launcher on linux/386 Alpine
+        run: |
+          docker run --rm --platform linux/386 -v "$PWD:/src:ro" alpine:3.20 sh -c '
+            set -e
+            cp -r /src /kyora && cd /kyora
+            sh launchers/install-ish.sh
+            git config --global user.name "Kyora CI"; git config --global user.email ci@kyora.invalid
+            python3 -c "import struct, sys, platform; print(sys.version, struct.calcsize(\"P\") * 8, \"bit\", platform.libc_ver())"
+            python3 -m unittest discover -s tests 2>&1 | tail -40
+            sh launchers/kyora-ish.sh version
+            python3 -m kyora selfcheck --no-probe || true
+          '
+
+  e2e-release:
+    name: browser e2e, release build, vendored Tokkio
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Playwright with Chromium
+        run: |
+          npm install -g playwright@1.56.1
+          npx -y playwright@1.56.1 install --with-deps chromium
+      - name: UI smoke (desktop and phone)
+        run: NODE_PATH="$(npm root -g)" node tests/e2e/ui_smoke.mjs
+      - name: preview harness scenarios
+        run: NODE_PATH="$(npm root -g)" node tests/e2e/preview_runner.mjs
+      - name: release build with checks
+        run: python scripts/build_release.py --check --build-dir "$RUNNER_TEMP/build" --dist-dir "$RUNNER_TEMP/dist"
+      - name: vendored Tokkio is unmodified
+        run: python scripts/vendor_tokkio.py --verify
+
+  nvidia-live:
+    name: live NVIDIA API (Kimi K3, Nemotron-3-Ultra)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: every model role against integrate.api.nvidia.com
+        run: python scripts/live_nvidia_check.py --out nvidia-live-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nvidia-live-report
+          path: nvidia-live-report.json
+          if-no-files-found: ignore
+
+  tokkio-overlay:
+    name: Tokkio overlay in real nvidia-pipecat 0.2.0 / pipecat-ai 0.0.68
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install the Tokkio 5.0.0-ga libraries
+        run: |
+          python -m pip install --upgrade pip
+          pip install "nvidia-pipecat==0.2.0" "opentelemetry-sdk==1.31.1" "opentelemetry-exporter-otlp-proto-grpc==1.31.1" \
+                      "opentelemetry-distro==0.52b1" onnxruntime
+          pip list | grep -i -E "pipecat|opentelemetry-sdk|onnxruntime"
+      - name: KyoraProcessor inside a real pipeline against a real Kyora
+        run: python scripts/tokkio_overlay_live_check.py
+      - name: config.kyora.yaml and the patched bot.py load in the real ACE controller layout
+        run: python scripts/tokkio_bot_import_check.py

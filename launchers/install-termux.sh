@@ -50,7 +50,12 @@ if ! python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; 
     exit 1
 fi
 git --version
-node --version
+if command -v node >/dev/null 2>&1; then
+    node --version
+else
+    echo "Node.js is not on PATH after the install: Kyora still runs; JS syntax checks and logic tests then run" >&2
+    echo "only in the browser test harness. Retry with: pkg install nodejs-lts" >&2
+fi
 
 claude_ok=0
 if [ "$with_claude" -eq 1 ]; then
