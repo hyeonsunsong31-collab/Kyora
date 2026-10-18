@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import socket
+import socketserver
 import threading
 import time
 import traceback
@@ -507,7 +508,13 @@ class _HTTPServer(ThreadingHTTPServer):
             self.allow_reuse_address = False
             if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
                 self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        super().server_bind()
+        # socketserver's bind without HTTPServer.server_bind's socket.getfqdn(host): that reverse lookup ran
+        # between bind() and listen() and took tens of seconds on macOS runners (connections timed out
+        # meanwhile). server_name only feeds CGI variables, which Kyora does not use.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = port
 
 
 class KyoraServer:

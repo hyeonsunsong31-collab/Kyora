@@ -35,6 +35,7 @@ This file lives under ``tests/`` on purpose: no mock output ever ships in ``kyor
 from __future__ import annotations
 
 import json
+import socketserver
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -279,6 +280,16 @@ class _MockHandler(BaseHTTPRequestHandler):
             self.mock._note_disconnect()
 
 
+class _MockServer(ThreadingHTTPServer):
+    """No reverse DNS on bind (``HTTPServer.server_bind`` calls ``getfqdn``, slow on macOS runners)."""
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = str(self.server_address[0]), self.server_address[1]
+
+
 class MockNIM:
     """Mock NVIDIA API Catalog server. Use as a context manager or call ``start()``/``stop()``."""
 
@@ -293,9 +304,7 @@ class MockNIM:
         self.disconnects = 0
         self._lock = threading.Lock()
         handler_cls = type("BoundMockHandler", (_MockHandler,), {"mock": self})
-        ThreadingHTTPServer.daemon_threads = True
-        ThreadingHTTPServer.allow_reuse_address = True
-        self._server = ThreadingHTTPServer((host, port), handler_cls)
+        self._server = _MockServer((host, port), handler_cls)
         self.host, self.port = self._server.server_address[0], self._server.server_address[1]
         self._thread: threading.Thread | None = None
 

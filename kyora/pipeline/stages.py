@@ -479,7 +479,9 @@ def _after_failed_attempts(ctx: StageContext, kind: str, eng: CodeEngine, result
         now = time.time()
         resets = sorted(((reset_time(r, now), e.name, r.error) for e, r, i in failed if i["failure_kind"] == "quota"),
                         key=lambda t: t[0] or 0.0)
-        resets = [t for t in resets if t[0] is not None and t[0] > now]
+        # a reset already in the past (a stale value or clock skew) means the limit should be over: resume after the
+        # usual grace instead of grading the half-finished work as the result (at most AUTO_RESUME_MAX times)
+        resets = [(max(t[0], now),) + t[1:] for t in resets if t[0] is not None]
         if resets:
             at, limited, limited_error = resets[0]
             if changed:

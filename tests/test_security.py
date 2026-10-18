@@ -576,6 +576,14 @@ class ExclusiveBindTests(unittest.TestCase):
         if hasattr(socket, "SO_REUSEPORT"):
             self.assertNotIn((socket.SO_REUSEPORT, 1), calls)  # would let a second process share the port
 
+    def test_binding_does_no_reverse_dns(self):
+        # HTTPServer.server_bind resolves the bind address with getfqdn between bind() and listen(); on the
+        # macOS runner that took longer than the release check's 15 s, so the packaged server never answered
+        with mock.patch.object(socket, "getfqdn", side_effect=AssertionError("reverse DNS on bind")):
+            srv = KyoraServer(SimpleNamespace(), "127.0.0.1", 0, Router(), preview_port=0)
+        srv.shutdown()
+        self.assertEqual(srv.httpd.server_name, "127.0.0.1")
+
     def test_stdlib_server_class_is_not_mutated(self):
         from http.server import ThreadingHTTPServer
         before = ThreadingHTTPServer.allow_reuse_address

@@ -57,13 +57,14 @@ class ScriptedEngine(CodeEngine):
     def run(self, job, sink, cancel) -> EngineResult:
         self.jobs.append(job)
         step = self.steps.pop(0) if self.steps else {"ok": True, "files": {"index.html": "<canvas></canvas>"}}
+        raw = {k: (v() if callable(v) else v) for k, v in (step.get("raw") or {}).items()}  # e.g. a reset "in 1 s"
         for rel, text in (step.get("files") or {}).items():
             p = Path(job.workspace) / rel
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(text, encoding="utf-8")
         return EngineResult(ok=bool(step.get("ok")), backend=self.name, requested_model=job.model,
                             active_model=step.get("model", "model-" + self.name), session_id=step.get("session"),
-                            error=step.get("error"), raw=dict(step.get("raw") or {}))
+                            error=step.get("error"), raw=raw)
 
 
 # ============================================================================= classification
@@ -485,13 +486,15 @@ class LimitBlockTests(_Harness):
         self.assertIn("code engine (openai_agent) hit a usage limit", cm.exception.reason)
         self.assertIn("the engines tried: claude_code:", cm.exception.reason)
 
-    def test_auto_resume_off_or_reset_in_the_past_blocks_plainly(self):
+    def test_a_reset_in_the_past_resumes_now_and_auto_resume_off_blocks_plainly(self):
         self.agent.available = False
-        self.claude.steps = [self.quota(time.time() - 10)]
+        self.claude.steps = [self.quota(time.time() - 10, files={"index.html": "<b>half</b>"})]
         ctx = self.ctx()
-        with self.assertRaises(StageBlocked) as cm:
+        before = time.time()
+        with self.assertRaises(StageBlocked) as cm:  # not measured as the result: the limit should be over
             S.run_engine(ctx, "build", "B")
-        self.assertIsNone(cm.exception.resume_at)
+        self.assertGreaterEqual(cm.exception.resume_at, before)
+        self.assertLessEqual(cm.exception.resume_at, time.time())
         self.app.config.engines.auto_resume_on_limit = False
         self.claude.steps = [self.quota(time.time() + 600)]
         ctx = self.ctx()
@@ -558,6 +561,7 @@ class AutoResumeTests(_Harness):
     def blocked_run(self, at, state="blocked"):
         p = self.store.create("limited")
         run = self.store.create_run(p.id, "generate", "a game")
+        at = at() if callable(at) else at  # after the (slow on Windows/macOS) project creation
         self.store.set_state(run, state, blocked_reason="usage limit", auto_resume_at=at)
         return run
 
@@ -577,7 +581,7 @@ class AutoResumeTests(_Harness):
     def test_timer_resumes_the_run_after_the_reset(self):
         rm = self.manager()
         with mock.patch.object(R, "AUTO_RESUME_GRACE_S", 0.0):
-            run = self.blocked_run(time.time() + 0.3)
+            run = self.blocked_run(lambda: time.time() + 1.0)
             self.assertTrue(rm._arm_auto_resume(run))
             self.assertIn(run.id, rm.status()["auto_resume"])
             self.assertTrue(self.wait_for(lambda: rm.is_active(run.id)), "the timer did not resume the run")
@@ -681,7 +685,7 @@ class AutoResumeEndToEndTests(_Harness):
     def test_limited_run_resumes_and_completes(self):
         self.agent.available = False
         self.claude.steps = [{"ok": False, "error": "api_error (HTTP 429): " + SESSION_LIMIT, "session": "sess-limited",
-                              "raw": {"failure_kind": "quota", "resets_at": time.time() + 0.5},
+                              "raw": {"failure_kind": "quota", "resets_at": lambda: time.time() + 1.0},
                               "files": {"index.html": "<canvas></canvas><script>half</script>"}},
                              {"ok": True, "session": "sess-limited",
                               "files": {"index.html": "<canvas></canvas><script>whole</script>"}}]

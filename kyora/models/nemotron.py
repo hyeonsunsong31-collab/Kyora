@@ -218,7 +218,8 @@ class Nemotron:
 
     ROLE = ROLE
     MAX_TOKENS: dict[str, int] = {"design": 16384, "ui_spec": 12288, "narration": 96}
-    MAX_RETRY_TOKENS = 32768
+    # the model card's decoding defaults; at temperature 0.2 a live UI spec repeated itself until the token limit
+    STRUCTURED_SAMPLING: dict[str, float] = {"temperature": 1.0, "top_p": 0.95}
 
     def __init__(self, client: NIMClient, model: str, bus, nemotron_cfg, fallback_models: Sequence[str] = ()):
         if client is None:
@@ -231,6 +232,7 @@ class Nemotron:
         self.cfg = nemotron_cfg
         self._lock = threading.Lock()
         self._last_metrics: dict[str, dict] = {}
+        self._answered_by: dict[str, str] = {}
 
     # ------------------------------------------------------------------ model
     @property
@@ -262,54 +264,80 @@ class Nemotron:
                  tools: list[dict] | None = None, tool_choice: Any = None, run_id: str | None = None,
                  project_id: str | None = None, cancel: threading.Event | None = None,
                  max_tokens: int | None = None, purpose: str | None = None, publish_deltas: bool = True,
-                 timeout_s: float | None = None) -> ChatResult:
+                 timeout_s: float | None = None, sampling: Mapping[str, float] | None = None,
+                 chain: ModelChain | None = None) -> ChatResult:
         """One Nemotron chat call with ``model.*`` events on the bus.
 
-        ``thinking=True`` -> ``temperature 1.0, top_p 0.95``; ``False`` -> ``temperature 0.2``;
-        the body always carries ``chat_template_kwargs.enable_thinking``.
+        ``thinking=True`` -> ``temperature 1.0, top_p 0.95``; ``False`` -> ``temperature 0.2``, unless
+        ``sampling`` says otherwise; the body always carries ``chat_template_kwargs.enable_thinking``.
+        ``chain`` replaces the role's model chain for this call (a later model after an unusable answer).
         """
         msgs = ([{"role": "system", "content": system}] if system else []) + list(messages)
-        sampling: dict[str, float] = {"temperature": 1.0, "top_p": 0.95} if thinking else {"temperature": 0.2}
+        if sampling is None:
+            sampling = {"temperature": 1.0, "top_p": 0.95} if thinking else {"temperature": 0.2}
         extra = {"chat_template_kwargs": {"enable_thinking": bool(thinking)}}
+        answered: list[str] = []
+
         def call(model: str) -> ChatResult:
             fields = {} if model == self.chain.requested else {"requested_model": self.chain.requested, "fallback": True}
-            return chat_with_events(self.client, self.bus, role=role, model=model, run_id=run_id,
-                                    project_id=project_id, purpose=purpose, publish_deltas=publish_deltas,
-                                    event_fields=fields, messages=msgs, tools=tools, tool_choice=tool_choice,
-                                    max_tokens=max_tokens, extra=extra, cancel=cancel, timeout_s=timeout_s, **sampling)
-        res = call_with_model_fallback(self.chain, self.bus, call, role=role, run_id=run_id, project_id=project_id,
-                                       purpose=purpose)
+            res = chat_with_events(self.client, self.bus, role=role, model=model, run_id=run_id,
+                                   project_id=project_id, purpose=purpose, publish_deltas=publish_deltas,
+                                   event_fields=fields, messages=msgs, tools=tools, tool_choice=tool_choice,
+                                   max_tokens=max_tokens, extra=extra, cancel=cancel, timeout_s=timeout_s, **dict(sampling))
+            answered.append(model)
+            return res
+        res = call_with_model_fallback(chain or self.chain, self.bus, call, role=role, run_id=run_id,
+                                       project_id=project_id, purpose=purpose)
+        with self._lock:
+            self._answered_by[purpose or role] = answered[-1] if answered else self.chain.active
         self._remember(purpose or role, res)
         return res
+
+    def answered_by(self, purpose: str) -> str:
+        """The model that answered the most recent call for ``purpose``."""
+        with self._lock:
+            return self._answered_by.get(purpose, self.chain.active)
 
     def _structured(self, tool: dict, *, system: str, user: str, thinking: bool, purpose: str, max_tokens: int,
                     run_id: str | None, project_id: str | None, cancel: threading.Event | None,
                     normalize: Callable[[Mapping], dict] | None = None) -> tuple[dict, ChatResult]:
         """Ask for a tool call; fall back to JSON-in-text, and to a tool-less request when tools are rejected.
 
-        An answer cut off at the token limit or failing ``normalize`` is asked for once more, without
-        thinking and with twice the budget: on 2026-10-18 a live UI spec spent all 12288 tokens in
-        thinking mode and arrived truncated (no ``tokens`` object).
+        Sampled at the model card's defaults (temperature 1.0, top_p 0.95). An answer cut off at the token
+        limit or failing ``normalize`` is asked for once more without thinking and as plain JSON text (no
+        forced tool call), then once the same way from the next model of the role's chain (published as
+        ``model.fallback``). Live, 2026-10-18: with thinking and a forced tool call Nemotron-3-Ultra spent
+        whole budgets (16384 tokens of design, 12288 of UI spec) without a usable call, and a forced-tool
+        retry repeated itself until 24576 tokens; without thinking the answer needs far less than the budget.
         """
         name = tool["function"]["name"]
         error = ""
-        for attempt in (1, 2):
-            think = thinking if attempt == 1 else False
-            budget = max_tokens if attempt == 1 else min(max_tokens * 2, self.MAX_RETRY_TOKENS)
-            prompt = user if attempt == 1 else (
-                f"{user}\n\nYour previous answer was not usable ({error}). Call {name} once with the complete JSON "
-                "object; keep every value short so the whole answer fits.")
-            messages = [{"role": "user", "content": prompt}]
-            try:
-                res = self.generate(system=system, messages=messages, thinking=think, tools=[tool],
-                                    tool_choice=force_tool(name), run_id=run_id, project_id=project_id, cancel=cancel,
-                                    max_tokens=budget, purpose=purpose)
-            except NIMError as exc:
-                if not is_tool_rejection(exc):
-                    raise
-                log.warning("nemotron %s: gateway rejected tools (%s); retrying without tools", purpose, exc)
-                res = self.generate(system=system, messages=messages, thinking=think, run_id=run_id,
-                                    project_id=project_id, cancel=cancel, max_tokens=budget, purpose=purpose)
+        chain: ModelChain | None = None
+        made = 0
+        for attempt in (1, 2, 3):
+            if attempt == 3:
+                tried = self.answered_by(purpose)
+                later = [m for m in self.chain.candidates() if m != tried]
+                if not later:
+                    break
+                chain = ModelChain(later[0], later[1:])
+                self._publish_unusable(tried, later[0], error, purpose, run_id, project_id)
+            messages = [{"role": "user", "content": user if attempt == 1 else (
+                f"{user}\n\nA previous answer was not usable ({error}). Reply with ONLY the complete JSON object "
+                f"that {name} takes (no prose, no code fence); keep every value short so the whole answer fits.")}]
+            made += 1
+            kwargs = dict(system=system, messages=messages, run_id=run_id, project_id=project_id, cancel=cancel,
+                          max_tokens=max_tokens, purpose=purpose, sampling=self.STRUCTURED_SAMPLING, chain=chain)
+            if attempt == 1:
+                try:
+                    res = self.generate(thinking=thinking, tools=[tool], tool_choice=force_tool(name), **kwargs)
+                except NIMError as exc:
+                    if not is_tool_rejection(exc):
+                        raise
+                    log.warning("nemotron %s: gateway rejected tools (%s); retrying without tools", purpose, exc)
+                    res = self.generate(thinking=thinking, **kwargs)
+            else:
+                res = self.generate(thinking=False, **kwargs)
             obj = extract_structured(res, name)
             truncated = res.finish_reason == "length"
             if obj is None:
@@ -321,9 +349,23 @@ class Nemotron:
                 except ValueError as exc:
                     error = f"{exc}" + (" (cut off at the token limit)" if truncated else "")
             if attempt == 1:
-                log.warning("nemotron %s: %s; asking once more without thinking and a %d-token budget", purpose, error,
-                            min(max_tokens * 2, self.MAX_RETRY_TOKENS))
-        raise ValueError(f"Nemotron returned no usable {name} payload after one retry: {error}")
+                log.warning("nemotron %s: %s; asking once more without thinking, as plain JSON", purpose, error)
+        raise ValueError(f"Nemotron returned no usable {name} payload after {made} attempts: {error}")
+
+    def _publish_unusable(self, from_model: str, to_model: str, error: str, purpose: str,
+                          run_id: str | None, project_id: str | None) -> None:
+        log.warning("nemotron %s: %s gave no usable answer twice (%s); asking %s", purpose, from_model, error, to_model)
+        if self.bus is None:
+            return
+        from ..pipeline.events import MODEL_FALLBACK
+        try:
+            self.bus.publish(MODEL_FALLBACK, {"kind": "model", "role": self.ROLE, "requested": self.chain.requested,
+                                              "from_model": from_model, "to_model": to_model, "status": None,
+                                              "reason": f"no usable {purpose} answer after a retry: {error}"[:400],
+                                              "temporary": True, "purpose": purpose},
+                             run_id=run_id, project_id=project_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("event publish failed (model.fallback): %s", exc)
 
     # ------------------------------------------------------------------ design document
     def design_doc(self, intake: dict, plan: dict, attachments: list[dict] | None = None, run_id: str | None = None,

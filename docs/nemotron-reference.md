@@ -29,7 +29,16 @@ Sampling used by Kyora (`kyora/models/nemotron.py`), with thinking switched thro
 | Mode | When | Request |
 |---|---|---|
 | thinking on | design document and UI spec (default; `settings.nemotron.thinking_for_design`) | `temperature 1.0`, `top_p 0.95`, `chat_template_kwargs: {"enable_thinking": true}` |
-| thinking off | presenter narration (one sentence, at most 120 characters), and design / UI spec when the setting is false | `temperature 0.2`, `chat_template_kwargs: {"enable_thinking": false}` |
+| thinking off, structured | design document and UI spec when the setting is false, and every retry of an unusable answer | `temperature 1.0`, `top_p 0.95` (the model card's defaults), `chat_template_kwargs: {"enable_thinking": false}` |
+| thinking off, short | presenter narration (one sentence, at most 120 characters) | `temperature 0.2`, `chat_template_kwargs: {"enable_thinking": false}` |
+
+A design document or UI spec that arrives cut off at the token limit, or without a required part, is
+asked for once more without thinking and as plain JSON text (no forced tool call), then once the same
+way from the next model of the Nemotron role's chain (`fallback_models`, published as
+`model.fallback`). On 2026-10-18, with thinking and a forced tool call, Nemotron-3-Ultra spent whole
+budgets (16384 tokens of design, 12288 of UI spec) without a usable call, and a forced-tool retry at
+`temperature 0.2` repeated itself until 24576 tokens; long structured answers are therefore never
+sampled at the low temperature, and a retry does not force the tool call.
 
 The Tokkio avatar's own real-time LLM (`tokkio-kyora/src/bot.kyora.py`, outside Kyora's process) uses
 the thinking-off request as well: `temperature 0.2` and `extra_body={"chat_template_kwargs":

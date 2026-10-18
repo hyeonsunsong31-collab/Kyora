@@ -21,7 +21,7 @@ from kyora.models.kimi import (
 )
 from kyora.models.nemotron import NARRATION_MAX_CHARS, Nemotron, clean_narration, normalize_ui_spec
 from kyora.models.nim_client import NIMClient, NIMError
-from kyora.pipeline.events import MODEL_DELTA, MODEL_ERROR, EventBus
+from kyora.pipeline.events import MODEL_DELTA, MODEL_ERROR, MODEL_FALLBACK, EventBus
 from tests.mock_nim import MockNIM, has_image, has_role, last_user_text, scripted_handler, tool_response
 
 NEMOTRON_MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
@@ -153,7 +153,9 @@ class NemotronTests(_MockCase):
         self.handler = lambda req: {"content": "Here you go:\n```json\n" + json.dumps(design) + "\n```"}
         out = self.nemotron(thinking_for_design=False).design_doc({}, {})
         self.assertEqual(out["gdd_markdown"], "GDD body")
-        self.assertEqual(self.mock.last_request["temperature"], 0.2)
+        # the model card's defaults without thinking too: at 0.2 a live UI spec repeated itself to the limit
+        self.assertEqual((self.mock.last_request["temperature"], self.mock.last_request["top_p"]), (1.0, 0.95))
+        self.assertFalse(self.mock.last_request["chat_template_kwargs"]["enable_thinking"])
 
     def test_design_doc_tool_rejection_falls_back_without_tools(self):
         design = {"gdd_markdown": "G", "narrative": "", "dialogue": [], "presenter_intro": ""}
@@ -189,6 +191,39 @@ class NemotronTests(_MockCase):
             self.nemotron().ui_spec({}, {})
         self.assertEqual(len(self.mock.requests), 2)  # the invalid answer was asked for once more, then refused
 
+    def test_second_unusable_answer_is_asked_from_the_next_chain_model(self):
+        # live, 2026-10-18: the retry without thinking also ran to the limit (24576 tokens of repetition)
+        good = {"tokens": {"color": {"bg": "#111"}, "type": {}, "spacing": {}, "radius": {}},
+                "screens": [{"id": "menu", "name": "Menu", "purpose": "start", "components": []}], "copy": {}}
+
+        def handler(req):
+            if req["model"] == NEMOTRON_MODEL:
+                return tool_response("emit_ui_spec", {"screens": [{"id": "menu"}]}, finish_reason="length")
+            return {"content": json.dumps(good)}  # asked for plain JSON
+        self.handler = handler
+        nem = Nemotron(self.client, NEMOTRON_MODEL, self.bus, NemotronCfg(thinking_for_design=True),
+                       ["nvidia/nemotron-3-super-120b-a12b"])
+        out = nem.ui_spec({}, {}, run_id="r_ui")
+        self.assertEqual(out["tokens"]["color"], {"bg": "#111"})
+        self.assertEqual([r["model"] for r in self.mock.requests],
+                         [NEMOTRON_MODEL, NEMOTRON_MODEL, "nvidia/nemotron-3-super-120b-a12b"])
+        third = self.mock.requests[2]
+        self.assertFalse(third["chat_template_kwargs"]["enable_thinking"])
+        self.assertNotIn("tools", third)
+        self.assertEqual((third["temperature"], third["top_p"]), (1.0, 0.95))
+        [fb] = [e.data for e in self.events(MODEL_FALLBACK, "r_ui")]
+        self.assertEqual((fb["from_model"], fb["to_model"], fb["purpose"]),
+                         (NEMOTRON_MODEL, "nvidia/nemotron-3-super-120b-a12b", "ui_spec"))
+        self.assertIn("cut off at the token limit", fb["reason"])
+        self.assertEqual(nem.model, NEMOTRON_MODEL)  # one unusable answer does not retire the requested model
+        self.assertEqual(nem.answered_by("ui_spec"), "nvidia/nemotron-3-super-120b-a12b")
+
+        self.mock.requests.clear()  # every model unusable: three attempts, then a clear error
+        self.handler = lambda req: tool_response("emit_ui_spec", {"screens": []}, finish_reason="length")
+        with self.assertRaisesRegex(ValueError, "after 3 attempts"):
+            nem.ui_spec({}, {})
+        self.assertEqual(len(self.mock.requests), 3)
+
     def test_truncated_ui_spec_is_asked_for_again_without_thinking(self):
         # live, 2026-10-18: thinking used all 12288 tokens and the payload arrived cut off without "tokens"
         good = {"tokens": {"color": {"bg": "#000"}, "type": {}, "spacing": {}, "radius": {}},
@@ -203,9 +238,14 @@ class NemotronTests(_MockCase):
         self.assertEqual(out["tokens"]["color"], {"bg": "#000"})
         first, second = self.mock.requests
         self.assertTrue(first["chat_template_kwargs"]["enable_thinking"])
+        self.assertEqual(first["tool_choice"], {"type": "function", "function": {"name": "emit_ui_spec"}})
         self.assertFalse(second["chat_template_kwargs"]["enable_thinking"])
-        self.assertEqual(second["max_tokens"], 2 * first["max_tokens"])
+        # plain JSON text: a forced tool call looped to 24576 tokens live; without thinking the budget suffices
+        self.assertNotIn("tools", second)
+        self.assertNotIn("tool_choice", second)
+        self.assertEqual(second["max_tokens"], first["max_tokens"])
         self.assertIn("cut off at the token limit", second["messages"][-1]["content"])
+        self.assertIn("Reply with ONLY the complete JSON object", second["messages"][-1]["content"])
         with self.assertRaises(ValueError):
             normalize_ui_spec({"tokens": {"color": {}}, "screens": [{"id": "a"}]})
 
