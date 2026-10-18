@@ -23,7 +23,6 @@ from __future__ import annotations
 import hmac
 import json
 import logging
-import mimetypes
 import os
 import re
 import socket
@@ -38,6 +37,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
+from .util.mime import guess_type as guess_mime
 from .util.sse import encode_event, keepalive
 
 log = logging.getLogger("kyora.server")
@@ -212,7 +212,7 @@ class Response:
         path = Path(path)
         if not path.is_file():
             return Response.error(404, "file not found")
-        ctype = content_type or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        ctype = content_type or guess_mime(str(path)) or "application/octet-stream"
         headers = [("Content-Type", ctype), ("Cache-Control", "no-cache")]
         if download_name:
             headers.append(("Content-Disposition", f'attachment; filename="{download_name}"'))
@@ -271,7 +271,7 @@ def read_resource(rel: str) -> bytes | None:
     except (FileNotFoundError, OSError, NotADirectoryError, ValueError):
         return None
     with _STATIC_LOCK:
-        _STATIC_CACHE[rel] = (data, mimetypes.guess_type(rel)[0] or "application/octet-stream")
+        _STATIC_CACHE[rel] = (data, guess_mime(rel) or "application/octet-stream")
     return data
 
 
@@ -285,7 +285,7 @@ def resource_response(rel: str, cache: str = "no-cache") -> Response:
     data = read_resource(rel) if rel else None
     if data is None:
         return Response.error(404, "not found")
-    ctype = mimetypes.guess_type(rel)[0] or "application/octet-stream"
+    ctype = guess_mime(rel) or "application/octet-stream"
     if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
         ctype += "; charset=utf-8"
     return Response(200, [("Content-Type", ctype), ("Cache-Control", cache)], data)

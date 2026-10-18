@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import Sequence
 
 
@@ -19,7 +22,48 @@ def popen(args: Sequence[str], *, cwd=None, env=None, stdin=subprocess.DEVNULL, 
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     else:
         kwargs["start_new_session"] = True
-    return subprocess.Popen(list(args), **kwargs)
+    try:
+        return subprocess.Popen(list(args), **kwargs)
+    except FileNotFoundError:
+        alt = termux_shebang_argv(args, env)
+        if alt is None:
+            raise
+        return subprocess.Popen(alt, **kwargs)
+
+
+def termux_shebang_argv(args: Sequence[str], env: dict | None = None) -> list[str] | None:
+    """Termux without termux-exec: rewrite a script whose shebang names a missing interpreter.
+
+    Android has no /bin/sh or /usr/bin/env; Termux puts them in $PREFIX/bin and normally
+    rewrites shebangs through the LD_PRELOADed termux-exec. A process started without it
+    (seen in termux-docker) gets ENOENT for npm's ``#!/usr/bin/env node`` claude shim or a
+    ``#!/bin/sh`` script. Returns ``[$PREFIX/bin/<interp>, *shebang args, script, *rest]`` or
+    None when this is not that case.
+    """
+    if os.name == "nt" or not args:
+        return None
+    environ = env if env is not None else os.environ
+    prefix = environ.get("PREFIX") or os.environ.get("PREFIX") or ""
+    if "com.termux" not in prefix and "com.termux" not in sys.prefix:
+        return None
+    prefix = prefix or str(Path(sys.prefix))
+    script = shutil.which(args[0], path=environ.get("PATH")) if os.sep not in args[0] else args[0]
+    if not script or not os.path.isfile(script):
+        return None
+    try:
+        with open(script, "rb") as fh:
+            first = fh.readline(256)
+    except OSError:
+        return None
+    if not first.startswith(b"#!"):
+        return None
+    parts = first[2:].decode("utf-8", "replace").strip().split()
+    if not parts or os.path.exists(parts[0]) or not parts[0].startswith(("/bin/", "/usr/bin/")):
+        return None
+    interp = os.path.join(prefix, "bin", os.path.basename(parts[0]))
+    if not os.path.isfile(interp):
+        return None
+    return [interp, *parts[1:], script, *list(args[1:])]
 
 
 def kill_tree(proc: subprocess.Popen, grace_s: float = 10.0) -> None:

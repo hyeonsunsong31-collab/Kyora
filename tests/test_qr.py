@@ -366,7 +366,7 @@ def _node_env() -> dict | None:
         npm = shutil.which("npm")
         if npm:
             try:
-                root = subprocess.run([npm, "root", "-g"], capture_output=True, text=True, timeout=30).stdout.strip()
+                root = subprocess.run([npm, "root", "-g"], capture_output=True, text=True, encoding="utf-8", timeout=30).stdout.strip()
                 if root:
                     env["NODE_PATH"] = root
             except (OSError, subprocess.SubprocessError):
@@ -379,7 +379,7 @@ def _node_env() -> dict | None:
 def _node_resolve(env: dict, module: str) -> str | None:
     try:
         proc = subprocess.run(["node", "-e", f"process.stdout.write(require.resolve({json.dumps(module)}))"],
-                              capture_output=True, text=True, timeout=30, env=env)
+                              capture_output=True, text=True, encoding="utf-8", timeout=30, env=env)
     except (OSError, subprocess.SubprocessError):
         return None
     return proc.stdout.strip() if proc.returncode == 0 and proc.stdout.strip() else None
@@ -454,7 +454,7 @@ class RealDecoderTests(unittest.TestCase):
             script.write_text(_BROWSER_SCRIPT, encoding="utf-8")
             cases = Path(d) / "cases.json"
             cases.write_text(json.dumps([qr_svg(t, scale=4, margin=4, ecc=e) for t, e in self.TEXTS]), encoding="utf-8")
-            proc = subprocess.run(["node", str(script), str(cases), jsqr], capture_output=True, text=True,
+            proc = subprocess.run(["node", str(script), str(cases), jsqr], capture_output=True, text=True, encoding="utf-8",
                                   timeout=120, env=env, cwd=d)
         if proc.returncode != 0:
             self.skipTest(f"headless chromium unavailable: {proc.stderr.strip()[-300:]}")

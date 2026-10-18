@@ -51,7 +51,7 @@ def run_node(files: list[str], expr: str):
         path = Path(td) / "probe.js"
         path.write_text(script, encoding="utf-8")
         proc = subprocess.run([NODE, str(path), json.dumps([str(WEB / f) for f in files])],
-                              capture_output=True, text=True, timeout=60, cwd=td)
+                              capture_output=True, text=True, encoding="utf-8", timeout=60, cwd=td)
     if proc.returncode != 0:
         raise AssertionError(f"node failed: {proc.stderr[-800:]}")
     return json.loads(proc.stdout)

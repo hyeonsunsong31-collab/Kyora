@@ -131,7 +131,8 @@ class ZipperTests(unittest.TestCase):
                 with self.subTest(name=name), self.assertRaises(UnsafeZipError):
                     zipper._normalise_name(name)
             self.assertEqual(zipper._normalise_name("src/game.js"), ("src/game.js", False))
-        self.assertEqual(zipper._normalise_name("index.html."), ("index.html.", False))  # harmless on POSIX
+        if os.name != "nt":  # on Windows the real check (above, patched) applies
+            self.assertEqual(zipper._normalise_name("index.html."), ("index.html.", False))  # harmless on POSIX
 
     def test_limits(self):
         with self.assertRaises(UnsafeZipError):

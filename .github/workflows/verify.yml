@@ -14,7 +14,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: verify-${{ github.ref }}
+  # one run per commit: a new push does not cancel the previous commit's slower platform jobs
+  group: verify-${{ github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -64,7 +65,10 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\kyora.ps1 version
           if ($LASTEXITCODE -ne 0) { throw "kyora.ps1 version failed: $LASTEXITCODE" }
           powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\kyora.ps1 selfcheck --no-probe
-          "selfcheck exit code: $LASTEXITCODE (1 = some check failed, e.g. no Claude Code on the runner)"
+          $sc = $LASTEXITCODE
+          "selfcheck exit code: $sc (1 = some check failed: the runner has no Claude Code)"
+          if ($sc -gt 1) { throw "selfcheck crashed: $sc" }
+          exit 0
       - name: PowerShell 7 - version
         shell: pwsh
         run: |
@@ -143,9 +147,20 @@ jobs:
             yes | sh launchers/install-termux.sh
             git config --global user.name "Kyora CI"; git config --global user.email ci@kyora.invalid
             python -c "import sys, platform; print(sys.version, platform.libc_ver(), platform.machine())"
-            python -m unittest discover -s tests 2>&1 | tail -40
+            rc=0; python -m unittest discover -s tests > unittest.log 2>&1 || rc=$?
+            grep -E "^(FAIL|ERROR):" unittest.log || true; tail -40 unittest.log
             sh launchers/kyora-termux.sh version
             python -m kyora selfcheck --no-probe || true
+            exit "$rc"
+          '
+      - name: Claude Code on Termux (diagnostic - the docs say there is no official Android build)
+        continue-on-error: true
+        run: |
+          docker run --rm -v "$PWD:/src:ro" termux/termux-docker:x86_64 bash -c '
+            cp -r /src "$HOME/kyora" && cd "$HOME/kyora"
+            yes | sh launchers/install-termux.sh --with-claude; echo "install-termux.sh --with-claude exit code: $?"
+            command -v claude && (claude --version; echo "claude --version exit code: $?")
+            python -m kyora selfcheck --no-probe | grep -E "Claude|engine" || true
           '
 
   ish-alpine-386:
@@ -162,9 +177,11 @@ jobs:
             sh launchers/install-ish.sh
             git config --global user.name "Kyora CI"; git config --global user.email ci@kyora.invalid
             python3 -c "import struct, sys, platform; print(sys.version, struct.calcsize(\"P\") * 8, \"bit\", platform.libc_ver())"
-            python3 -m unittest discover -s tests 2>&1 | tail -40
+            rc=0; python3 -m unittest discover -s tests > unittest.log 2>&1 || rc=$?
+            grep -E "^(FAIL|ERROR):" unittest.log || true; tail -40 unittest.log
             sh launchers/kyora-ish.sh version
             python3 -m kyora selfcheck --no-probe || true
+            exit "$rc"
           '
 
   e2e-release:
@@ -201,13 +218,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: what the configured keys can call (models listed, per-model status)
+        run: python scripts/nvidia_diagnose.py --out nvidia-diagnose.json
       - name: every model role against integrate.api.nvidia.com
         run: python scripts/live_nvidia_check.py --out nvidia-live-report.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: nvidia-live-report
-          path: nvidia-live-report.json
+          path: |
+            nvidia-diagnose.json
+            nvidia-live-report.json
           if-no-files-found: ignore
 
   tokkio-overlay:

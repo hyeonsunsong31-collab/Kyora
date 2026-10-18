@@ -7,7 +7,7 @@ exactly as the pipeline does:
   1. self-check model probes (Nemotron-3-Ultra and Kimi K3: /models, 1-token chat, latency)
   2. Kimi K3 intake       (game request -> intake record)
   3. Kimi K3 plan         (intake -> files, tasks, acceptance tests)
-  4. Nemotron design doc  (GDD prose, narrative, dialogue)
+  4. Nemotron design doc  (GDD prose, narrative, dialogue; from a fixed intake/plan if Kimi failed)
   5. Nemotron UI spec     (tokens, screens, copy)
   6. Kimi K3 judge        (one dangerous and one ordinary tool call)
   7. Kimi K3 review       (a gate that failed)
@@ -35,6 +35,23 @@ from kyora.config import Config  # noqa: E402
 PROMPT = ("A small arcade game: blocks fall from the top of a canvas and the player moves a paddle "
           "with arrow keys or touch-drag to catch them. One point per catch, three lives, a game-over "
           "screen with restart, and a high-score table kept in localStorage.")
+
+
+FIXED_INTAKE = {"goal": "Block Catcher: catch falling blocks with a paddle", "genre": "arcade",
+                "platform": "web (touch + keyboard)", "must_haves": ["paddle", "falling blocks", "score", "3 lives",
+                                                                  "game over + restart", "local high scores"],
+                "references": [], "risks": [], "imported_base": False, "notes": ""}
+FIXED_PLAN = {
+    "title": "Block Catcher", "engine": "vanilla", "preview": True, "summary": "Catch falling blocks with a paddle.",
+    "files": [{"path": "index.html", "purpose": "entry"}, {"path": "src/game.js", "purpose": "game loop"}],
+    "contract": {"globals": ["window.Game"], "api": {"Game.start()": "start", "Game.getState()": "state"}},
+    "tasks": [{"id": "t1", "title": "Game", "depends_on": [], "files": ["src/game.js"], "done_when": "tests pass"}],
+    "acceptance_tests": [{"id": f"at-0{i}", "name": n, "kind": "browser", "steps": n, "required": i == 1}
+                         for i, n in enumerate(["boots", "state shape", "keyboard moves", "catch scores",
+                                                "miss costs a life", "game over and restart"], start=1)],
+    "constraints": {"no_external_deps": True, "max_total_mb": 25, "touch_controls": True},
+    "design_brief_for_nemotron": "Bright arcade palette, large touch targets.",
+}
 
 
 def _short(obj, n: int = 600) -> str:
@@ -91,7 +108,8 @@ def main(argv=None) -> int:
         items = {i.get("id") or i.get("label"): {"status": i.get("status"), "detail": i.get("detail"),
                                                  "measured": i.get("measured")}
                  for i in rep.get("items", []) if "nemotron" in str(i).lower() or "kimi" in str(i).lower()}
-        bad = [k for k, v in items.items() if v["status"] == "fail"]
+        # a probe whose 1-token chat failed is a failed live check, whatever severity the self-check gives it
+        bad = [k for k, v in items.items() if v["status"] == "fail" or not (v.get("measured") or {}).get("chat_ok")]
         if bad:
             raise RuntimeError(f"self-check failed for {bad}: {json.dumps(items, ensure_ascii=False)[:800]}")
         return items
@@ -103,11 +121,14 @@ def main(argv=None) -> int:
     if intake:
         plan = step("Kimi K3 plan", lambda: app.kimi.plan(intake, node_available=False),
                     lambda: app.kimi.last_metrics("plan"))
-    if intake and plan:
-        step("Nemotron design doc", lambda: app.nemotron.design_doc(intake, plan),
-             lambda: app.nemotron.last_metrics("design"))
-        step("Nemotron UI spec", lambda: app.nemotron.ui_spec(intake, plan),
-             lambda: app.nemotron.last_metrics("ui_spec"))
+    # Nemotron is checked even when Kimi failed: it then designs from a fixed intake/plan (said in the report)
+    n_intake, n_plan = intake or FIXED_INTAKE, plan or FIXED_PLAN
+    note = "" if (intake and plan) else " [fixed intake/plan: Kimi did not deliver one]"
+    report["nemotron_input"] = "kimi" if not note else "fixed"
+    step("Nemotron design doc" + note, lambda: app.nemotron.design_doc(n_intake, n_plan),
+         lambda: app.nemotron.last_metrics("design"))
+    step("Nemotron UI spec" + note, lambda: app.nemotron.ui_spec(n_intake, n_plan),
+         lambda: app.nemotron.last_metrics("ui_spec"))
     ctx = {"workspace": "/work/game", "iteration": 0, "plan": plan or {}}
 
     def judge_pair():
@@ -131,9 +152,14 @@ def main(argv=None) -> int:
         return out
 
     step("Kimi K3 review (failed gate)", review, lambda: app.kimi.last_metrics("review"))
-    step("Nemotron narration", lambda: app.nemotron.narration(
-        "The build passed 47 of 48 measured checks; one touch test is being fixed."),
-        lambda: app.nemotron.last_metrics("narration"))
+    def narration():
+        # narration() never raises (the presenter must not break a run) and returns "" on failure
+        line = app.nemotron.narration("The build passed 47 of 48 measured checks; one touch test is being fixed.")
+        if not line:
+            raise RuntimeError("Nemotron returned no narration (the model call failed; see the model.error above)")
+        return line
+
+    step("Nemotron narration", narration, lambda: app.nemotron.last_metrics("narration"))
 
     report["ok"] = ok_all
     if args.out:

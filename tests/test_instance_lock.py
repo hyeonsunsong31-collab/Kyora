@@ -16,6 +16,13 @@ from kyora.util.instance_lock import InstanceLock
 REPO = Path(__file__).resolve().parent.parent
 
 
+def _tempdir(test: unittest.TestCase, prefix: str) -> str:
+    """A temp dir removed after every other cleanup: Windows cannot delete a held lock or an open sqlite file."""
+    d = tempfile.mkdtemp(prefix=prefix)
+    test.addCleanup(shutil.rmtree, d, True)
+    return d
+
+
 def _busy_port(test: unittest.TestCase) -> int:
     s = socket.socket()
     test.addCleanup(s.close)
@@ -46,7 +53,8 @@ class InstanceLockTests(unittest.TestCase):
             lb.release()
 
     def test_serve_refuses_a_home_held_by_another_kyora_before_starting_the_app(self):
-        with tempfile.TemporaryDirectory(prefix="kyora-lock-cli-") as d:
+        d = _tempdir(self, "kyora-lock-cli-")
+        if True:
             config_dir = Path(d) / "config"
             shutil.copytree(REPO / "config", config_dir)
             home = Path(d) / "home"
@@ -74,7 +82,8 @@ class InstanceLockTests(unittest.TestCase):
 
 class BenchEmbeddedServerTests(unittest.TestCase):
     def test_busy_main_port_and_explicit_preview_port_fall_back_to_ephemeral_ports(self):
-        with tempfile.TemporaryDirectory(prefix="kyora-bench-srv-") as d:
+        d = _tempdir(self, "kyora-bench-srv-")
+        if True:
             config_dir = Path(d) / "config"
             shutil.copytree(REPO / "config", config_dir)
             settings = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))

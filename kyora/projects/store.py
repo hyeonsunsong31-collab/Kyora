@@ -24,7 +24,6 @@ import base64
 import codecs
 import copy
 import logging
-import mimetypes
 import os
 import re
 import sqlite3
@@ -37,6 +36,7 @@ from typing import Any, Callable, Iterable
 from ..config import DEFAULT_SETTINGS
 from ..util.fs import atomic_write_bytes, atomic_write_json, read_json, rm_tree, safe_join
 from ..util.ids import new_id, now_iso
+from ..util.mime import guess_type as guess_mime
 from .zipper import UnsafeZipError, list_zip
 
 log = logging.getLogger("kyora.projects.store")
@@ -320,8 +320,10 @@ def _read_excerpt(path: Path, limit: int = TEXT_EXCERPT_BYTES) -> tuple[str, boo
 
 def _normalise_mime(mime: str | None, name: str) -> str:
     m = (mime or "").split(";")[0].strip().lower()
+    if m in _ZIP_MIMES:  # Chrome/Edge on Windows upload ZIPs as application/x-zip-compressed
+        return "application/zip"
     if not m or m == "application/octet-stream":
-        guess = mimetypes.guess_type(name)[0]
+        guess = guess_mime(name)
         if guess:
             return guess
         if name.lower().endswith(".zip"):

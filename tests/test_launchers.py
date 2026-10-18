@@ -294,9 +294,10 @@ class ShellLauncherRunTests(unittest.TestCase):
         stubs = self.tmp / "stubs"
         stubs.mkdir()
         log = self.tmp / "calls.log"
+        sh = shutil.which("sh") or "/bin/sh"  # Termux has no /bin/sh: a stub must name the real shell
         for tool in ("pkg", "apk"):
-            (stubs / tool).write_text(f'#!/bin/sh\necho "{tool} $*" >> "{log}"\n', encoding="utf-8")
-        (stubs / "npm").write_text(f'#!/bin/sh\necho "npm $*" >> "{log}"\nexit 1\n', encoding="utf-8")
+            (stubs / tool).write_text(f'#!{sh}\necho "{tool} $*" >> "{log}"\n', encoding="utf-8")
+        (stubs / "npm").write_text(f'#!{sh}\necho "npm $*" >> "{log}"\nexit 1\n', encoding="utf-8")
         for name in ("python", "python3"):
             (stubs / name).symlink_to(sys.executable)
         for p in stubs.iterdir():

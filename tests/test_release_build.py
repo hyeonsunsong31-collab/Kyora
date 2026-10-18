@@ -84,7 +84,8 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertIn("CHECK OK", self.out)
         self.assertNotIn("[FAIL]", self.out)
         self.assertIn("server uses the NVIDIA keys packaged in kyora.pyz", self.out)
-        self.assertIn(str(self.zip_path), self.out)
+        # the script prints resolved paths; on Windows %TEMP% may be an 8.3 short path (RUNNER~1)
+        self.assertTrue(str(self.zip_path) in self.out or str(self.zip_path.resolve()) in self.out, self.out)
 
     def test_pyz_version_runs_from_empty_dir(self):
         with tempfile.TemporaryDirectory() as work:

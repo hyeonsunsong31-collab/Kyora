@@ -155,7 +155,7 @@ class TaskFileTests(unittest.TestCase):
         self.assertGreaterEqual(len(files), 26)
         for f in files:
             with self.subTest(file=f.name):
-                proc = subprocess.run([NODE, "--check", str(f)], capture_output=True, text=True, timeout=60)
+                proc = subprocess.run([NODE, "--check", str(f)], capture_output=True, text=True, encoding="utf-8", timeout=60)
                 self.assertEqual(proc.returncode, 0, proc.stderr)
 
     @unittest.skipUnless(NODE, "node not installed")
@@ -179,7 +179,7 @@ for (const f of files) {
 console.log(JSON.stringify(out));
 """
         files = [str(p) for p in sorted(TASKS.glob("*.browser-tests.js"))]
-        proc = subprocess.run([NODE, "-e", script, str(API_JS), *files], capture_output=True, text=True, timeout=60)
+        proc = subprocess.run([NODE, "-e", script, str(API_JS), *files], capture_output=True, text=True, encoding="utf-8", timeout=60)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         registered = json.loads(proc.stdout)
         for f in files:
@@ -236,7 +236,7 @@ def _npm_root() -> str | None:
     if not npm:
         return None
     try:
-        return subprocess.run([npm, "root", "-g"], capture_output=True, text=True, timeout=30).stdout.strip() or None
+        return subprocess.run([npm, "root", "-g"], capture_output=True, text=True, encoding="utf-8", timeout=30).stdout.strip() or None
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -263,7 +263,7 @@ class FixtureBrowserTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             script = Path(td) / "run.js"
             script.write_text(_BROWSER_SCRIPT, encoding="utf-8")
-            proc = subprocess.run([NODE, str(script), str(API_JS), json.dumps(jobs)], capture_output=True, text=True,
+            proc = subprocess.run([NODE, str(script), str(API_JS), json.dumps(jobs)], capture_output=True, text=True, encoding="utf-8",
                                   timeout=120, env=env, cwd=td)
         try:
             out = json.loads(proc.stdout.strip().splitlines()[-1])

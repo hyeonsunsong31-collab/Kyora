@@ -579,6 +579,7 @@ def _headless_driver(ctx: StageContext, url: str, node: str) -> None:
     def _run() -> None:
         try:
             proc = subprocess.run([node, str(dst), url, "--timeout", str(timeout_ms)], capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace",
                                   timeout=timeout_ms / 1000 + 30, cwd=str(ctx.app.home))
             if proc.returncode != 0:
                 log.info("headless driver did not deliver a result (%s): %s", proc.returncode,

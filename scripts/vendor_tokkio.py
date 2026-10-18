@@ -118,7 +118,7 @@ def verify(vendor_dir: Path = VENDOR_DIR, manifest: Path = MANIFEST, quiet: bool
         print(f"EXTRA    {p}")
     ok = not (mismatched or missing or extra)
     if not quiet or not ok:
-        print(f"{'OK' if ok else 'FAIL'}: {len(actual)} files under {vendor_dir.relative_to(REPO) if vendor_dir.is_relative_to(REPO) else vendor_dir}, "
+        print(f"{'OK' if ok else 'FAIL'}: {len(actual)} files under {vendor_dir.relative_to(REPO).as_posix() if vendor_dir.is_relative_to(REPO) else vendor_dir.as_posix()}, "
               f"{len(expected)} listed in {manifest.name}, {len(mismatched)} mismatched, {len(missing)} missing, {len(extra)} extra")
     return 0 if ok else 1
 

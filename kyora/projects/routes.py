@@ -23,13 +23,13 @@ main listener ``/preview/...`` and ``/runner/...`` redirect there. Response shap
 from __future__ import annotations
 
 import logging
-import mimetypes
 import re
 import urllib.parse
 from pathlib import Path
 
 from ..pipeline.events import SLIDE_CREATED, TEST_BROWSER_RESULT
 from ..server import Request, Response, Router, parse_host, resource_response
+from ..util import mime
 from ..util.fs import atomic_write_json, safe_join
 from ..util.ids import now_iso, slug
 from .deck import CSP as DECK_CSP
@@ -41,28 +41,16 @@ log = logging.getLogger("kyora.projects.routes")
 
 MAX_BROWSER_RESULT_BYTES = 32 * 1024 * 1024
 _SLIDE_REF_RE = re.compile(r"^v(\d{1,6})$")
-_PREVIEW_MIME = {
-    ".html": "text/html", ".htm": "text/html", ".js": "application/javascript", ".mjs": "application/javascript",
-    ".cjs": "application/javascript", ".json": "application/json", ".map": "application/json",
-    ".wasm": "application/wasm", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png",
-    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif",
-    ".ico": "image/x-icon", ".bmp": "image/bmp", ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".oga": "audio/ogg",
-    ".wav": "audio/wav", ".m4a": "audio/mp4", ".aac": "audio/aac", ".flac": "audio/flac", ".mp4": "video/mp4",
-    ".webm": "video/webm", ".ogv": "video/ogg", ".txt": "text/plain", ".md": "text/markdown", ".csv": "text/csv",
-    ".xml": "application/xml", ".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".ttf": "font/ttf",
-    ".otf": "font/otf", ".woff": "font/woff", ".woff2": "font/woff2", ".glsl": "text/plain", ".frag": "text/plain",
-    ".vert": "text/plain", ".wgsl": "text/plain", ".obj": "text/plain", ".mtl": "text/plain",
-    ".bin": "application/octet-stream", ".zip": "application/zip", ".pdf": "application/pdf",
-}
+_PREVIEW_MIME = mime.TABLE
 _UTF8_TYPES = ("application/javascript", "application/json", "application/xml", "image/svg+xml", "model/gltf+json")
 _INLINE_ATTACHMENT_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/bmp",
                             "text/plain", "application/pdf"}
 
 
 def preview_content_type(name: str) -> str:
-    """Content type for a game file (explicit map first, then ``mimetypes``), with charset for text."""
+    """Content type for a game file (Kyora's table, never the Windows registry), with charset for text."""
     ext = Path(name).suffix.lower()
-    ctype = _PREVIEW_MIME.get(ext) or mimetypes.guess_type(name)[0] or "application/octet-stream"
+    ctype = _PREVIEW_MIME.get(ext) or mime.guess_type(name) or "application/octet-stream"
     if ctype.startswith("text/") or ctype in _UTF8_TYPES:
         ctype += "; charset=utf-8"
     return ctype
