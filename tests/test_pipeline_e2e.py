@@ -215,12 +215,15 @@ class PipelineE2E(unittest.TestCase):
     def test_3_no_engine_blocks_then_resumes(self):
         pid = self.new_project("Blocked")
         self.app.claude_engine = None
+        agent_engine = getattr(self.app, "agent_engine", None)
+        self.app.agent_engine = None  # the Kyora agent engine would build on the mock NIM otherwise
         rid = self.start_run(pid)
         run = self.wait_state(rid)
         self.assertEqual(run.state, "blocked")
         self.assertIn("no code engine", run.blocked_reason)
         intake_calls = sum(1 for r in self.mock.requests if "INTAKE ANALYST" in json.dumps(r.get("body", r)))
         self.app.claude_engine = self.engine
+        self.app.agent_engine = agent_engine
         status, body = self.api("POST", f"/api/runs/{rid}/resume")
         self.assertEqual(status, 200, body)
         run = self.wait_state(rid, states=TERMINAL - {"blocked"})

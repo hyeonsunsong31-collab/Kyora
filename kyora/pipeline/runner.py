@@ -9,12 +9,18 @@ once. ``Runner.execute`` drives one run::
     gate failed, iteration < max fixes   -> review -> fix -> test -> gate ...
     gate failed at the limit / 'stop'    -> finalize -> failed_gate (slide still committed)
     no engine / model unreachable / no browser -> blocked (resume continues at that stage)
+    engine usage limit, no other engine, known reset -> blocked + auto resume at the reset time (+60 s)
     exception -> failed ; cancel -> cancelled (work tree rolled back)
     Kyora stopping (RunManager.stop) -> blocked 'interrupted: Kyora stopped ...' (work kept, resumable)
 
 Each stage persists ``run.json`` and publishes ``run.state``, ``stage.started``
 and ``stage.finished``; per-stage model metrics are collected from the
 ``model.metrics`` events that the model wrappers publish.
+
+A run blocked by a usage limit whose reset time is known (``extra.auto_resume_at``,
+see ``stages.run_engine``) is resumed by ``RunManager`` a minute after the reset
+(``run.auto_resume``); the timer is re-armed when Kyora starts again and dropped
+when the run is resumed by hand, cancelled or deleted.
 """
 from __future__ import annotations
 
@@ -32,6 +38,7 @@ from . import events as ev
 from .stages import (
     RunCancelled, StageBlocked, StageContext, build_stage, design_stage, finalize_stage, fix_stage, gate_stage,
     gate_threshold, intake_stage, load_gate, narrate, plan_stage, review_stage, select_engine, show_view, test_stage,
+    utc_iso,
 )
 
 log = logging.getLogger("kyora.runner")
@@ -39,7 +46,18 @@ log = logging.getLogger("kyora.runner")
 ACTIVE_STATES = ("intake", "plan", "awaiting_approval", "design", "build", "test", "gate", "review", "fix", "finalize")
 INTERRUPTED_REASON = "interrupted: Kyora stopped while this run was active; press Resume to continue"
 _ENGINE_LABELS = {"claude_code": "Claude Code", "anthropic_api": "The Anthropic API engine",
-                  "hub": "Claude Code on the Kyora Hub"}
+                  "hub": "Claude Code on the Kyora Hub", "openai_agent": "Kyora's own code engine"}
+AUTO_RESUME_GRACE_S = 60.0  # resume a minute after the reported reset (clock skew, the provider's own rounding)
+AUTO_RESUME_STEP_S = 600.0  # a timer wakes at least every 10 min and re-checks the wall clock (sleep/suspend)
+AUTO_RESUME_MAX = 24  # automatic resumes per run; after that the run waits for the user's Resume
+
+
+def auto_resume_epoch(run) -> float | None:
+    """``extra.auto_resume_at`` of a run (epoch seconds of the limit's reset), or None."""
+    at = (getattr(run, "extra", None) or {}).get("auto_resume_at")
+    if isinstance(at, (int, float)) and not isinstance(at, bool) and at > 0:
+        return float(at)
+    return None
 
 
 def _gate_pct(ctx: StageContext, gate: dict) -> str:
@@ -64,6 +82,7 @@ class RunManager:
         self._project_locks: dict[str, threading.Lock] = {}
         self._threads: list[threading.Thread] = []
         self._stopping = threading.Event()
+        self._resume_timers: dict[str, tuple[threading.Timer, float, object]] = {}  # run id -> (timer, at, token)
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -74,6 +93,7 @@ class RunManager:
             t = threading.Thread(target=self._worker, name=f"kyora-run-{i}", daemon=True)
             t.start()
             self._threads.append(t)
+        self._rearm_auto_resumes()
 
     def stop(self, timeout: float = 5.0) -> None:
         """Stop the workers; running runs end 'blocked' (resumable) with their work kept, not cancelled."""
@@ -81,6 +101,9 @@ class RunManager:
         with self._lock:
             for e in self._running.values():
                 e.set()
+            timers, self._resume_timers = list(self._resume_timers.values()), {}
+        for timer, _at, _token in timers:  # the next start re-arms them from run.json
+            timer.cancel()
         for _ in self._threads:
             self._queue.put(None)
         for t in self._threads:
@@ -107,6 +130,105 @@ class RunManager:
                 except Exception as exc:  # noqa: BLE001
                     log.warning("cannot mark run %s blocked: %s", run.id, exc)
 
+    # ------------------------------------------------------------------ automatic resume after a usage limit
+    def _rearm_auto_resumes(self) -> None:
+        """On start: arm the timers of runs blocked by a usage limit; resume those whose reset has passed."""
+        store = getattr(self.app, "store", None)
+        if store is None:
+            return
+        try:
+            runs = store.list_runs(None, limit=500)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cannot scan runs for automatic resume: %s", exc)
+            return
+        for run in runs:
+            if run.state == "blocked" and auto_resume_epoch(run) is not None:
+                self._arm_auto_resume(run)
+
+    def _arm_auto_resume(self, run) -> bool:
+        """Resume ``run`` (blocked, ``extra.auto_resume_at`` set) a minute after the reset; publish run.auto_resume."""
+        at = auto_resume_epoch(run)
+        if at is None or run.state != "blocked" or self._stopping.is_set():
+            return False
+        done = len((run.extra or {}).get("auto_resumes") or [])
+        if done >= AUTO_RESUME_MAX:
+            log.warning("run %s: not resuming it automatically again after %d automatic resumes; press Resume",
+                        run.id, done)
+            run.extra.pop("auto_resume_at", None)  # the reason must not promise a resume that will not happen
+            try:
+                self.app.store.set_state(run, "blocked", blocked_reason=(
+                    f"{run.blocked_reason or 'usage limit'} [automatic resume stopped after {done} automatic "
+                    "resumes: press Resume]"))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("cannot record the end of automatic resumes for %s: %s", run.id, exc)
+            return False
+        due = at + AUTO_RESUME_GRACE_S
+        delay = max(0.0, due - time.time())
+        self._schedule_resume(run.id, at, delay)
+        self._publish_for(run, ev.RUN_AUTO_RESUME, {"at": utc_iso(max(due, time.time())), "in_s": int(round(delay)),
+                                                    "reset_at": utc_iso(at),
+                                                    "reason": str(run.blocked_reason or "usage limit")[:300]})
+        log.info("run %s resumes by itself in %d s (limit reset %s)", run.id, int(delay), utc_iso(at))
+        return True
+
+    def _schedule_resume(self, run_id: str, at: float, delay: float) -> None:
+        token = object()
+        timer = threading.Timer(min(max(0.0, delay), AUTO_RESUME_STEP_S), self._auto_resume_due, args=(run_id, at, token))
+        timer.daemon = True
+        timer.name = f"kyora-auto-resume-{run_id}"
+        with self._lock:
+            old = self._resume_timers.pop(run_id, None)
+            stopping = self._stopping.is_set()
+            if not stopping:
+                self._resume_timers[run_id] = (timer, at, token)
+        if old is not None:
+            old[0].cancel()
+        if not stopping:
+            timer.start()
+
+    def _auto_resume_due(self, run_id: str, at: float, token: object) -> None:
+        """Timer callback: re-arm until the wall clock reached the reset + grace, then resume the run."""
+        with self._lock:
+            cur = self._resume_timers.get(run_id)
+            if cur is None or cur[2] is not token:
+                return  # cancelled or replaced meanwhile
+            self._resume_timers.pop(run_id, None)
+        if self._stopping.is_set():
+            return
+        remaining = at + AUTO_RESUME_GRACE_S - time.time()
+        if remaining > 0.5:
+            self._schedule_resume(run_id, at, remaining)
+            return
+        try:
+            run = self.app.store.get_run(run_id)
+        except Exception as exc:  # noqa: BLE001 - deleted with its project, or unreadable
+            log.info("automatic resume of %s skipped: %s", run_id, exc)
+            return
+        if run.state != "blocked" or auto_resume_epoch(run) != at:
+            return  # resumed by hand, cancelled, or blocked again for another reason
+        run.extra.setdefault("auto_resumes", []).append(now_iso())
+        try:
+            self.app.store.save_run(run)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cannot record the automatic resume of %s: %s", run_id, exc)
+        log.info("run %s: usage limit reset at %s; resuming it", run_id, utc_iso(at))
+        self.resume(run_id)
+
+    def cancel_auto_resume(self, run_id: str) -> bool:
+        """Drop the automatic resume of ``run_id`` (True when one was armed)."""
+        with self._lock:
+            cur = self._resume_timers.pop(run_id, None)
+        if cur is None:
+            return False
+        cur[0].cancel()
+        return True
+
+    def _publish_for(self, run, type_: str, data: dict) -> None:
+        try:
+            self.app.bus.publish(type_, data, run_id=run.id, project_id=run.project_id)
+        except Exception as exc:  # noqa: BLE001 - events must never break the run manager
+            log.warning("publish %s failed: %s", type_, exc)
+
     # ------------------------------------------------------------------ public API
     def submit(self, run_id: str) -> bool:
         with self._lock:
@@ -119,6 +241,7 @@ class RunManager:
 
     def cancel(self, run_id: str) -> bool:
         store = self.app.store
+        self.cancel_auto_resume(run_id)
         with self._lock:
             if run_id in self._running:
                 self._running[run_id].set()
@@ -166,6 +289,8 @@ class RunManager:
             return False
         if run.state != "blocked":
             return False
+        self.cancel_auto_resume(run_id)
+        run.extra.pop("auto_resume_at", None)  # a new block sets it again when a limit is hit again
         self.app.store.set_state(run, "created", blocked_reason=None)
         return self.submit(run_id)
 
@@ -175,7 +300,9 @@ class RunManager:
 
     def status(self) -> dict:
         with self._lock:
-            return {"running": list(self._running), "pending": list(self._pending), "workers": self.workers}
+            return {"running": list(self._running), "pending": list(self._pending), "workers": self.workers,
+                    "auto_resume": {rid: utc_iso(at + AUTO_RESUME_GRACE_S)
+                                    for rid, (_t, at, _tok) in self._resume_timers.items()}}
 
     # ------------------------------------------------------------------ workers
     def _project_lock(self, pid: str) -> threading.Lock:
@@ -209,13 +336,17 @@ class RunManager:
                     cancel = threading.Event()
                     self._running[rid] = cancel
                     approval = self._approvals.setdefault(rid, threading.Event())
+                runner = None
                 try:
-                    Runner(self.app, self.app.store.get_run(rid), cancel, approval, shutdown=self._stopping).execute()
+                    runner = Runner(self.app, self.app.store.get_run(rid), cancel, approval, shutdown=self._stopping)
+                    runner.execute()
                 except Exception as exc:  # noqa: BLE001 - execute() handles its own errors; this is a last resort
                     log.error("runner crashed for %s: %s\n%s", rid, exc, traceback.format_exc())
                 finally:
                     with self._lock:
                         self._running.pop(rid, None)
+                if runner is not None and runner.run.state == "blocked" and auto_resume_epoch(runner.run) is not None:
+                    self._arm_auto_resume(runner.run)
 
 
 class Runner:
@@ -350,8 +481,17 @@ class Runner:
                 self._on_cancel()
         except StageBlocked as b:
             stage = b.stage or self.run.state
-            self._state("blocked", blocked_reason=b.reason, blocked_stage=stage)
-            self._publish(ev.RUN_BLOCKED, {"reason": b.reason, "stage": stage})
+            resume_at = getattr(b, "resume_at", None)
+            fields: dict = {"blocked_reason": b.reason, "blocked_stage": stage}
+            if resume_at:
+                fields["auto_resume_at"] = float(resume_at)  # RunManager resumes the run then
+            else:
+                run.extra.pop("auto_resume_at", None)
+            self._state("blocked", **fields)
+            data = {"reason": b.reason, "stage": stage}
+            if resume_at:
+                data["auto_resume_at"] = utc_iso(resume_at)
+            self._publish(ev.RUN_BLOCKED, data)
             log.info("run %s blocked at %s: %s", run.id, stage, b.reason)
         except Exception as exc:  # noqa: BLE001
             tb = traceback.format_exc()
@@ -420,8 +560,12 @@ class Runner:
         ctx.engine = ctx.engine or select_engine(ctx)
         name = str(getattr(ctx.engine, "name", "") or "")
         label = _ENGINE_LABELS.get(name) or (f"The {name} code engine" if name else "The code engine")
-        effort = str(getattr(getattr(self.cfg, "claude_code", None), "effort", "") or "")
-        how = " at maximum effort" if effort == "max" else (f" at {effort} effort" if effort else "")
+        if name == "openai_agent":  # its own model; Claude Code's effort setting does not apply to it
+            model = str(getattr(getattr(self.cfg, "agent_engine", None), "model", "") or "")
+            how = f" with {model}" if model else ""
+        else:
+            effort = str(getattr(getattr(self.cfg, "claude_code", None), "effort", "") or "")
+            how = " at maximum effort" if effort == "max" else (f" at {effort} effort" if effort else "")
         narrate(ctx, f"{label} is now building your game{how}.")
         return build_stage(ctx)
 
@@ -453,6 +597,7 @@ class Runner:
     def _on_shutdown(self) -> None:
         """Kyora is stopping: keep the run's work (no rollback) and leave it resumable."""
         stage = self.run.state
+        self.run.extra.pop("auto_resume_at", None)  # an interrupted run waits for the user's Resume
         try:
             self._state("blocked", blocked_reason=INTERRUPTED_REASON, blocked_stage=stage)
         except Exception as exc:  # noqa: BLE001
@@ -461,4 +606,5 @@ class Runner:
         log.info("run %s interrupted at %s by shutdown", self.run.id, stage)
 
 
-__all__ = ["RunManager", "Runner", "ACTIVE_STATES", "INTERRUPTED_REASON"]
+__all__ = ["RunManager", "Runner", "ACTIVE_STATES", "INTERRUPTED_REASON", "AUTO_RESUME_GRACE_S", "AUTO_RESUME_MAX",
+           "auto_resume_epoch"]

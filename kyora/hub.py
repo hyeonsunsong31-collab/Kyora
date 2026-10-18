@@ -649,7 +649,8 @@ class HubJobStore:
 
 # ============================================================================= worker (hub side)
 def select_local_engine(app) -> tuple[CodeEngine | None, Availability | None, dict]:
-    """First available *local* engine of ``app``: Claude Code CLI, then the Messages-API engine.
+    """First available *local* engine of ``app``: Claude Code CLI, the Messages-API engine, then Kyora's own
+    agent engine (OpenAI-compatible endpoint, e.g. NVIDIA).
 
     Never returns the hub client (a hub must not forward to another hub).
     Returns ``(engine, availability, reasons_by_candidate)``.
@@ -657,7 +658,8 @@ def select_local_engine(app) -> tuple[CodeEngine | None, Availability | None, di
     reasons: dict[str, str] = {}
     missing = getattr(app, "missing", {}) or {}
     for name, eng in (("claude_code", getattr(app, "claude_engine", None)),
-                      ("anthropic_api", getattr(app, "anthropic_engine", None))):
+                      ("anthropic_api", getattr(app, "anthropic_engine", None)),
+                      ("openai_agent", getattr(app, "agent_engine", None))):
         if eng is None:
             reasons[name] = missing.get(name, "not configured")
             continue

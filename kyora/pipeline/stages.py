@@ -22,20 +22,32 @@ import stat
 import string
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from ..models.base import BusSink, CodeEngine, EngineJob, EngineResult
+from ..models.base import BusSink, CodeEngine, EngineJob, EngineResult, classify_failure, engine_candidates, reset_time
 from ..util.fs import atomic_write_bytes, atomic_write_json, atomic_write_text, read_json
+from ..util.ids import now_iso
 from . import events as ev
 from .quality import SKIP_DIRS
 
 log = logging.getLogger("kyora.pipeline")
 
 NO_ENGINE_REASON = ("no code engine: install Claude Code and run 'claude auth login', link a Kyora Hub "
-                    "(Settings > Hub), or add an Anthropic API key")
+                    "(Settings > Hub), add an Anthropic API key, or add an NVIDIA API key for Kyora's own code engine")
+# Engine failover (settings.engines): an engine that fails for account reasons hands the same BUILD/FIX to the
+# next available engine; these texts tell the next engine (or the resumed Claude Code session) where it starts.
+FAILURE_LABELS = {"quota": "usage limit, credits or subscription", "auth": "login or API key refused",
+                  "unavailable": "service unreachable or overloaded", "model": "model not available"}
+CONTINUE_PREFIX = "Continue the task from where you stopped. "
+PARTIAL_WORK_PREFIX = ("A previous code engine ({name}) stopped part-way ({reason}). The work tree already contains "
+                       "its partial work: inspect it and complete the task below without starting over.\n\n")
+SESSION_GONE_RE = re.compile(r"no conversation found|session\b.{0,60}(?:not found|does not exist|expired)|"
+                             r"(?:could not|cannot|unable to) resume", re.IGNORECASE)
 NO_BROWSER_REASON = ("no browser attached: open the run in Kyora on any device (Pipeline > Run tests on this device), "
                      "then press Resume")
 TEST_ID_RE = re.compile(r"""KyoraTest\.test\(\s*(['"`])([^'"`]+)\1""")
@@ -45,12 +57,17 @@ ENGINE_ATTRS = {"claude_code": "claude_engine", "hub": "hub_client", "anthropic_
 
 # ----------------------------------------------------------------------------- control flow
 class StageBlocked(Exception):
-    """The run cannot continue until something outside Kyora changes (resumable)."""
+    """The run cannot continue until something outside Kyora changes (resumable).
 
-    def __init__(self, reason: str, stage: str = ""):
+    ``resume_at`` (epoch seconds) is set when the cause ends by itself at a known time
+    (a usage limit's reset): the run manager then resumes the run at that time.
+    """
+
+    def __init__(self, reason: str, stage: str = "", resume_at: float | None = None):
         super().__init__(reason)
         self.reason = reason
         self.stage = stage
+        self.resume_at = resume_at
 
 
 class RunCancelled(Exception):
@@ -247,22 +264,52 @@ def tree_fingerprint(root: Path) -> str:
     return h.hexdigest()
 
 
-def run_engine(ctx: StageContext, kind: str, prompt: str) -> EngineResult:
-    """Run the code engine once (build or fix) and record the result on the run.
+def _engines_setting(ctx: StageContext, name: str, default: Any) -> Any:
+    """``settings.engines.<name>`` (``failover``, ``auto_resume_on_limit``); ``default`` for configs without it."""
+    return getattr(getattr(ctx.cfg, "engines", None), name, default)
 
-    An engine result that is not ok blocks the run (resumable) unless the engine
-    provably changed the work tree relative to the iteration base (the tree right
-    before the call): a refused or rate-limited engine must never let TEST/GATE
-    measure the unchanged parent game as if the requested change had been made.
+
+def utc_iso(epoch: float) -> str:
+    """``2026-10-18T13:20:00Z`` for epoch seconds."""
+    return datetime.fromtimestamp(float(epoch), timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def failure_reason(kind: str | None, error: str | None, limit: int = 160) -> str:
+    """Short reason for events and prompts: the kind of failure plus the start of the engine's own error."""
+    label = FAILURE_LABELS.get(kind or "", "error")
+    detail = " ".join(str(error or "").split())[:limit]
+    return f"{label}: {detail}" if detail else label
+
+
+def _engine_start_text(ctx: StageContext, eng: CodeEngine) -> tuple[str, str | None]:
+    """``(what the progress line names, effort)``: Kyora's agent engine runs its own model and has no effort."""
+    cc = ctx.cfg.claude_code
+    if getattr(eng, "name", "") == "openai_agent":
+        model = getattr(getattr(ctx.cfg, "agent_engine", None), "model", "") or "its configured model"
+        return str(model), None
+    return f"{cc.model}, effort {cc.effort}", cc.effort
+
+
+def _quota_session(ctx: StageContext, kind: str, eng: CodeEngine) -> dict | None:
+    """The last Claude Code attempt of this kind and iteration when it stopped at a usage limit with a session.
+
+    Its session is continued (``--resume``) when the run comes back after the limit, so the
+    work it had planned and started is not redone from scratch.
     """
-    eng = ctx.engine or select_engine(ctx)
-    ctx.engine = eng
+    if getattr(eng, "name", "") != "claude_code":
+        return None
+    for e in reversed(ctx.run.extra.get("engine_runs") or []):
+        if isinstance(e, dict) and e.get("kind") == kind and e.get("iteration") == ctx.run.iteration \
+                and e.get("engine") == eng.name:
+            return e if e.get("failure_kind") == "quota" and e.get("session_id") else None
+    return None
+
+
+def _engine_attempt(ctx: StageContext, eng: CodeEngine, kind: str, prompt: str,
+                    resume: str | None) -> tuple[EngineResult, dict]:
+    """Run ``eng`` once and record the attempt (``run.engine``, ``extra.engine_runs`` / ``engine_failures``)."""
     cc = ctx.cfg.claude_code
     plan = ctx.read_artifact("plan") or {}
-    resume = None
-    if kind == "fix" and cc.resume_for_fixes and ctx.last_engine:
-        if ctx.last_engine.get("session_id") and ctx.last_engine.get("backend_name") == eng.name:
-            resume = ctx.last_engine["session_id"]
     if ctx.app.judge is not None:
         try:  # resume: restore the counts saved with the run so the restart does not lose them
             ctx.app.judge.prime_stats(ctx.run_id, ctx.run.judge)
@@ -279,24 +326,30 @@ def run_engine(ctx: StageContext, kind: str, prompt: str) -> EngineResult:
                        "iteration": ctx.run.iteration, "run_dir": str(ctx.run_dir), "project_id": ctx.project_id,
                        "test_spec": [t["id"] for t in plan_tests(plan)], "plan_title": plan.get("title")},
     )
-    ctx.publish(ev.STAGE_PROGRESS, {"stage": kind, "pct": 1, "message": f"{eng.name}: starting ({cc.model}, effort {cc.effort})",
-                                    "backend": eng.name, "effort": job.effort})
-    base = tree_fingerprint(ctx.workspace)
+    what, effort = _engine_start_text(ctx, eng)
+    ctx.publish(ev.STAGE_PROGRESS, {"stage": kind, "pct": 1, "message": f"{eng.name}: starting ({what})",
+                                    "backend": eng.name, "effort": effort})
+    before = tree_fingerprint(ctx.workspace)
     result = eng.run(job, BusSink(ctx.bus, ctx.run_id, ctx.project_id), ctx.cancel)
-    changed = tree_fingerprint(ctx.workspace) != base
+    changed = tree_fingerprint(ctx.workspace) != before
+    cancelled = ctx.cancel.is_set() or result.error == "cancelled"
+    failure = None if cancelled else classify_failure(result)
     info = result.to_dict()
     info["backend_name"] = eng.name
-    info["effort"] = job.effort  # recorded so the UI labels the run's real effort, not today's Settings
+    info["effort"] = effort  # recorded so the UI labels the run's real effort, not today's Settings
     info["tree_changed"] = changed
+    info["failure_kind"] = failure
+    if resume:
+        info["resumed_session_id"] = resume
     ctx.last_engine = info
     ctx.run.engine = info
-    ctx.run.extra.setdefault("engine_runs", []).append({"kind": kind, "iteration": ctx.run.iteration, **{
+    ctx.run.extra.setdefault("engine_runs", []).append({"kind": kind, "iteration": ctx.run.iteration, "engine": eng.name, **{
         k: info.get(k) for k in ("ok", "backend", "active_model", "fallback_used", "num_turns", "duration_ms", "error",
-                                 "tree_changed")}})
-    if not result.ok and not (ctx.cancel.is_set() or result.error == "cancelled"):
+                                 "tree_changed", "failure_kind", "session_id")}})
+    if not result.ok and not cancelled:
         ctx.run.extra.setdefault("engine_failures", []).append(
             {"kind": kind, "iteration": ctx.run.iteration, "backend": eng.name,
-             "error": (result.error or "unknown error")[:500], "tree_changed": changed})
+             "error": (result.error or "unknown error")[:500], "tree_changed": changed, "failure_kind": failure})
     if ctx.app.judge is not None:
         try:
             stats = {k: v for k, v in ctx.app.judge.stats(ctx.run_id).items()}
@@ -311,18 +364,147 @@ def run_engine(ctx: StageContext, kind: str, prompt: str) -> EngineResult:
         except Exception as exc:  # noqa: BLE001
             log.warning("judge stats failed: %s", exc)
     ctx.save_run()
+    return result, info
+
+
+def run_engine(ctx: StageContext, kind: str, prompt: str) -> EngineResult:
+    """Run the code engine for one BUILD/FIX, failing over to the next engine on account failures; record it all.
+
+    An attempt that fails for account reasons (``models.base.classify_failure``: usage limit,
+    credits, login, unreachable service, retired model) hands the same job to the next available
+    engine of ``settings.engines.order`` (``engines.failover``), told about any partial work it left
+    (``engine.failover``). A task failure (max turns, timeout, refusal) never fails over. Every
+    attempt is recorded (``extra.engine_runs``, ``extra.engine_failures``, ``extra.engine_failovers``)
+    and ``ctx.engine`` is the engine that ran last; a failover is never a success by itself, TEST
+    and GATE measure the result as always.
+
+    When the last attempt is not ok the run blocks (resumable) unless the engines provably changed
+    the work tree relative to the iteration base (the tree right before this call): a refused or
+    rate-limited engine must never let TEST/GATE measure the unchanged parent game as if the
+    requested change had been made. A usage limit with a known reset time and no engine left blocks
+    with ``resume_at`` (``engines.auto_resume_on_limit``): the run manager resumes the run then, and
+    Claude Code continues its limited session (``--resume``).
+    """
+    eng = ctx.engine or select_engine(ctx)
+    cc = ctx.cfg.claude_code
+    pref = str((ctx.run.options or {}).get("engine_pref") or "auto")
+    base = tree_fingerprint(ctx.workspace)
+    tried: list[str] = []
+    failed: list[tuple[CodeEngine, EngineResult, dict]] = []  # account failures of this call, in order
+    task_prompt = prompt
+    fresh_session = False  # the limited session could not be resumed: start a new one
+    while True:
+        if tried and ctx.cancel.is_set():
+            break  # cancelled while the next engine was chosen: do not start it
+        ctx.engine = eng
+        resume = None
+        attempt_prompt = task_prompt
+        limited = None if fresh_session else _quota_session(ctx, kind, eng)
+        if limited:
+            resume = str(limited["session_id"])
+            attempt_prompt = CONTINUE_PREFIX + prompt
+            ctx.publish(ev.STAGE_PROGRESS, {"stage": kind, "pct": 1, "message":
+                        f"{eng.name}: continuing session {resume} that stopped at a usage limit"})
+        elif not fresh_session and kind == "fix" and cc.resume_for_fixes and ctx.last_engine:
+            if ctx.last_engine.get("session_id") and ctx.last_engine.get("backend_name") == eng.name:
+                resume = ctx.last_engine["session_id"]
+        result, info = _engine_attempt(ctx, eng, kind, attempt_prompt, resume)
+        tried.append(eng.name)
+        if ctx.cancel.is_set() or result.error == "cancelled" or result.ok:
+            break
+        failure = info["failure_kind"]
+        if limited and failure is None and not info["tree_changed"] and SESSION_GONE_RE.search(result.error or ""):
+            # the session cut off by the limit is gone (expired): a fresh session continues the kept work
+            fresh_session = True
+            tried.pop()
+            task_prompt = PARTIAL_WORK_PREFIX.format(name=eng.name, reason=failure_reason("quota", limited.get("error"))) \
+                + prompt
+            continue
+        if failure is None:
+            break  # a task failure: another engine would not do better
+        failed.append((eng, result, info))
+        if not _engines_setting(ctx, "failover", True):
+            break
+        nxt = (engine_candidates(ctx.app, exclude=tried) or [None])[0]
+        if nxt is None:
+            break
+        reason = failure_reason(failure, result.error)
+        pinned = pref == eng.name
+        data = {"from": eng.name, "to": nxt.name, "reason": reason, "failure_kind": failure, "kind": kind,
+                "iteration": ctx.run.iteration, "pinned": pinned, "tree_changed": info["tree_changed"]}
+        ctx.run.extra.setdefault("engine_failovers", []).append({**data, "at": now_iso()})
+        failures = ctx.run.extra.get("engine_failures") or []
+        if failures and isinstance(failures[-1], dict):
+            failures[-1]["failover_to"] = nxt.name
+        ctx.save_run()
+        ctx.publish(ev.ENGINE_FAILOVER, data)
+        ctx.publish(ev.STAGE_PROGRESS, {"stage": kind, "pct": 1, "message":
+                    f"{'the pinned engine ' if pinned else ''}{eng.name} stopped ({reason}); "
+                    f"continuing the {kind} with {nxt.name}"})
+        log.info("run %s: %s %s failed over from %s to %s (%s)", ctx.run_id, kind, ctx.run.iteration, eng.name,
+                 nxt.name, reason)
+        if info["tree_changed"]:
+            task_prompt = PARTIAL_WORK_PREFIX.format(name=eng.name, reason=reason) + prompt
+        eng = nxt
+    changed = tree_fingerprint(ctx.workspace) != base
     if ctx.cancel.is_set() or result.error == "cancelled":
         raise RunCancelled()
     if not result.ok:
-        if not (ctx.workspace / "index.html").is_file():
-            raise StageBlocked(f"code engine ({eng.name}) failed without producing index.html: {result.error}", kind)
-        if not changed:
-            raise StageBlocked(f"code engine ({eng.name}) failed and changed no file in the work tree: "
-                               f"{(result.error or 'unknown error')[:400]}", kind)
-        ctx.publish(ev.STAGE_PROGRESS, {"stage": kind, "pct": 100, "message":
-                    f"engine ended with an error ({(result.error or '')[:200]}) after changing the work tree; "
-                    "measuring the files it produced"})
+        _after_failed_attempts(ctx, kind, eng, result, failed, changed)
     return result
+
+
+def _keep_partial_work(ctx: StageContext, kind: str) -> None:
+    """Commit what an engine stopped by a usage limit wrote: resuming restores the run's last commit, so the
+    continued session (or the next engine) finds its partial work instead of the iteration's base."""
+    try:
+        ctx.slides.commit_iteration(ctx.run, ctx.run.iteration, None)
+        ctx.run.extra["partial_work_kept"] = {"kind": kind, "iteration": ctx.run.iteration, "at": now_iso()}
+        ctx.save_run()
+    except Exception as exc:  # noqa: BLE001 - the block itself must still happen
+        log.warning("run %s: could not keep the partial work of the stopped engine: %s", ctx.run_id, exc)
+
+
+def _after_failed_attempts(ctx: StageContext, kind: str, eng: CodeEngine, result: EngineResult,
+                           failed: list[tuple[CodeEngine, EngineResult, dict]], changed: bool) -> None:
+    """The last attempt failed: block (resumable, maybe resuming by itself) or measure what the engines changed."""
+    error = result.error or "unknown error"
+    tried = ""
+    if len(failed) > 1:
+        tried = "; ".join(f"{e.name}: {failure_reason(i['failure_kind'], r.error, 120)}" for e, r, i in failed)
+    # a usage limit is why no engine is left when the last attempt failed for account reasons and one of them
+    # (usually Claude Code) reported a limit; the soonest known reset is when an engine is back
+    limit_block = bool(failed) and failed[-1][1] is result and any(i["failure_kind"] == "quota" for _, _, i in failed)
+    if limit_block and _engines_setting(ctx, "auto_resume_on_limit", True):
+        now = time.time()
+        resets = sorted(((reset_time(r, now), e.name, r.error) for e, r, i in failed if i["failure_kind"] == "quota"),
+                        key=lambda t: t[0] or 0.0)
+        resets = [t for t in resets if t[0] is not None and t[0] > now]
+        if resets:
+            at, limited, limited_error = resets[0]
+            if changed:
+                _keep_partial_work(ctx, kind)
+            others = (f"the engines tried: {tried}; no other code engine is available" if tried
+                      else "failover is off (settings engines.failover)" if not _engines_setting(ctx, "failover", True)
+                      else "no other code engine is available")
+            reason = (f"code engine ({limited}) hit a usage limit ({' '.join(str(limited_error or '').split())[:300]}); "
+                      f"{others}. The limit resets at {utc_iso(at)}: Kyora resumes this run by itself a minute "
+                      f"later (settings engines.auto_resume_on_limit), or press Resume to retry sooner"
+                      + ("; the partial work is kept and continued" if changed else ""))
+            ctx.run.extra["auto_resume_at"] = at
+            ctx.save_run()
+            raise StageBlocked(reason, kind, resume_at=at)
+    also = f" (engines tried: {tried})" if tried else ""
+    if not (ctx.workspace / "index.html").is_file():
+        if limit_block and changed:
+            _keep_partial_work(ctx, kind)
+        raise StageBlocked(f"code engine ({eng.name}) failed without producing index.html: {error}{also}", kind)
+    if not changed:
+        raise StageBlocked(f"code engine ({eng.name}) failed and changed no file in the work tree: "
+                           f"{error[:400]}{also}", kind)
+    ctx.publish(ev.STAGE_PROGRESS, {"stage": kind, "pct": 100, "message":
+                f"engine ended with an error ({error[:200]}) after changing the work tree; "
+                "measuring the files it produced"})
 
 
 # ----------------------------------------------------------------------------- stages
@@ -774,4 +956,5 @@ __all__ = [
     "intake_stage", "plan_stage", "design_stage", "write_build_files", "build_stage", "fix_stage", "test_stage",
     "gate_stage", "load_gate", "review_stage", "finalize_stage", "show_view", "narrate", "plan_tests", "plan_files",
     "NO_ENGINE_REASON", "NO_BROWSER_REASON", "gate_threshold", "served_models", "tree_fingerprint",
+    "CONTINUE_PREFIX", "PARTIAL_WORK_PREFIX", "failure_reason", "utc_iso",
 ]

@@ -39,7 +39,8 @@ from ..pipeline.events import (
 )
 from ..util.fs import atomic_write_bytes, atomic_write_json, atomic_write_text, which
 from ..util.procs import kill_tree, popen, run as run_cmd
-from .base import Availability, CodeEngine, EngineEvent, EngineJob, EngineResult, EngineSink
+from .base import (Availability, CodeEngine, EngineEvent, EngineJob, EngineResult, EngineSink, classify_failure,
+                   reset_time)
 
 log = logging.getLogger("kyora.claude_code")
 
@@ -953,7 +954,7 @@ class ClaudeCodeEngine(CodeEngine):
             active = primary_model_from_usage(res.get("modelUsage"), [job.model] + list(job.fallback_models or []))
         duration_ms = int(res.get("duration_ms") or 0) or int((time.monotonic() - started) * 1000)
         denials = res.get("permission_denials") or []
-        return EngineResult(
+        result = EngineResult(
             ok=ok, backend=self.name, requested_model=job.model, active_model=active,
             fallback_used=bool(active) and not same_model(job.model, active), session_id=state.get("session_id"),
             num_turns=res.get("num_turns"), duration_ms=duration_ms,
@@ -968,6 +969,17 @@ class ClaudeCodeEngine(CodeEngine):
                  "api_error": {k: res.get(k) for k in ("api_error_status", "api_error_code", "api_error", "terminal_reason")
                                if res.get(k) is not None} or None,
                  "rate_limits": list(state.get("rate_limits") or [])})
+        if not ok and not attempt.cancelled:
+            # account failures (usage/session limit, login, unreachable API, retired model) let the pipeline
+            # continue on the next engine; a usage limit's reset time lets a blocked run resume by itself
+            kind = classify_failure(result)
+            if kind:
+                result.raw["failure_kind"] = kind
+            if kind == "quota":
+                at = reset_time(result)
+                if at is not None:
+                    result.raw["resets_at"] = at
+        return result
 
     # ------------------------------------------------------------------ probe (selfcheck)
     def probe_model(self, model: str, fallbacks: list[str] | None = None, timeout_s: float = 120) -> dict:
