@@ -50,12 +50,18 @@ DELTA_CONTENT, DELTA_REASONING, DELTA_TOOL_CALL = "content", "reasoning", "tool_
 
 # ----------------------------------------------------------------------------- errors
 class NIMError(Exception):
-    """An error reported by the API or the protocol (HTTP status, bad payload, cancellation)."""
+    """An error reported by the API or the protocol (HTTP status, bad payload, cancellation).
 
-    def __init__(self, message: str, *, status: int | None = None, body: str | None = None):
+    ``attempts`` is how many requests :meth:`NIMClient.chat` sent for a retryable failure before
+    raising it (``None`` when not counted), so a message only says "retried" when it did.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, body: str | None = None,
+                 attempts: int | None = None):
         super().__init__(message)
         self.status = status
         self.body = body
+        self.attempts = attempts
 
 
 class NIMUnreachable(NIMError):
@@ -67,6 +73,80 @@ class NIMCancelled(NIMError):
 
     def __init__(self, message: str = "cancelled"):
         super().__init__(message)
+
+
+class NIMBodyError(NIMError):
+    """An error object inside a 200 answer: an SSE error chunk, or the JSON body of a non-stream answer.
+
+    The NVIDIA API Catalog sends ``{"error": {"message": "Service temporarily overloaded",
+    "type": "Service Unavailable", "code": 503}}`` this way (seen on 2026-10-18). ``status`` is the
+    error's ``code`` when it is a number. ``output_started`` says whether a content, reasoning or
+    tool-call delta was already delivered to the caller: only an error before any output is retried,
+    a retry after output would deliver that output twice.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, body: str | None = None,
+                 output_started: bool = False):
+        super().__init__(message, status=status, body=body)
+        self.output_started = bool(output_started)
+
+
+def _status_code(value: Any) -> int | None:
+    """An error object's ``code`` as an HTTP-like status: an int or a numeric string, else ``None``."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _body_error(err: Any) -> tuple[str, int | None]:
+    """``(message, status)`` of the ``error`` member of a 200 answer."""
+    if isinstance(err, Mapping):
+        code = _status_code(err.get("code"))
+        if code is None:
+            code = _status_code(err.get("status"))
+        return str(err.get("message") or err.get("type") or err), code
+    return str(err), None
+
+
+# Provider-side, temporary: the model may answer again shortly (another model may answer now).
+TEMPORARY_STATUSES = (500, 502, 503, 504)
+_TEMPORARY_RE = re.compile(r"overload|temporarily unavailable|service unavailable", re.IGNORECASE)
+
+
+def _error_text(exc: NIMError) -> str:
+    return f"{exc} {exc.body or ''}"
+
+
+def _retryable_body_error(exc: NIMBodyError) -> bool:
+    """An error inside a 200 answer that is retried like the same HTTP status (429 / 5xx, or overload wording)."""
+    if exc.output_started:
+        return False
+    if exc.status is not None:
+        return exc.status == 429 or exc.status >= 500
+    return bool(_TEMPORARY_RE.search(_error_text(exc)))
+
+
+def is_temporary_failure(exc: BaseException) -> bool:
+    """True when ``exc`` is a temporary failure on the provider side (after the client's own retries).
+
+    HTTP 500/502/503/504, or an error without a 4xx status whose message or body says overloaded /
+    temporarily unavailable / Service Unavailable (NVIDIA's free tier answers "Service temporarily
+    overloaded", also inside a 200 stream). Never for an unreachable endpoint, a cancellation, a
+    refused key (401/403) or a gone model (404/410): another model cannot fix those.
+    """
+    if not isinstance(exc, NIMError) or isinstance(exc, (NIMUnreachable, NIMCancelled)):
+        return False
+    if exc.status in TEMPORARY_STATUSES:
+        return True
+    if exc.status is not None and exc.status < 500:
+        return False
+    return bool(_TEMPORARY_RE.search(_error_text(exc)))
 
 
 # ----------------------------------------------------------------------------- data types
@@ -435,6 +515,10 @@ class NIMClient:
         raises :class:`NIMError` for other HTTP errors (``.status``/``.body`` set),
         :class:`NIMUnreachable` for network failures and :class:`NIMCancelled`
         (a ``NIMError`` whose message is ``'cancelled'``) when ``cancel`` is set.
+        An error object inside a 200 answer (:class:`NIMBodyError`) that arrives
+        before any delta was delivered is retried exactly like that HTTP status
+        (same backoff and attempts; such an error carries no ``Retry-After``); one
+        that arrives after output is raised at once, a retry would repeat that output.
         ``extra`` is merged top-level into the body (``chat_template_kwargs``,
         ``reasoning_effort`` ...). ``on_delta`` receives :class:`Delta` objects
         as they stream in (also once per field on the non-stream path).
@@ -467,20 +551,33 @@ class NIMClient:
                     self._sleep(delay, cancel)
                     continue
                 raise NIMError(f"HTTP {status} from {self._host()} for {model}: {_excerpt(err_body)}",
-                               status=status, body=err_body) from None
+                               status=status, body=err_body, attempts=attempt + 1) from None
             except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
                 reason = getattr(exc, "reason", None) or exc
                 raise NIMUnreachable(f"{self._host()} unreachable: {reason}") from None
+            delay = 0.0
             try:
                 ctype = str(resp.headers.get("Content-Type", "") or "").lower()
                 if stream and "text/event-stream" in ctype:
                     return self._consume_stream(resp, t0, on_delta, cancel)
                 return self._consume_json(resp, t0, on_delta)
+            except NIMBodyError as exc:
+                # A 200 whose first data is an error (NVIDIA's free tier: "Service temporarily overloaded",
+                # code 503) is the same failure as an HTTP 503: nothing reached the caller yet, retry it.
+                if not _retryable_body_error(exc) or attempt + 1 >= self.max_attempts:
+                    exc.attempts = attempt + 1
+                    raise
+                delay = self.backoff_s[min(attempt, len(self.backoff_s) - 1)]
+                log.warning("NIM %s: error %s inside a 200 answer before any output on attempt %d/%d, retrying in "
+                            "%.1fs (%s)", model, exc.status if exc.status is not None else "(no code)",
+                            attempt + 1, self.max_attempts, delay, _excerpt(str(exc), 160))
+                attempt += 1
             finally:
                 try:
                     resp.close()
                 except Exception:  # noqa: BLE001
                     pass
+            self._sleep(delay, cancel)
 
     def _consume_stream(self, resp, t0: float, on_delta, cancel) -> ChatResult:
         acc = _Accumulator()
@@ -505,10 +602,9 @@ class NIMClient:
                     continue
                 err = chunk.get("error")
                 if err and not chunk.get("choices"):
-                    msg = err.get("message") if isinstance(err, Mapping) else str(err)
-                    code = err.get("code") if isinstance(err, Mapping) else None
-                    raise NIMError(f"stream error from {self._host()}: {msg}",
-                                   status=code if isinstance(code, int) else None, body=data)
+                    msg, code = _body_error(err)
+                    raise NIMBodyError(f"stream error from {self._host()}: {msg}", status=code, body=data,
+                                       output_started=text_chunks > 0)
                 if isinstance(chunk.get("usage"), Mapping) and chunk["usage"]:
                     usage = dict(chunk["usage"])
                 for choice in chunk.get("choices") or []:
@@ -571,8 +667,8 @@ class NIMClient:
             raise NIMError(f"unexpected response shape from {self._host()}", body=text)
         err = data.get("error")
         if err and not data.get("choices"):
-            msg = err.get("message") if isinstance(err, Mapping) else str(err)
-            raise NIMError(f"error from {self._host()}: {msg}", body=text)
+            msg, code = _body_error(err)
+            raise NIMBodyError(f"error from {self._host()}: {msg}", status=code, body=text)
         choices = data.get("choices") or []
         choice = choices[0] if choices and isinstance(choices[0], Mapping) else {}
         msg = choice.get("message") or {}
@@ -796,12 +892,29 @@ MODEL_GONE_STATUSES = (404, 410)
 _EOL_RE = re.compile(r"end of life on (\d{4}-\d{2}-\d{2})", re.IGNORECASE)
 
 
-def explain_http_failure(status: int | None, body: str | None, model: str) -> str:
+def _temporary_tail(fallback: bool | None, attempts: int | None) -> str:
+    retried = attempts is not None and attempts > 1
+    if fallback is True:
+        return ((": Kyora retried and uses" if retried else ": Kyora uses")
+                + " the next fallback model; it returns to this model after a short cooldown")
+    if fallback is False:
+        return ((": Kyora retried and" if retried else ":")
+                + " no fallback model is left to try - retry later, or add fallback models in Settings")
+    return ((": Kyora retried; with" if retried else ": with")
+            + " fallback models configured, Kyora's model roles use the next one and return to this model after a "
+              "short cooldown")
+
+
+def explain_http_failure(status: int | None, body: str | None, model: str, *, fallback: bool | None = None,
+                         attempts: int | None = None) -> str:
     """What an HTTP failure of a model call means and what the user can do (self-check, BLOCKED reasons).
 
     Wording comes from what the NVIDIA API Catalog actually answers: 410 with "reached its end of
-    life on <date>" for a retired model (moonshotai/kimi-k3, 2026-10-15) and 403 "Authorization
-    failed" when a key may list models but not run them.
+    life on <date>" for a retired model (moonshotai/kimi-k3, 2026-10-15), 403 "Authorization
+    failed" when a key may list models but not run them and 503 "Service temporarily overloaded"
+    (also inside a 200 stream) on the free tier. For a temporary failure ``fallback`` says whether
+    the next fallback model is used now (``True``), none is left (``False``) or that is not known
+    here (``None``); ``attempts`` (:attr:`NIMError.attempts`) whether the client retried.
     """
     text = (body or "").lower()
     if status == 401:
@@ -824,6 +937,14 @@ def explain_http_failure(status: int | None, body: str | None, model: str) -> st
         return "the endpoint asks for payment: the account has no credits left for this model"
     if status == 429:
         return "rate limited or out of credits: wait and retry, or check the account's limits"
+    if status is None or status >= 500:
+        tail = _temporary_tail(fallback, attempts)
+        if status == 503 or "overload" in text:
+            return "the provider is temporarily overloaded (common on the free tier)" + tail
+        if "temporarily unavailable" in text or "service unavailable" in text:
+            return "the provider reports the service temporarily unavailable" + tail
+        if status in TEMPORARY_STATUSES:
+            return f"the provider had a server error (HTTP {status})" + tail
     if status is not None and status >= 500:
         return "the provider had a server error: retry later"
     return ""
@@ -912,7 +1033,8 @@ def chat_with_events(client: NIMClient, bus, *, role: str, model: str, run_id: s
             coalescer.flush()
         key_notes()
         pub(MODEL_ERROR, {"error": str(exc), "status": exc.status,
-                          "hint": explain_http_failure(exc.status, exc.body or str(exc), model)})
+                          "hint": explain_http_failure(exc.status, exc.body or str(exc), model,
+                                                       attempts=getattr(exc, "attempts", None))})
         raise
     except Exception as exc:  # noqa: BLE001 - report, then re-raise unchanged
         if coalescer is not None:
@@ -929,25 +1051,49 @@ def chat_with_events(client: NIMClient, bus, *, role: str, model: str, run_id: s
     return res
 
 
+# How long a model that stayed overloaded through the client's retries yields first place in its chain.
+BUSY_COOLDOWN_S = 120.0
+
+
 class ModelChain:
     """A role's requested model followed by its configured fallback models, in order.
 
-    A model is skipped only after the endpoint said it is gone (404 not found / 410 retired, see
-    :data:`MODEL_GONE_STATUSES`); every skip is published as ``model.fallback`` and every
-    ``model.*`` event names the model that actually answered. A new chain (Settings change)
-    forgets what was skipped.
+    A model is skipped for good only after the endpoint said it is gone (404 not found / 410
+    retired, see :data:`MODEL_GONE_STATUSES`). A model that stayed temporarily overloaded through
+    the client's retries is marked *busy* (:meth:`mark_busy`): until its cooldown ends it moves
+    behind the healthy models (it is never removed, so it is still tried when nothing else
+    answers) and then returns to its configured place. Every skip is published as
+    ``model.fallback`` and every ``model.*`` event names the model that actually answered. A new
+    chain (Settings change) forgets what was skipped. ``clock`` (default :func:`time.monotonic`)
+    exists for tests.
     """
 
-    def __init__(self, model: str, fallbacks: Sequence[str] = ()):
+    def __init__(self, model: str, fallbacks: Sequence[str] = (), *, clock: Callable[[], float] | None = None):
         self.requested = str(model)
         self.fallbacks = [str(m) for m in dict.fromkeys(fallbacks or ()) if m and str(m) != self.requested]
         self._gone: dict[str, str] = {}
+        self._busy: dict[str, tuple[float, str]] = {}  # model -> (monotonic time the cooldown ends, why)
+        self._clock = clock
         self._lock = threading.Lock()
 
+    def _now(self) -> float:
+        return (self._clock or time.monotonic)()
+
+    def _busy_left(self) -> dict[str, float]:
+        """Seconds left per still-cooling model; drops expired entries. Call with the lock held."""
+        now = self._now()
+        for m in [m for m, (until, _) in self._busy.items() if until <= now]:
+            del self._busy[m]
+        return {m: until - now for m, (until, _) in self._busy.items()}
+
     def candidates(self) -> list[str]:
+        """Models to try, in order: healthy ones as configured, then still-cooling busy ones (soonest free first)."""
         with self._lock:
             alive = [m for m in [self.requested, *self.fallbacks] if m not in self._gone]
-        return alive or [self.requested]
+            left = self._busy_left()
+        healthy = [m for m in alive if m not in left]
+        cooling = sorted((m for m in alive if m in left), key=lambda m: left[m])  # stable: ties keep config order
+        return (healthy + cooling) or [self.requested]
 
     @property
     def active(self) -> str:
@@ -961,48 +1107,98 @@ class ModelChain:
     def mark_gone(self, model: str, why: str) -> None:
         with self._lock:
             self._gone[model] = why
+            self._busy.pop(model, None)
 
     def gone(self) -> dict[str, str]:
         with self._lock:
             return dict(self._gone)
 
+    def mark_busy(self, model: str, seconds: float, why: str = "") -> None:
+        """``model`` is temporarily overloaded: try it after the healthy models for ``seconds``."""
+        with self._lock:
+            if model in self._gone:
+                return
+            self._busy[model] = (self._now() + max(0.0, float(seconds)), str(why or ""))
+
+    def clear_busy(self, model: str) -> None:
+        """``model`` answered: it is not busy any more."""
+        with self._lock:
+            self._busy.pop(model, None)
+
+    def busy(self) -> dict[str, float]:
+        """``{model: seconds of cooldown left}`` for the models currently marked busy."""
+        with self._lock:
+            return {m: round(left, 1) for m, left in self._busy_left().items()}
+
+    def busy_reason(self, model: str) -> str | None:
+        with self._lock:
+            self._busy_left()
+            entry = self._busy.get(model)
+            return entry[1] if entry else None
+
     def to_dict(self) -> dict:
         return {"requested": self.requested, "fallbacks": list(self.fallbacks), "active": self.active,
-                "gone": self.gone()}
+                "gone": self.gone(), "busy": self.busy()}
 
 
 def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any], *, role: str,
                              run_id: str | None = None, project_id: str | None = None,
-                             purpose: str | None = None) -> Any:
-    """``call(model)`` for the chain's models in order until one is not gone; re-raises everything else."""
+                             purpose: str | None = None, busy_cooldown_s: float | None = None) -> Any:
+    """``call(model)`` for the chain's models in order; re-raises everything a next model cannot fix.
+
+    Moves to the next candidate when the model is gone (404/410: skipped for good) or temporarily
+    overloaded after the client's own retries (:func:`is_temporary_failure`: busy for
+    ``busy_cooldown_s``, default :data:`BUSY_COOLDOWN_S`). Each move is published as
+    ``model.fallback`` with ``temporary`` saying which of the two it was. A refused key (401/403),
+    an unreachable endpoint and a cancellation never change the model.
+    """
     from ..pipeline.events import MODEL_FALLBACK
+    cooldown = BUSY_COOLDOWN_S if busy_cooldown_s is None else float(busy_cooldown_s)
     candidates = chain.candidates()
     for i, model in enumerate(candidates):
         try:
-            return call(model)
+            res = call(model)
         except (NIMCancelled, NIMUnreachable):
             raise
         except NIMError as exc:
-            if exc.status not in MODEL_GONE_STATUSES or i + 1 >= len(candidates):
+            has_next = i + 1 < len(candidates)
+            if exc.status in MODEL_GONE_STATUSES:
+                if not has_next:
+                    raise
+                temporary = False
+                reason = explain_http_failure(exc.status, exc.body or str(exc), model)
+                chain.mark_gone(model, reason)
+            elif is_temporary_failure(exc):
+                temporary = True
+                reason = explain_http_failure(exc.status, exc.body or str(exc), model, fallback=has_next,
+                                              attempts=getattr(exc, "attempts", None))
+                chain.mark_busy(model, cooldown, reason)
+                if not has_next:
+                    raise
+            else:
                 raise
-            reason = explain_http_failure(exc.status, exc.body or str(exc), model)
-            chain.mark_gone(model, reason)
-            log.warning("%s: %s answered HTTP %s; falling back to %s", role, model, exc.status, candidates[i + 1])
+            what = f"HTTP {exc.status}" if exc.status is not None else "a temporary error"
+            log.warning("%s: %s answered %s%s; falling back to %s", role, model, what,
+                        f" (busy for {cooldown:.0f}s)" if temporary else "", candidates[i + 1])
             if bus is not None:
+                data = {"kind": "model", "role": role, "requested": chain.requested, "from_model": model,
+                        "to_model": candidates[i + 1], "status": exc.status, "reason": reason,
+                        "temporary": temporary, **({"cooldown_s": cooldown} if temporary else {}),
+                        **({"purpose": purpose} if purpose else {})}
                 try:
-                    bus.publish(MODEL_FALLBACK, {"kind": "model", "role": role, "requested": chain.requested,
-                                                 "from_model": model, "to_model": candidates[i + 1],
-                                                 "status": exc.status, "reason": reason,
-                                                 **({"purpose": purpose} if purpose else {})},
-                                run_id=run_id, project_id=project_id)
+                    bus.publish(MODEL_FALLBACK, data, run_id=run_id, project_id=project_id)
                 except Exception as pub_exc:  # noqa: BLE001
                     log.warning("event publish failed (model.fallback): %s", pub_exc)
+            continue
+        chain.clear_busy(model)
+        return res
     raise AssertionError("unreachable")  # pragma: no cover - the loop returns or raises
 
 
 __all__ = [
     "ModelChain", "call_with_model_fallback", "explain_http_failure", "MODEL_GONE_STATUSES",
-    "NIMError", "NIMUnreachable", "NIMCancelled", "Delta", "ChatResult", "NIMClient",
+    "BUSY_COOLDOWN_S", "TEMPORARY_STATUSES", "is_temporary_failure",
+    "NIMError", "NIMUnreachable", "NIMCancelled", "NIMBodyError", "Delta", "ChatResult", "NIMClient",
     "build_assistant_message", "tool_call_arguments", "function_tool", "force_tool",
     "strip_think", "extract_json_object", "extract_structured", "is_tool_rejection",
     "load_prompt", "render_prompt", "json_for_prompt", "chat_with_events",

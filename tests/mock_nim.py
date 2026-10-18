@@ -18,8 +18,17 @@ that emulates ``POST /v1/chat/completions`` (stream and non-stream) and
  "delay_s": float,                     # optional sleep between streamed chunks
  "first_delay_s": float,               # optional sleep before the response headers
  "headers": {name: value},             # optional extra response headers
- "json_even_if_stream": bool}          # optional: ignore stream=true and answer with JSON
+ "json_even_if_stream": bool,          # optional: ignore stream=true and answer with JSON
+ "stream_error": dict,                 # optional: an error object inside the 200 answer (see below)
+ "after_chunks": int}                  # optional: emit stream_error after this many delta chunks (default 0)
 ```
+
+``stream_error`` reproduces what the NVIDIA API Catalog sends on the free tier, an HTTP 200 whose
+stream carries ``{"error": {"message": "Service temporarily overloaded", "type": "Service Unavailable",
+"code": 503}}``. The dict is sent as one ``data:`` event (wrapped as ``{"error": ...}`` when it has no
+``error`` key) after the first ``after_chunks`` delta chunks (reasoning, content and tool-call fragments
+in streaming order; 0 = the first data event) and the stream ends there. A non-stream request gets the
+same object as its 200 JSON body.
 
 This file lives under ``tests/`` on purpose: no mock output ever ships in ``kyora/``.
 """
@@ -29,7 +38,7 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 from urllib.parse import urlsplit
 
 DEFAULT_MODELS = ["nvidia/nemotron-3-ultra-550b-a55b", "moonshotai/kimi-k3"]
@@ -126,6 +135,43 @@ def iter_stream_chunks(req: dict, spec: dict) -> Iterable[dict | str]:
     yield "[DONE]"
 
 
+def _stream_error_event(spec: dict) -> dict:
+    err = spec.get("stream_error")
+    return dict(err) if isinstance(err, dict) and "error" in err else {"error": err}
+
+
+def _is_delta_chunk(item: dict | str) -> bool:
+    """A chunk that delivers content, reasoning or a tool-call fragment (not the role / finish / usage chunk)."""
+    if not isinstance(item, dict):
+        return False
+    for choice in item.get("choices") or []:
+        delta = choice.get("delta") or {}
+        if delta.get("content") or delta.get("reasoning") or delta.get("reasoning_content") or delta.get("tool_calls"):
+            return True
+    return False
+
+
+def with_stream_error(items: Iterable[dict | str], spec: dict) -> Iterator[dict | str]:
+    """Pass ``items`` through until ``spec["after_chunks"]`` delta chunks went out, then the error event, then stop."""
+    after = max(0, int(spec.get("after_chunks") or 0))
+    event = _stream_error_event(spec)
+    if after == 0:
+        yield event
+        return
+    sent = 0
+    for item in items:
+        if _is_delta_chunk(item):
+            yield item
+            sent += 1
+            if sent >= after:
+                break
+        elif isinstance(item, dict) and any("role" in (c.get("delta") or {}) for c in item.get("choices") or []):
+            yield item  # the opening role chunk
+        else:
+            break  # finish / usage / [DONE]: fewer deltas than after_chunks, the error comes now
+    yield event
+
+
 class _MockHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
     mock: "MockNIM" = None  # type: ignore[assignment]
@@ -206,6 +252,8 @@ class _MockHandler(BaseHTTPRequestHandler):
             time.sleep(float(spec["first_delay_s"]))
         if req.get("stream") and not spec.get("json_even_if_stream"):
             self._stream(req, spec)
+        elif spec.get("stream_error") is not None:
+            self._send_json(200, _stream_error_event(spec), spec.get("headers"))
         else:
             self._send_json(200, build_completion(req, spec), spec.get("headers"))
 
@@ -217,8 +265,11 @@ class _MockHandler(BaseHTTPRequestHandler):
             self.send_header(k, str(v))
         self.end_headers()
         delay = float(spec.get("delay_s") or 0.0)
+        items = iter_stream_chunks(req, spec)
+        if spec.get("stream_error") is not None:
+            items = with_stream_error(items, spec)
         try:
-            for item in iter_stream_chunks(req, spec):
+            for item in items:
                 payload = item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)
                 self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
                 self.wfile.flush()
@@ -365,4 +416,4 @@ def has_image(req: dict) -> bool:
 
 
 __all__ = ["MockNIM", "scripted_handler", "tool_response", "any_req", "has_role", "has_image", "last_user_text",
-           "build_completion", "iter_stream_chunks", "DEFAULT_MODELS"]
+           "build_completion", "iter_stream_chunks", "with_stream_error", "DEFAULT_MODELS"]
