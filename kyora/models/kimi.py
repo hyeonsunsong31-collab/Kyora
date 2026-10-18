@@ -839,8 +839,8 @@ class Kimi:
         if not effort:
             return {}
         family = model_family(model or self.chain.requested)
-        if family == "nemotron":
-            return {"chat_template_kwargs": {"enable_thinking": True}}
+        if family == "nemotron":  # Nemotron has an on/off switch only: "low" turns thinking off
+            return {"chat_template_kwargs": {"enable_thinking": effort != "low"}}
         if family != "kimi":
             return {}
         field = self.effort_field
@@ -862,7 +862,8 @@ class Kimi:
         extra = self.effort_extra(effort, model)
         kwargs = extra.get("chat_template_kwargs")
         if isinstance(kwargs, dict) and "enable_thinking" in kwargs:
-            return {"effort_sent": "chat_template_kwargs.enable_thinking=true (fallback model, no reasoning_effort)"}
+            on = "true" if kwargs["enable_thinking"] else "false"
+            return {"effort_sent": f"chat_template_kwargs.enable_thinking={on} (fallback model, no reasoning_effort)"}
         if isinstance(kwargs, dict) and "reasoning_effort" in kwargs:
             return {"effort_sent": f"chat_template_kwargs.reasoning_effort={kwargs['reasoning_effort']}",
                     "effort_best_effort": True, "effort_note": EXTRA_BODY_EFFORT_NOTE}
@@ -998,8 +999,13 @@ class Kimi:
                 for tc in res.tool_calls:
                     conv.add_tool_result(tc.get("id") or "", f"Rejected by Kyora validation: {error}")
                 via = (f"Call {name} again with" if self.tool_mode != "none" else "Reply with ONLY")
+                cut = res.finish_reason == "length"
+                if cut:  # the answer hit the token limit: more room, less thinking, shorter values
+                    kw["max_tokens"] = min(2 * int(max_tokens or self.MAX_TOKENS.get(purpose, 16384)), 65536)
+                    kw["effort"] = "low"
                 conv.add_user(f"Your {name} output was rejected by Kyora's validation: {error}\n"
-                              f"{via} the corrected, complete JSON object. JSON only: no prose, no code fence.")
+                              + ("It was cut off at the token limit: keep every value short. " if cut else "")
+                              + f"{via} the corrected, complete JSON object. JSON only: no prose, no code fence.")
                 log.info("kimi %s: requesting one repair (%s)", purpose, error)
             res = self._think_tool(conv, tool, **kw)
             obj = unwrap_payload(extract_structured(res, name), name)

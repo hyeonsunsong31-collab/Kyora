@@ -187,6 +187,25 @@ class NemotronTests(_MockCase):
         self.handler = lambda req: tool_response("emit_ui_spec", {"screens": [{"id": "a"}], "copy": {}})
         with self.assertRaises(ValueError):
             self.nemotron().ui_spec({}, {})
+        self.assertEqual(len(self.mock.requests), 2)  # the invalid answer was asked for once more, then refused
+
+    def test_truncated_ui_spec_is_asked_for_again_without_thinking(self):
+        # live, 2026-10-18: thinking used all 12288 tokens and the payload arrived cut off without "tokens"
+        good = {"tokens": {"color": {"bg": "#000"}, "type": {}, "spacing": {}, "radius": {}},
+                "screens": [{"id": "menu", "name": "Menu", "purpose": "start", "components": []}], "copy": {}}
+
+        def handler(req):
+            if len(self.mock.requests) == 1:
+                return tool_response("emit_ui_spec", {"screens": [{"id": "menu"}]}, finish_reason="length")
+            return tool_response("emit_ui_spec", good)
+        self.handler = handler
+        out = self.nemotron(thinking_for_design=True).ui_spec({}, {})
+        self.assertEqual(out["tokens"]["color"], {"bg": "#000"})
+        first, second = self.mock.requests
+        self.assertTrue(first["chat_template_kwargs"]["enable_thinking"])
+        self.assertFalse(second["chat_template_kwargs"]["enable_thinking"])
+        self.assertEqual(second["max_tokens"], 2 * first["max_tokens"])
+        self.assertIn("cut off at the token limit", second["messages"][-1]["content"])
         with self.assertRaises(ValueError):
             normalize_ui_spec({"tokens": {"color": {}}, "screens": [{"id": "a"}]})
 
@@ -536,6 +555,21 @@ class KimiPlanTests(_MockCase):
         self.assertIn("JSON only", msgs[4]["content"])
         self.assertEqual(self.mock.requests[1]["tool_choice"]["function"]["name"], "emit_plan")
         self.assertIsNotNone(kimi.last_metrics("plan"))
+
+    def test_plan_cut_off_at_the_token_limit_gets_room_and_less_thinking(self):
+        def handler(req):
+            if not _has_tool_message(req):
+                return tool_response("emit_plan", {"title": "Runner"}, call_id="call_cut", finish_reason="length")
+            return tool_response("emit_plan", valid_plan(), call_id="call_ok")
+
+        self.handler = handler
+        out = self.kimi().plan({"goal": "runner"})
+        self.assertEqual(out["files"][0]["path"], "index.html")
+        first, second = self.mock.requests
+        self.assertEqual(second["max_tokens"], min(2 * first["max_tokens"], 65536))
+        self.assertEqual(first["reasoning_effort"], "max")
+        self.assertEqual(second["reasoning_effort"], "low")
+        self.assertIn("cut off at the token limit", second["messages"][-1]["content"])
 
     def test_plan_without_node_forbids_node_tests(self):
         with_node = valid_plan()

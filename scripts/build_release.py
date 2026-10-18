@@ -416,8 +416,9 @@ def check_serve(report: CheckReport, python: str, pyz: Path, repo: Path, work: P
     base = f"http://127.0.0.1:{port}"
     with open(log_path, "wb") as log_fh:
         try:
-            proc = subprocess.Popen(cmd, cwd=str(work), env=env, stdout=log_fh, stderr=subprocess.STDOUT,
-                                    stdin=subprocess.DEVNULL)
+            # unbuffered: if the server never answers, its log shows how far it got
+            proc = subprocess.Popen(cmd, cwd=str(work), env=dict(env, PYTHONUNBUFFERED="1"), stdout=log_fh,
+                                    stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
         except OSError as exc:
             report.fail(f"cannot start {' '.join(cmd)}: {exc}")
             return
@@ -446,6 +447,15 @@ def check_serve(report: CheckReport, python: str, pyz: Path, repo: Path, work: P
                     print("  server output (tail):\n    " + ("\n    ".join(tail.splitlines()) or "(nothing)"))
                 except OSError:
                     pass
+                print(f"  server process: {'running' if proc.poll() is None else f'exited {proc.returncode}'}")
+                lsof = shutil.which("lsof")
+                if lsof:  # is anything listening on the port (and who)?
+                    try:
+                        out = subprocess.run([lsof, "-nP", f"-iTCP:{port}"], capture_output=True, timeout=20)
+                        print("  lsof -iTCP:%d:\n    %s" % (port, "\n    ".join(
+                            out.stdout.decode("utf-8", "replace").strip().splitlines()) or "(nothing)"))
+                    except (OSError, subprocess.SubprocessError) as exc:
+                        print(f"  lsof failed: {exc}")
                 return
             report.ok(f"'{pyz.name} serve' answered GET /api/status 200 on port {port} "
                       f"({timeout_s - max(0.0, deadline - time.monotonic()):.1f} s after start)")

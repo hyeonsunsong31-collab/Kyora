@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .nim_client import (
     ChatResult, ModelChain, NIMClient, NIMError, call_with_model_fallback, chat_with_events, extract_structured,
@@ -218,6 +218,7 @@ class Nemotron:
 
     ROLE = ROLE
     MAX_TOKENS: dict[str, int] = {"design": 16384, "ui_spec": 12288, "narration": 96}
+    MAX_RETRY_TOKENS = 32768
 
     def __init__(self, client: NIMClient, model: str, bus, nemotron_cfg, fallback_models: Sequence[str] = ()):
         if client is None:
@@ -282,24 +283,47 @@ class Nemotron:
         return res
 
     def _structured(self, tool: dict, *, system: str, user: str, thinking: bool, purpose: str, max_tokens: int,
-                    run_id: str | None, project_id: str | None, cancel: threading.Event | None) -> tuple[dict, ChatResult]:
-        """Ask for a tool call; fall back to JSON-in-text, and to a tool-less request when tools are rejected."""
+                    run_id: str | None, project_id: str | None, cancel: threading.Event | None,
+                    normalize: Callable[[Mapping], dict] | None = None) -> tuple[dict, ChatResult]:
+        """Ask for a tool call; fall back to JSON-in-text, and to a tool-less request when tools are rejected.
+
+        An answer cut off at the token limit or failing ``normalize`` is asked for once more, without
+        thinking and with twice the budget: on 2026-10-18 a live UI spec spent all 12288 tokens in
+        thinking mode and arrived truncated (no ``tokens`` object).
+        """
         name = tool["function"]["name"]
-        messages = [{"role": "user", "content": user}]
-        try:
-            res = self.generate(system=system, messages=messages, thinking=thinking, tools=[tool], tool_choice=force_tool(name),
-                                run_id=run_id, project_id=project_id, cancel=cancel, max_tokens=max_tokens, purpose=purpose)
-        except NIMError as exc:
-            if not is_tool_rejection(exc):
-                raise
-            log.warning("nemotron %s: gateway rejected tools (%s); retrying without tools", purpose, exc)
-            res = self.generate(system=system, messages=messages, thinking=thinking, run_id=run_id, project_id=project_id,
-                                cancel=cancel, max_tokens=max_tokens, purpose=purpose)
-        obj = extract_structured(res, name)
-        if obj is None:
-            raise ValueError(f"Nemotron returned no parsable {name} payload (finish_reason={res.finish_reason!r}, "
-                             f"content_chars={len(res.content)})")
-        return obj, res
+        error = ""
+        for attempt in (1, 2):
+            think = thinking if attempt == 1 else False
+            budget = max_tokens if attempt == 1 else min(max_tokens * 2, self.MAX_RETRY_TOKENS)
+            prompt = user if attempt == 1 else (
+                f"{user}\n\nYour previous answer was not usable ({error}). Call {name} once with the complete JSON "
+                "object; keep every value short so the whole answer fits.")
+            messages = [{"role": "user", "content": prompt}]
+            try:
+                res = self.generate(system=system, messages=messages, thinking=think, tools=[tool],
+                                    tool_choice=force_tool(name), run_id=run_id, project_id=project_id, cancel=cancel,
+                                    max_tokens=budget, purpose=purpose)
+            except NIMError as exc:
+                if not is_tool_rejection(exc):
+                    raise
+                log.warning("nemotron %s: gateway rejected tools (%s); retrying without tools", purpose, exc)
+                res = self.generate(system=system, messages=messages, thinking=think, run_id=run_id,
+                                    project_id=project_id, cancel=cancel, max_tokens=budget, purpose=purpose)
+            obj = extract_structured(res, name)
+            truncated = res.finish_reason == "length"
+            if obj is None:
+                error = (f"no parsable {name} payload (finish_reason={res.finish_reason!r}, "
+                         f"content_chars={len(res.content)})")
+            else:
+                try:
+                    return (normalize(obj) if normalize else obj), res
+                except ValueError as exc:
+                    error = f"{exc}" + (" (cut off at the token limit)" if truncated else "")
+            if attempt == 1:
+                log.warning("nemotron %s: %s; asking once more without thinking and a %d-token budget", purpose, error,
+                            min(max_tokens * 2, self.MAX_RETRY_TOKENS))
+        raise ValueError(f"Nemotron returned no usable {name} payload after one retry: {error}")
 
     # ------------------------------------------------------------------ design document
     def design_doc(self, intake: dict, plan: dict, attachments: list[dict] | None = None, run_id: str | None = None,
@@ -316,8 +340,9 @@ class Nemotron:
                                attachments_text=attachments_text(attachments))
         user = "Write the design for this plan now and call emit_design with the complete result."
         obj, _ = self._structured(DESIGN_TOOL, system=system, user=user, thinking=self.thinking_for_design, purpose="design",
-                                  max_tokens=self.MAX_TOKENS["design"], run_id=run_id, project_id=project_id, cancel=cancel)
-        return normalize_design(obj)
+                                  max_tokens=self.MAX_TOKENS["design"], run_id=run_id, project_id=project_id, cancel=cancel,
+                                  normalize=normalize_design)
+        return obj
 
     # ------------------------------------------------------------------ UI spec
     def ui_spec(self, intake: dict, plan: dict, run_id: str | None = None, project_id: str | None = None,
@@ -329,8 +354,9 @@ class Nemotron:
                                design_brief=_str((plan or {}).get("design_brief_for_nemotron")).strip() or "(none given)")
         user = "Produce the UI specification for this plan now and call emit_ui_spec with the complete result."
         obj, _ = self._structured(UI_SPEC_TOOL, system=system, user=user, thinking=self.thinking_for_design, purpose="ui_spec",
-                                  max_tokens=self.MAX_TOKENS["ui_spec"], run_id=run_id, project_id=project_id, cancel=cancel)
-        return normalize_ui_spec(obj)
+                                  max_tokens=self.MAX_TOKENS["ui_spec"], run_id=run_id, project_id=project_id, cancel=cancel,
+                                  normalize=normalize_ui_spec)
+        return obj
 
     # ------------------------------------------------------------------ narration
     def narration(self, text: str, run_id: str | None = None, project_id: str | None = None) -> str:
