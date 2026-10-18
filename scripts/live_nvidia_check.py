@@ -105,13 +105,17 @@ def main(argv=None) -> int:
 
     def probes():
         rep = app.selfcheck.run(probe_models=True, probe_claude=False)
-        items = {i.get("id") or i.get("label"): {"status": i.get("status"), "detail": i.get("detail"),
-                                                 "measured": i.get("measured")}
-                 for i in rep.get("items", []) if "nemotron" in str(i).lower() or "kimi" in str(i).lower()}
-        # a probe whose 1-token chat failed is a failed live check, whatever severity the self-check gives it
-        bad = [k for k, v in items.items() if v["status"] == "fail" or not (v.get("measured") or {}).get("chat_ok")]
+        items = {i.get("id"): {"status": i.get("status"), "detail": i.get("detail"), "measured": i.get("measured")}
+                 for i in rep.get("items", []) if i.get("id") in ("nemotron", "kimi", "agent_engine")}
+        # a role probe whose 1-token chat failed is a failed live check, whatever severity the self-check gives
+        # it; the agent engine reports tool_calls_ok instead of chat_ok and fails by its own status
+        bad = [k for k, v in items.items() if v["status"] == "fail"
+               or (k != "agent_engine" and not (v.get("measured") or {}).get("chat_ok"))]
+        for k, v in items.items():
+            print(f"       {k}: {v['status']} - {v['detail']}")
         if bad:
-            raise RuntimeError(f"self-check failed for {bad}: {json.dumps(items, ensure_ascii=False)[:800]}")
+            raise RuntimeError(f"self-check failed for {bad}: "
+                               + "; ".join(f"{k}: {items[k]['status']} - {items[k]['detail']}" for k in bad))
         return items
 
     step("self-check model probes", probes)
