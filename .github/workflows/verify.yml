@@ -219,7 +219,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: what the configured keys can call (models listed, per-model status)
-        run: python scripts/nvidia_diagnose.py --out nvidia-diagnose.json
+        run: python scripts/nvidia_diagnose.py --all-models --out nvidia-diagnose.json
       - name: every model role against integrate.api.nvidia.com
         run: python scripts/live_nvidia_check.py --out nvidia-live-report.json
       - uses: actions/upload-artifact@v4

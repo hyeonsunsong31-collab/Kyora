@@ -68,6 +68,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--keys", default=str(REPO / "config" / "keys.json"))
     ap.add_argument("--out", default=None)
+    ap.add_argument("--all-models", action="store_true", help="also try every listed chat model with each key")
     args = ap.parse_args(argv)
     keys = json.loads(Path(args.keys).read_text(encoding="utf-8"))
     nv = keys["nvidia"]
@@ -113,6 +114,27 @@ def main(argv=None) -> int:
                                    "ms": r.get("ms"), "body": None if r.get("status") == 200 else (r.get("error") or r.get("body"))})
         report["slots"][slot] = entry
         sys.stdout.flush()
+
+    # Every listed chat model with each key: which models could serve a role (or a code engine) today.
+    if args.all_models:
+        skip = ("embed", "rerank", "parse", "safety", "guard", "reward", "clip", "vila", "neva", "kosmos", "deplot",
+                "paligemma", "fuyu", "detector", "nv-yolox", "ocdr", "cosmos", "riva", "audio", "asr", "tts")
+        chat_models = [m for m in listed if not any(k in m.lower() for k in skip)]
+        print(f"\n== every listed chat model ({len(chat_models)} of {len(listed)}), 1-token chat with each key")
+        report["all_models"] = {}
+        for slot in ("nemotron", "kimi"):
+            key = str(nv.get(slot, {}).get("api_key") or "")
+            ok, refused, missing = [], [], []
+            for model in chat_models:
+                r = _req(base + "/chat/completions", key, {"model": model, "max_tokens": 1, "stream": False,
+                                                           "messages": [{"role": "user", "content": "ping"}]}, timeout=30)
+                (ok if r.get("status") == 200 else refused if r.get("status") in (401, 403) else missing).append(
+                    (model, r.get("status"), r.get("ms")))
+            report["all_models"][slot] = {"ok": ok, "refused": refused, "other": missing}
+            print(f"  {slot} key: {len(ok)} answered, {len(refused)} refused (401/403), {len(missing)} other")
+            for model, status, ms in ok:
+                print(f"    200 {ms:>6} ms  {model}")
+            sys.stdout.flush()
 
     if args.out:
         Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")

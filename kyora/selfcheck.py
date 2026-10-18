@@ -403,26 +403,69 @@ class SelfCheck:
         return item("claude_model", "fail", detail, measured)
 
     # ------------------------------------------------------------------ NVIDIA models
-    def _model_probe(self, client, model: str, name: str, key_present: bool) -> tuple[str, str, dict, dict]:
-        """``client.probe(model)`` mapped to ``(status, detail, measured, raw)``."""
+    def _model_probe(self, client, model: str, name: str, key_present: bool, chain=None,
+                     own_key: str = "") -> tuple[str, str, dict, dict]:
+        """Probe a role's model (and, when the endpoint says it is gone, its fallbacks) -> ``(status, detail, measured, raw)``.
+
+        ``fail`` when the role cannot answer at all (key refused, model gone with no working fallback,
+        endpoint unreachable); ``warn`` when it answers only through a fallback model or the other
+        role's key, or the failure may be temporary (429/5xx); ``ok`` otherwise.
+        """
+        from .models.nim_client import MODEL_GONE_STATUSES, explain_http_failure
         res = client.probe(model, timeout_s=self.model_timeout_s)
+        notes = client.pop_key_notes() if callable(getattr(client, "pop_key_notes", None)) else []
         measured = {"model": model, "latency_ms": res.get("latency_ms"), "model_listed": res.get("model_listed"),
                     "status": res.get("status"), "chat_ok": bool(res.get("chat_ok"))}
         err = str(res.get("error") or "")
         if not res.get("reachable"):
             return "fail", f"{name} endpoint unreachable: {_excerpt(err or 'no answer', 400)}", measured, res
+        status_code = res.get("status")
+        answered_by, fallback_note = model, ""
+        if not res.get("chat_ok") and status_code in MODEL_GONE_STATUSES and chain is not None:
+            why = explain_http_failure(status_code, err, model)
+            for fb in [m for m in chain.candidates() if m != model]:
+                fres = client.probe(fb, timeout_s=self.model_timeout_s)
+                notes += client.pop_key_notes() if callable(getattr(client, "pop_key_notes", None)) else []
+                if fres.get("chat_ok"):
+                    chain.mark_gone(model, why)  # runs start with the fallback instead of re-asking every call
+                    answered_by, res = fb, {**fres, "requested_status": status_code}
+                    fallback_note = (f"{model}: HTTP {status_code} - {why}. The role is answered by the fallback "
+                                     f"model {fb}")
+                    measured.update(fallback_model=fb, latency_ms=fres.get("latency_ms"), chat_ok=True)
+                    break
+        key_label = res.get("key_label") or ""
+        if key_label:
+            measured["key"] = key_label
+        key_note = ""
+        if res.get("chat_ok") and own_key and key_label and key_label != own_key:
+            refused = next((n for n in notes if n.get("from_key") == own_key), None)
+            code = f" (HTTP {refused['status']})" if refused and refused.get("status") else ""
+            key_note = (f"the {own_key} was refused{code}; the {key_label} answered "
+                        f"(nvidia.share_keys) - {explain_http_failure(refused.get('status') if refused else 403, '', model)}")
+            measured["key_fallback"] = True
         if not res.get("chat_ok"):
-            status = res.get("status")
-            head = f"reachable, but the 1-token chat to {model} failed"
-            head += f" (HTTP {status})" if status else ""
-            detail = f"{head}: {_excerpt(err, 400)}"
-            if status == 401 or not key_present:
-                detail += " - check the API key in Settings" + ("" if key_present else " (no key configured)")
-            return "warn", detail, measured, res
-        if res.get("model_listed") is False:
-            return ("warn", f"1-token chat ok in {res.get('latency_ms')} ms, but {model} is not listed by /models",
-                    measured, res)
-        return "ok", f"{model}: 1-token chat {res.get('latency_ms')} ms", measured, res
+            head = f"reachable, but the 1-token chat to {model} failed" + (f" (HTTP {status_code})" if status_code else "")
+            detail = f"{head}: {_excerpt(err, 300)}"
+            hint = explain_http_failure(status_code, err, model)
+            if hint:
+                detail += f" - {hint}"
+                measured["hint"] = hint
+            if status_code in (401, 403) and getattr(client, "alt_key_labels", None) == [] and notes:
+                detail += " (the other configured key was refused too)"
+            if not key_present:
+                detail += " (no key configured)"
+            definite = status_code in (401, 403, 404, 410) or not key_present
+            return ("fail" if definite else "warn"), detail, measured, res
+        detail = f"{answered_by}: 1-token chat {res.get('latency_ms')} ms"
+        status = "ok"
+        if fallback_note:
+            detail, status = f"{fallback_note} (1-token chat {res.get('latency_ms')} ms)", "warn"
+        if key_note:
+            detail, status = f"{detail}; {key_note}", "warn"
+        if res.get("model_listed") is False and not fallback_note:
+            detail += f"; {answered_by} is not listed by /models"
+            status = "warn"
+        return status, detail, measured, res
 
     def _p_nemotron(self, probe_models: bool) -> dict:
         if not probe_models:
@@ -431,7 +474,9 @@ class SelfCheck:
         if client is None:
             return item("nemotron", "fail", self._missing("nim_client", "NVIDIA API client unavailable"))
         nv = self.app.config.nvidia
-        status, detail, measured, _res = self._model_probe(client, nv.nemotron.model, "Nemotron", bool(nv.nemotron.api_key))
+        role = getattr(self.app, "nemotron", None)
+        status, detail, measured, _res = self._model_probe(client, nv.nemotron.model, "Nemotron", bool(nv.nemotron.api_key),
+                                                           chain=getattr(role, "chain", None), own_key="nemotron key")
         return item("nemotron", status, detail, measured)
 
     def _p_kimi(self, probe_models: bool) -> dict:
@@ -442,11 +487,13 @@ class SelfCheck:
             return item("kimi", "fail", self._missing("nim_client", "NVIDIA API client unavailable"))
         nv = self.app.config.nvidia
         model = nv.kimi.model
-        status, detail, measured, res = self._model_probe(client, model, "Kimi", bool(nv.kimi.api_key))
+        role = getattr(self.app, "kimi", None)
+        status, detail, measured, res = self._model_probe(client, model, "Kimi", bool(nv.kimi.api_key),
+                                                          chain=getattr(role, "chain", None), own_key="kimi key")
         measured["reasoning_seen"] = res.get("reasoning_seen")
         errors = [str(res.get("error") or "")]
-        if status == "ok":
-            check = self._kimi_effort_check(client, model)
+        if status in ("ok", "warn") and measured.get("chat_ok"):
+            check = self._kimi_effort_check(client, measured.get("fallback_model") or model)
             if check is not None:
                 measured["effort_check"] = check["status"]
                 measured["effort_sent"] = check["sent"]
@@ -478,10 +525,12 @@ class SelfCheck:
         chat = getattr(client, "chat", None)
         if kimi is None or not callable(chat) or not callable(getattr(kimi, "effort_extra", None)):
             return None
-        extra = kimi.effort_extra(None)
+        extra = kimi.effort_extra(None, model)
         if not extra:
             return None
         field = getattr(kimi, "effort_field", "top_level")
+        if "chat_template_kwargs" in extra and "enable_thinking" in extra["chat_template_kwargs"]:
+            field = "fallback model"
         sent = _effort_sent(extra)
         try:
             res = chat(model, [{"role": "user", "content": "ping"}], stream=False, max_tokens=1, extra=extra,

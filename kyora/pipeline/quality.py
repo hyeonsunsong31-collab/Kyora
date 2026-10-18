@@ -783,7 +783,10 @@ class NodeRunner:
     @staticmethod
     def _condense_error(stderr: str, tmp_path: str, rel: str) -> str:
         """Turn node's ``--check`` stderr into ``SyntaxError: ... (line N: code)``."""
-        lines = [ln for ln in stderr.replace(tmp_path, rel).splitlines()]
+        # node prints the real path: on macOS the temp dir /var/folders/... is /private/var/folders/...
+        for variant in sorted({tmp_path, os.path.realpath(tmp_path)}, key=len, reverse=True):
+            stderr = stderr.replace(variant, rel)
+        lines = stderr.splitlines()
         line_no = None
         code = None
         for k, ln in enumerate(lines):

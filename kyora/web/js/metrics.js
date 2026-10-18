@@ -29,6 +29,8 @@
 
   /* Map an event's role/model to a tile key. */
   function systemFor(role, model, backend) {
+    // the role decides first: a Kimi role answered by a Nemotron fallback model stays on the Kimi tile
+    for (const s of SYSTEMS) if (role && role.toLowerCase() === s.key) return s.key;
     const hay = [role, model, backend].filter(Boolean).join(' ');
     for (const s of SYSTEMS) if (s.match.test(hay)) return s.key;
     if (/judge|plan|intake|review/i.test(role || '')) return 'kimi';
@@ -39,11 +41,20 @@
   function applyMetricsEvent(metrics, ev) {
     const d = ev.data || {};
     const t = ev.type;
+    if (t === 'model.fallback') {
+      const key = systemFor(d.role, d.model || d.to_model);
+      if (!key) return null;
+      const m = metrics[key];
+      if (d.kind === 'key') m.key_note = (d.from_key || 'own key') + ' refused' + (d.status ? ' (HTTP ' + d.status + ')' : '') + ', using ' + (d.to_key || 'another key');
+      else { m.fallback_used = true; m.requested = d.requested || d.from_model || m.requested; m.model = d.to_model || m.model; }
+      return key;
+    }
     if (t === 'model.request' || t === 'model.metrics' || t === 'model.done' || t === 'model.error' || t === 'model.delta') {
       const key = systemFor(d.role, d.model);
       if (!key) return null;
       const m = metrics[key];
       if (d.model) m.model = d.model;
+      if (d.fallback && d.requested_model) { m.fallback_used = true; m.requested = d.requested_model; }
       if (t === 'model.request') { m.busy = true; m.error = null; }
       if (t === 'model.done') { m.busy = false; }
       if (t === 'model.error') { m.busy = false; m.error = d.error || ('status ' + d.status); }
@@ -138,7 +149,8 @@
       if (m.busy) foot.push('<span class="tile-live">● live</span>');
       if (m.error) foot.push('<span style="color:var(--danger)">' + esc(String(m.error).slice(0, 60)) + '</span>');
       if (!isClaude && m.tokens_source && m.tokens_source !== 'usage') foot.push('<span title="Token counts were not reported by the API; backend marked them as ' + esc(m.tokens_source) + '">tokens: ' + esc(m.tokens_source) + '</span>');
-      if (isClaude && m.fallback_used) foot.push('<span style="color:var(--warn)">fallback from ' + esc(m.requested || '?') + '</span>');
+      if (m.fallback_used) foot.push('<span style="color:var(--warn)">fallback from ' + esc(m.requested || '?') + '</span>');
+      if (m.key_note) foot.push('<span style="color:var(--warn)">' + esc(m.key_note) + '</span>');
       foot.push('<span>' + (m.calls ? m.calls + (isClaude ? ' session' : ' call') + (m.calls > 1 ? 's' : '') : 'no calls yet') + '</span>');
       return (
         '<article class="tile" data-sys="' + s.key + '" aria-label="' + esc(s.name) + ' metrics">' +

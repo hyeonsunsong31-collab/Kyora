@@ -17,11 +17,11 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .nim_client import (
-    ChatResult, NIMClient, NIMError, chat_with_events, extract_structured, force_tool, function_tool,
-    is_tool_rejection, json_for_prompt, render_prompt, strip_think,
+    ChatResult, ModelChain, NIMClient, NIMError, call_with_model_fallback, chat_with_events, extract_structured,
+    force_tool, function_tool, is_tool_rejection, json_for_prompt, render_prompt, strip_think,
 )
 
 log = logging.getLogger("kyora.models.nemotron")
@@ -219,17 +219,27 @@ class Nemotron:
     ROLE = ROLE
     MAX_TOKENS: dict[str, int] = {"design": 16384, "ui_spec": 12288, "narration": 96}
 
-    def __init__(self, client: NIMClient, model: str, bus, nemotron_cfg):
+    def __init__(self, client: NIMClient, model: str, bus, nemotron_cfg, fallback_models: Sequence[str] = ()):
         if client is None:
             raise ValueError("Nemotron needs a NIMClient")
         if not model:
             raise ValueError("Nemotron needs a model id")
         self.client = client
-        self.model = model
+        self.chain = ModelChain(model, fallback_models)
         self.bus = bus
         self.cfg = nemotron_cfg
         self._lock = threading.Lock()
         self._last_metrics: dict[str, dict] = {}
+
+    # ------------------------------------------------------------------ model
+    @property
+    def model(self) -> str:
+        """The model the next call starts with: the requested one, or the fallback that replaced it."""
+        return self.chain.active
+
+    def configure(self, model: str, fallback_models: Sequence[str] = ()) -> None:
+        """Settings changed: a new requested model / fallback list (forgets skipped models)."""
+        self.chain = ModelChain(model, fallback_models)
 
     # ------------------------------------------------------------------ bookkeeping
     def _remember(self, purpose: str, res: ChatResult) -> None:
@@ -260,10 +270,14 @@ class Nemotron:
         msgs = ([{"role": "system", "content": system}] if system else []) + list(messages)
         sampling: dict[str, float] = {"temperature": 1.0, "top_p": 0.95} if thinking else {"temperature": 0.2}
         extra = {"chat_template_kwargs": {"enable_thinking": bool(thinking)}}
-        res = chat_with_events(self.client, self.bus, role=role, model=self.model, run_id=run_id, project_id=project_id,
-                               purpose=purpose, publish_deltas=publish_deltas, messages=msgs, tools=tools,
-                               tool_choice=tool_choice, max_tokens=max_tokens, extra=extra, cancel=cancel,
-                               timeout_s=timeout_s, **sampling)
+        def call(model: str) -> ChatResult:
+            fields = {} if model == self.chain.requested else {"requested_model": self.chain.requested, "fallback": True}
+            return chat_with_events(self.client, self.bus, role=role, model=model, run_id=run_id,
+                                    project_id=project_id, purpose=purpose, publish_deltas=publish_deltas,
+                                    event_fields=fields, messages=msgs, tools=tools, tool_choice=tool_choice,
+                                    max_tokens=max_tokens, extra=extra, cancel=cancel, timeout_s=timeout_s, **sampling)
+        res = call_with_model_fallback(self.chain, self.bus, call, role=role, run_id=run_id, project_id=project_id,
+                                       purpose=purpose)
         self._remember(purpose or role, res)
         return res
 

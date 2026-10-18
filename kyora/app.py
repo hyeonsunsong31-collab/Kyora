@@ -78,21 +78,25 @@ class App:
         def _nim():
             from .models.nim_client import NIMClient
             nv = cfg.nvidia
-            return (NIMClient(nv.base_url, nv.nemotron.api_key, user_agent=f"kyora/{__version__}"),
-                    NIMClient(nv.base_url, nv.kimi.api_key, user_agent=f"kyora/{__version__}"))
+            return (NIMClient(nv.nemotron.base_url, nv.nemotron.api_key, user_agent=f"kyora/{__version__}",
+                              key_label="nemotron key", alt_keys=nv.alt_keys("nemotron")),
+                    NIMClient(nv.kimi.base_url, nv.kimi.api_key, user_agent=f"kyora/{__version__}",
+                              key_label="kimi key", alt_keys=nv.alt_keys("kimi")))
         pair = self._try("nim_client", _nim)
         if pair:
             self.nim_nemotron, self.nim_kimi = pair
 
         def _nemotron():
             from .models.nemotron import Nemotron
-            return Nemotron(self.nim_nemotron, cfg.nvidia.nemotron.model, self.bus, cfg.nemotron)
+            return Nemotron(self.nim_nemotron, cfg.nvidia.nemotron.model, self.bus, cfg.nemotron,
+                            fallback_models=cfg.nvidia.nemotron.fallback_models)
         if self.nim_nemotron:
             self.nemotron = self._try("nemotron", _nemotron)
 
         def _kimi():
             from .models.kimi import Kimi
-            return Kimi(self.nim_kimi, cfg.nvidia.kimi.model, cfg.kimi, self.bus)
+            return Kimi(self.nim_kimi, cfg.nvidia.kimi.model, cfg.kimi, self.bus,
+                        fallback_models=cfg.nvidia.kimi.fallback_models)
         if self.nim_kimi:
             self.kimi = self._try("kimi", _kimi)
 
@@ -177,6 +181,18 @@ class App:
             self.hub_worker.start()
         self.started.set()
 
+    def apply_model_settings(self) -> None:
+        """Endpoints, keys, models and fallbacks changed in Settings take effect without a restart."""
+        nv = self.config.nvidia
+        for client, role, label in ((self.nim_nemotron, nv.nemotron, "nemotron"), (self.nim_kimi, nv.kimi, "kimi")):
+            if client is not None:
+                client.base_url = role.base_url
+                client.set_keys(role.api_key, f"{label} key", nv.alt_keys(label))
+        if self.nemotron is not None:
+            self.nemotron.configure(nv.nemotron.model, nv.nemotron.fallback_models)
+        if self.kimi is not None:
+            self.kimi.configure(nv.kimi.model, nv.kimi.fallback_models)
+
     def stop(self) -> None:
         for comp in (self.run_manager, self.hub_worker):
             if comp and hasattr(comp, "stop"):
@@ -257,6 +273,8 @@ class App:
             changed = app.config.apply_patch(patch)
             if changed:
                 app.config.save()
+                if any(c.startswith("keys.nvidia.") for c in changed):
+                    app.apply_model_settings()  # endpoints, keys and models apply without a restart
                 app.bus.publish("settings.changed", {"changed": changed})
             return Response.json({"changed": changed, "restart_required": any(c.startswith("settings.server") for c in changed)})
 

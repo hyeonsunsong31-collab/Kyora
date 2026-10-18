@@ -42,8 +42,8 @@ import time
 from typing import Any, Callable, Mapping, Sequence
 
 from .nim_client import (
-    ChatResult, NIMClient, NIMError, chat_with_events, extract_structured, force_tool, function_tool,
-    is_tool_rejection, json_for_prompt, render_prompt, tool_call_arguments,
+    ChatResult, ModelChain, NIMClient, NIMError, call_with_model_fallback, chat_with_events, extract_structured,
+    force_tool, function_tool, is_tool_rejection, json_for_prompt, render_prompt, tool_call_arguments,
 )
 
 log = logging.getLogger("kyora.models.kimi")
@@ -181,6 +181,16 @@ REVIEW_TOOL = function_tool("emit_review", "Emit the review decision after a fai
 
 
 # ----------------------------------------------------------------------------- small coercions
+def model_family(model: str | None) -> str:
+    """``kimi`` (Moonshot), ``nemotron`` (NVIDIA Nemotron) or ``other`` - picks the request fields a model reads."""
+    m = (model or "").lower()
+    if "kimi" in m or m.startswith("moonshotai/"):
+        return "kimi"
+    if "nemotron" in m:
+        return "nemotron"
+    return "other"
+
+
 def _str(value: Any) -> str:
     if value is None:
         return ""
@@ -775,18 +785,28 @@ class Kimi:
     MAX_TOKENS: dict[str, int] = {"intake": 16384, "plan": 32768, "judge": 8192, "review": 16384}
     TIMEOUT_S: dict[str, float] = {"judge": 240.0}
 
-    def __init__(self, client: NIMClient, model: str, kimi_cfg, bus):
+    def __init__(self, client: NIMClient, model: str, kimi_cfg, bus, fallback_models: Sequence[str] = ()):
         if client is None:
             raise ValueError("Kimi needs a NIMClient")
         if not model:
             raise ValueError("Kimi needs a model id")
         self.client = client
-        self.model = model
+        self.chain = ModelChain(model, fallback_models)
         self.cfg = kimi_cfg
         self.bus = bus
         self._lock = threading.Lock()
         self._last_metrics: dict[str, dict] = {}
         self._tool_mode = TOOL_MODES[0]
+
+    # ------------------------------------------------------------------ model
+    @property
+    def model(self) -> str:
+        """The model the next call starts with: the requested one, or the fallback that replaced it."""
+        return self.chain.active
+
+    def configure(self, model: str, fallback_models: Sequence[str] = ()) -> None:
+        """Settings changed: a new requested model / fallback list (forgets skipped models)."""
+        self.chain = ModelChain(model, fallback_models)
 
     # ------------------------------------------------------------------ settings
     @property
@@ -807,11 +827,21 @@ class Kimi:
         with self._lock:
             return self._tool_mode
 
-    def effort_extra(self, effort: str | None) -> dict:
-        """Body fields carrying the reasoning effort, placed per ``kimi.effort_field``."""
+    def effort_extra(self, effort: str | None, model: str | None = None) -> dict:
+        """Body fields carrying the reasoning effort, placed per ``kimi.effort_field``.
+
+        For a fallback model that is not a Kimi model (``model``), Kimi's ``reasoning_effort`` is not
+        sent: a Nemotron fallback gets its own thinking switch (``chat_template_kwargs.enable_thinking``),
+        any other model no effort field.
+        """
         if effort is None:
             effort = self.reasoning_effort
         if not effort:
+            return {}
+        family = model_family(model or self.chain.requested)
+        if family == "nemotron":
+            return {"chat_template_kwargs": {"enable_thinking": True}}
+        if family != "kimi":
             return {}
         field = self.effort_field
         if field == "extra_body":
@@ -823,20 +853,28 @@ class Kimi:
             log.warning("kimi: unknown effort_field %r; sending reasoning_effort top-level", field)
         return {"reasoning_effort": effort}
 
-    def effort_report(self, effort: str | None) -> dict:
+    def effort_report(self, effort: str | None, model: str | None = None) -> dict:
         """Event fields naming the effort field and value sent (``effort_sent``), never that it was applied.
 
         In the ``extra_body`` mode they add ``effort_best_effort: true`` and :data:`EXTRA_BODY_EFFORT_NOTE`:
         Kimi K3's template is not documented to read ``chat_template_kwargs.reasoning_effort``.
         """
-        extra = self.effort_extra(effort)
+        extra = self.effort_extra(effort, model)
         kwargs = extra.get("chat_template_kwargs")
+        if isinstance(kwargs, dict) and "enable_thinking" in kwargs:
+            return {"effort_sent": "chat_template_kwargs.enable_thinking=true (fallback model, no reasoning_effort)"}
         if isinstance(kwargs, dict) and "reasoning_effort" in kwargs:
             return {"effort_sent": f"chat_template_kwargs.reasoning_effort={kwargs['reasoning_effort']}",
                     "effort_best_effort": True, "effort_note": EXTRA_BODY_EFFORT_NOTE}
         if "reasoning_effort" in extra:
             return {"effort_sent": f"reasoning_effort={extra['reasoning_effort']}"}
         return {}
+
+    def _fallback_fields(self, model: str) -> dict:
+        """Event fields that say a fallback model answers for the requested one."""
+        if model == self.chain.requested:
+            return {}
+        return {"requested_model": self.chain.requested, "fallback": True}
 
     # ------------------------------------------------------------------ bookkeeping
     def _remember(self, purpose: str, res: ChatResult) -> None:
@@ -868,17 +906,20 @@ class Kimi:
         ``tool_choice`` applies to the first request only; later rounds use
         ``auto`` so a forced, implemented tool cannot loop by construction.
         """
-        extra = self.effort_extra(effort)
-        report = self.effort_report(effort)
         label = purpose or "think"
         rounds = 0
         choice = tool_choice
         while True:
-            res = chat_with_events(self.client, self.bus, role=ROLE, model=self.model, run_id=run_id,
-                                   project_id=project_id, purpose=label, publish_deltas=publish_deltas,
-                                   event_fields=report, messages=conv.messages(), tools=tools, tool_choice=choice if tools else None,
-                                   max_tokens=max_tokens, extra=extra or None, cancel=cancel, timeout_s=timeout_s,
-                                   temperature=1.0, top_p=1.0)
+            def call(model: str, choice=choice) -> ChatResult:
+                fields = {**self.effort_report(effort, model), **self._fallback_fields(model)}
+                return chat_with_events(self.client, self.bus, role=ROLE, model=model, run_id=run_id,
+                                        project_id=project_id, purpose=label, publish_deltas=publish_deltas,
+                                        event_fields=fields, messages=conv.messages(), tools=tools,
+                                        tool_choice=choice if tools else None, max_tokens=max_tokens,
+                                        extra=self.effort_extra(effort, model) or None, cancel=cancel,
+                                        timeout_s=timeout_s, temperature=1.0, top_p=1.0)
+            res = call_with_model_fallback(self.chain, self.bus, call, role=ROLE, run_id=run_id,
+                                           project_id=project_id, purpose=label)
             self._remember(label, res)
             conv.add_assistant(res.message)
             if not res.tool_calls or not tool_impl:
@@ -1080,6 +1121,7 @@ class Kimi:
                                       project_id=ctx.get("project_id"), publish_deltas=False,
                                       timeout_s=self.TIMEOUT_S.get("judge"))
         return {**verdict, "source": "kimi", "judge_model": self.model,
+                **({"requested_model": self.chain.requested} if self.chain.fallback_active else {}),
                 "latency_ms": int((time.monotonic() - t0) * 1000)}
 
     # ------------------------------------------------------------------ review

@@ -16,6 +16,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,8 +27,12 @@ from .util.fs import atomic_write_json, kyora_home, read_json
 DEFAULT_KEYS: dict = {
     "nvidia": {
         "base_url": "https://integrate.api.nvidia.com/v1",
-        "nemotron": {"model": "nvidia/nemotron-3-ultra-550b-a55b", "api_key": ""},
-        "kimi": {"model": "moonshotai/kimi-k3", "api_key": ""},
+        "nemotron": {"model": "nvidia/nemotron-3-ultra-550b-a55b", "api_key": "", "base_url": "", "fallback_models": []},
+        "kimi": {"model": "moonshotai/kimi-k3", "api_key": "", "base_url": "",
+                 # moonshotai/kimi-k3 left NVIDIA's free endpoint on 2026-10-15 (HTTP 410); see docs/honesty.md
+                 "fallback_models": ["nvidia/nemotron-3-ultra-550b-a55b"]},
+        # a role whose own key is refused (401/403) may use the other role's key on the same endpoint
+        "share_keys": True,
     },
     "anthropic": {"api_key": ""},
     "hub": {"url": "", "token": ""},
@@ -68,6 +73,8 @@ DEFAULT_SETTINGS: dict = {
 PATCHABLE_KEYS = {
     "nvidia.base_url", "nvidia.nemotron.model", "nvidia.nemotron.api_key",
     "nvidia.kimi.model", "nvidia.kimi.api_key", "anthropic.api_key",
+    "nvidia.nemotron.base_url", "nvidia.kimi.base_url", "nvidia.nemotron.fallback_models",
+    "nvidia.kimi.fallback_models", "nvidia.share_keys",
     "hub.url", "hub.token", "tokkio.ui_url", "tokkio.configurator_url",
 }
 PATCHABLE_SETTINGS = {
@@ -89,6 +96,8 @@ KIMI_EFFORTS = ("low", "high", "max")
 class NvidiaModelCfg:
     model: str
     api_key: str
+    base_url: str = ""  # resolved: the role's own endpoint, else nvidia.base_url
+    fallback_models: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -96,6 +105,17 @@ class NvidiaCfg:
     base_url: str
     nemotron: NvidiaModelCfg
     kimi: NvidiaModelCfg
+    share_keys: bool = True
+
+    def alt_keys(self, role: str) -> list[tuple[str, str]]:
+        """Keys a role may fall back to when its own is refused: the other role's, on the same endpoint."""
+        if not self.share_keys:
+            return []
+        mine, other_name = (self.nemotron, "kimi") if role == "nemotron" else (self.kimi, "nemotron")
+        other = getattr(self, other_name)
+        if other.api_key and other.api_key != mine.api_key and other.base_url == mine.base_url:
+            return [(f"{other_name} key", other.api_key)]
+        return []
 
 
 @dataclass
@@ -277,11 +297,17 @@ class Config:
     @property
     def nvidia(self) -> NvidiaCfg:
         k = self.raw_keys["nvidia"]
-        return NvidiaCfg(
-            base_url=str(k.get("base_url") or DEFAULT_KEYS["nvidia"]["base_url"]).rstrip("/"),
-            nemotron=NvidiaModelCfg(model=k["nemotron"]["model"], api_key=k["nemotron"].get("api_key", "")),
-            kimi=NvidiaModelCfg(model=k["kimi"]["model"], api_key=k["kimi"].get("api_key", "")),
-        )
+        base = str(k.get("base_url") or DEFAULT_KEYS["nvidia"]["base_url"]).rstrip("/")
+
+        def role(name: str) -> NvidiaModelCfg:
+            r = k.get(name) or {}
+            fallbacks = r.get("fallback_models", DEFAULT_KEYS["nvidia"][name]["fallback_models"])
+            return NvidiaModelCfg(model=r.get("model") or DEFAULT_KEYS["nvidia"][name]["model"],
+                                  api_key=r.get("api_key", "") or "",
+                                  base_url=str(r.get("base_url") or base).rstrip("/"),
+                                  fallback_models=[str(m) for m in (fallbacks or []) if m])
+        return NvidiaCfg(base_url=base, nemotron=role("nemotron"), kimi=role("kimi"),
+                         share_keys=bool(k.get("share_keys", DEFAULT_KEYS["nvidia"]["share_keys"])))
 
     @property
     def anthropic_api_key(self) -> str:
@@ -400,6 +426,16 @@ def _flatten(d: dict, prefix: str = "") -> dict:
 
 
 def _validate(section: str, dotted: str, value) -> None:
+    if dotted in ("nvidia.base_url", "nvidia.nemotron.base_url", "nvidia.kimi.base_url"):
+        if not isinstance(value, str) or (value and not re.match(r"^https?://[^\s/]+", value)):
+            raise ValueError(f"{dotted} must be an http(s) URL" + ("" if dotted == "nvidia.base_url" else " or empty"))
+        if dotted == "nvidia.base_url" and not value:
+            raise ValueError("nvidia.base_url must not be empty")
+    if dotted in ("nvidia.nemotron.fallback_models", "nvidia.kimi.fallback_models"):
+        if not isinstance(value, list) or not all(isinstance(x, str) and x.strip() for x in value):
+            raise ValueError(f"{dotted} must be a list of model ids")
+    if dotted == "nvidia.share_keys" and not isinstance(value, bool):
+        raise ValueError("nvidia.share_keys must be true or false")
     if dotted == "claude_code.effort" and value not in EFFORT_LEVELS:
         raise ValueError(f"effort must be one of {EFFORT_LEVELS}")
     if dotted in ("kimi.reasoning_effort", "kimi.judge_reasoning_effort") and value not in KIMI_EFFORTS:

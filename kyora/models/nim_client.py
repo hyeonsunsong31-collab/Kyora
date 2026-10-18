@@ -294,18 +294,64 @@ class NIMClient:
 
     def __init__(self, base_url: str, api_key: str, *, user_agent: str = "kyora",
                  timeout_s: float = DEFAULT_TIMEOUT_S, max_attempts: int = DEFAULT_MAX_ATTEMPTS,
-                 backoff_s: Sequence[float] = DEFAULT_BACKOFF_S, opener: urllib.request.OpenerDirector | None = None):
+                 backoff_s: Sequence[float] = DEFAULT_BACKOFF_S, opener: urllib.request.OpenerDirector | None = None,
+                 key_label: str = "own key", alt_keys: Sequence[tuple[str, str]] = ()):
         base = (base_url or "").strip().rstrip("/")
         if not base:
             raise ValueError("NIMClient: base_url is required")
         self.base_url = base
         self.api_key = api_key or ""
+        self._key_lock = threading.Lock()
+        self.set_keys(self.api_key, key_label, alt_keys)
         self.user_agent = user_agent or "kyora"
         self.timeout_s = float(timeout_s)
         self.max_attempts = max(1, int(max_attempts))
         self.backoff_s = tuple(float(b) for b in backoff_s) or DEFAULT_BACKOFF_S
         # build_opener() installs the env-based ProxyHandler and the default HTTPS handler.
         self._opener = opener or urllib.request.build_opener()
+
+    # ------------------------------------------------------------------ keys
+    def set_keys(self, api_key: str, key_label: str = "own key", alt_keys: Sequence[tuple[str, str]] = ()) -> None:
+        """Set the key and the labelled alternates tried when the endpoint refuses it (401/403).
+
+        The user may configure one NVIDIA key per role; a key whose account cannot run inference
+        answers 403 for every model (seen on 2026-10-18), while the other may work. Alternates are
+        only tried after a refusal, the switch is sticky and reported by :meth:`pop_key_notes`.
+        """
+        with self._key_lock:
+            self.api_key = api_key or ""
+            self.key_label = key_label or "own key"
+            self._alt_keys = [(str(label), str(key)) for label, key in alt_keys if key and key != self.api_key]
+            self._refused: set[str] = set()
+            self._key_notes: list[dict] = []
+
+    def _switch_key(self, failed_key: str, status: int | None, model: str) -> bool:
+        """After ``failed_key`` was refused: move to the next unrefused key. False when none is left."""
+        with self._key_lock:
+            self._refused.add(failed_key)
+            if self.api_key != failed_key:  # another request switched already
+                return self.api_key not in self._refused
+            all_keys = [(self.key_label, self.api_key)] + [k for k in self._alt_keys if k[1] != self.api_key]
+            for label, key in all_keys:
+                if key not in self._refused:
+                    old_label = self.key_label
+                    self._alt_keys = [k for k in all_keys if k[1] != key]
+                    self.api_key, self.key_label = key, label
+                    self._key_notes.append({"kind": "key", "from_key": old_label, "to_key": label,
+                                            "status": status, "model": model})
+                    return True
+            return False
+
+    def pop_key_notes(self) -> list[dict]:
+        """Key switches since the last call (labels only, never key material)."""
+        with self._key_lock:
+            notes, self._key_notes = self._key_notes, []
+            return notes
+
+    @property
+    def alt_key_labels(self) -> list[str]:
+        with self._key_lock:
+            return [label for label, _ in self._alt_keys]
 
     # ------------------------------------------------------------------ helpers
     def __repr__(self) -> str:
@@ -401,6 +447,7 @@ class NIMClient:
         attempt = 0
         while True:
             self._check_cancel(cancel)
+            sent_key = self.api_key
             req = urllib.request.Request(url, data=payload, method="POST", headers=self._headers(stream=stream, json_body=True))
             t0 = time.monotonic()
             try:
@@ -408,6 +455,9 @@ class NIMClient:
             except urllib.error.HTTPError as exc:
                 status = int(exc.code)
                 err_body = _read_error_body(exc)
+                if status in (401, 403) and sent_key and self._switch_key(sent_key, status, model):
+                    log.warning("NIM %s: HTTP %s for a refused key; retrying with the %s", model, status, self.key_label)
+                    continue
                 if (status == 429 or status >= 500) and attempt + 1 < self.max_attempts:
                     retry_after = _retry_after_s(exc.headers)
                     delay = retry_after if retry_after is not None else self.backoff_s[min(attempt, len(self.backoff_s) - 1)]
@@ -606,6 +656,7 @@ class NIMClient:
             out["latency_ms"] = round((time.monotonic() - t0) * 1000.0, 1)
             out["reachable"] = True
             out["chat_ok"] = True
+            out["key_label"] = self.key_label
             out["reasoning_seen"] = bool(res.reasoning)
             out["error"] = None
             out["status"] = None
@@ -740,6 +791,44 @@ def is_tool_rejection(exc: NIMError) -> bool:
     return any(word in body for word in ("tool", "function", "tool_choice"))
 
 
+# The model itself is gone at this endpoint: the next model of a role's fallback list may answer.
+MODEL_GONE_STATUSES = (404, 410)
+_EOL_RE = re.compile(r"end of life on (\d{4}-\d{2}-\d{2})", re.IGNORECASE)
+
+
+def explain_http_failure(status: int | None, body: str | None, model: str) -> str:
+    """What an HTTP failure of a model call means and what the user can do (self-check, BLOCKED reasons).
+
+    Wording comes from what the NVIDIA API Catalog actually answers: 410 with "reached its end of
+    life on <date>" for a retired model (moonshotai/kimi-k3, 2026-10-15) and 403 "Authorization
+    failed" when a key may list models but not run them.
+    """
+    text = (body or "").lower()
+    if status == 401:
+        return "the endpoint rejected the API key (missing, mistyped, expired or revoked): paste a valid key in Settings"
+    if status == 403:
+        hint = ("the endpoint accepted the request but refused inference for this key"
+                + (" (\"Authorization failed\")" if "authorization failed" in text else ""))
+        return (hint + ": on build.nvidia.com this happens when the key's account or organization lacks inference "
+                "access (the \"Public API Endpoints\" permission) or the key was revoked - create a new key with "
+                "build.nvidia.com -> Get API Key on an account with inference access (or ask NVIDIA to enable it) "
+                "and paste it in Settings")
+    if status == 410:
+        m = _EOL_RE.search(body or "")
+        when = f" on {m.group(1)}" if m else ""
+        return (f"{model} was retired by the provider{when}: choose another model for this role in Settings, add "
+                "fallback models, or point the role at another endpoint that still serves it")
+    if status == 404:
+        return f"{model} is not served at this endpoint: check the model id in Settings (self-check lists what /models offers)"
+    if status == 402:
+        return "the endpoint asks for payment: the account has no credits left for this model"
+    if status == 429:
+        return "rate limited or out of credits: wait and retry, or check the account's limits"
+    if status is not None and status >= 500:
+        return "the provider had a server error: retry later"
+    return ""
+
+
 # ----------------------------------------------------------------------------- prompt templates
 _PROMPT_CACHE: dict[str, str] = {}
 _PROMPT_LOCK = threading.Lock()
@@ -785,7 +874,7 @@ def chat_with_events(client: NIMClient, bus, *, role: str, model: str, run_id: s
     :class:`Metrics` of the call; nothing is invented when the server sends
     no usage block (``tokens_source`` says what the numbers are).
     """
-    from ..pipeline.events import MODEL_DONE, MODEL_ERROR, MODEL_METRICS, MODEL_REQUEST, DeltaCoalescer
+    from ..pipeline.events import MODEL_DONE, MODEL_ERROR, MODEL_FALLBACK, MODEL_METRICS, MODEL_REQUEST, DeltaCoalescer
 
     base = {**dict(event_fields or {}), "role": role, "model": model}
     if purpose:
@@ -811,12 +900,19 @@ def chat_with_events(client: NIMClient, bus, *, role: str, model: str, run_id: s
         if user_on_delta is not None:
             user_on_delta(delta)
 
+    def key_notes() -> None:
+        pop = getattr(client, "pop_key_notes", None)
+        for note in (pop() if callable(pop) else []):
+            pub(MODEL_FALLBACK, {**note, "reason": explain_http_failure(note.get("status"), "", model)})
+
     try:
         res = client.chat(model, on_delta=on_delta, **chat_kwargs)
     except NIMError as exc:
         if coalescer is not None:
             coalescer.flush()
-        pub(MODEL_ERROR, {"error": str(exc), "status": exc.status})
+        key_notes()
+        pub(MODEL_ERROR, {"error": str(exc), "status": exc.status,
+                          "hint": explain_http_failure(exc.status, exc.body or str(exc), model)})
         raise
     except Exception as exc:  # noqa: BLE001 - report, then re-raise unchanged
         if coalescer is not None:
@@ -825,6 +921,7 @@ def chat_with_events(client: NIMClient, bus, *, role: str, model: str, run_id: s
         raise
     if coalescer is not None:
         coalescer.flush()
+    key_notes()
     pub(MODEL_METRICS, {**res.metrics.to_dict(), "finish_reason": res.finish_reason})
     pub(MODEL_DONE, {"finish_reason": res.finish_reason,
                      "tool_calls": [(tc.get("function") or {}).get("name") for tc in res.tool_calls],
@@ -832,7 +929,79 @@ def chat_with_events(client: NIMClient, bus, *, role: str, model: str, run_id: s
     return res
 
 
+class ModelChain:
+    """A role's requested model followed by its configured fallback models, in order.
+
+    A model is skipped only after the endpoint said it is gone (404 not found / 410 retired, see
+    :data:`MODEL_GONE_STATUSES`); every skip is published as ``model.fallback`` and every
+    ``model.*`` event names the model that actually answered. A new chain (Settings change)
+    forgets what was skipped.
+    """
+
+    def __init__(self, model: str, fallbacks: Sequence[str] = ()):
+        self.requested = str(model)
+        self.fallbacks = [str(m) for m in dict.fromkeys(fallbacks or ()) if m and str(m) != self.requested]
+        self._gone: dict[str, str] = {}
+        self._lock = threading.Lock()
+
+    def candidates(self) -> list[str]:
+        with self._lock:
+            alive = [m for m in [self.requested, *self.fallbacks] if m not in self._gone]
+        return alive or [self.requested]
+
+    @property
+    def active(self) -> str:
+        """The model the next call starts with."""
+        return self.candidates()[0]
+
+    @property
+    def fallback_active(self) -> bool:
+        return self.active != self.requested
+
+    def mark_gone(self, model: str, why: str) -> None:
+        with self._lock:
+            self._gone[model] = why
+
+    def gone(self) -> dict[str, str]:
+        with self._lock:
+            return dict(self._gone)
+
+    def to_dict(self) -> dict:
+        return {"requested": self.requested, "fallbacks": list(self.fallbacks), "active": self.active,
+                "gone": self.gone()}
+
+
+def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any], *, role: str,
+                             run_id: str | None = None, project_id: str | None = None,
+                             purpose: str | None = None) -> Any:
+    """``call(model)`` for the chain's models in order until one is not gone; re-raises everything else."""
+    from ..pipeline.events import MODEL_FALLBACK
+    candidates = chain.candidates()
+    for i, model in enumerate(candidates):
+        try:
+            return call(model)
+        except (NIMCancelled, NIMUnreachable):
+            raise
+        except NIMError as exc:
+            if exc.status not in MODEL_GONE_STATUSES or i + 1 >= len(candidates):
+                raise
+            reason = explain_http_failure(exc.status, exc.body or str(exc), model)
+            chain.mark_gone(model, reason)
+            log.warning("%s: %s answered HTTP %s; falling back to %s", role, model, exc.status, candidates[i + 1])
+            if bus is not None:
+                try:
+                    bus.publish(MODEL_FALLBACK, {"kind": "model", "role": role, "requested": chain.requested,
+                                                 "from_model": model, "to_model": candidates[i + 1],
+                                                 "status": exc.status, "reason": reason,
+                                                 **({"purpose": purpose} if purpose else {})},
+                                run_id=run_id, project_id=project_id)
+                except Exception as pub_exc:  # noqa: BLE001
+                    log.warning("event publish failed (model.fallback): %s", pub_exc)
+    raise AssertionError("unreachable")  # pragma: no cover - the loop returns or raises
+
+
 __all__ = [
+    "ModelChain", "call_with_model_fallback", "explain_http_failure", "MODEL_GONE_STATUSES",
     "NIMError", "NIMUnreachable", "NIMCancelled", "Delta", "ChatResult", "NIMClient",
     "build_assistant_message", "tool_call_arguments", "function_tool", "force_tool",
     "strip_think", "extract_json_object", "extract_structured", "is_tool_rejection",

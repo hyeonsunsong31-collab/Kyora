@@ -640,13 +640,34 @@ def event_stream(bus, *, run_id: str | None, project_id: str | None, types: list
 
 _NAMES_LOCK = threading.Lock()
 _NAMES_CACHE: dict = {"at": 0.0, "names": frozenset()}
+_LAN_CACHE: dict = {"at": 0.0, "addrs": None}
+# Resolving this host's own name can block for seconds: macOS answers "<name>.local" over mDNS
+# (the GitHub macOS runners took >5 s, which made every GET /api/status time out). Name lookups
+# therefore run with a time budget and results are cached; the UDP route probe needs no DNS.
+DNS_BUDGET_S = 1.0
+
+
+def _bounded(fn, budget_s: float = DNS_BUDGET_S):
+    """``fn()`` in a daemon thread; its result, or None when it raised or did not finish in ``budget_s``."""
+    box: dict = {}
+
+    def run() -> None:
+        try:
+            box["value"] = fn()
+        except Exception:  # noqa: BLE001 - a failed lookup is just "no answer"
+            box["value"] = None
+
+    t = threading.Thread(target=run, name="kyora-dns", daemon=True)
+    t.start()
+    t.join(budget_s)
+    return box.get("value")
 
 
 def local_host_names(ttl_s: float = 60.0) -> frozenset:
     """Names of this host for the Host allow-list: LAN addresses, hostname, ``<hostname>.local``, FQDN.
 
-    Cached for ``ttl_s`` (``getfqdn`` may wait on DNS); only consulted when a listener is bound
-    beyond loopback and the Host is not otherwise allowed.
+    Cached for ``ttl_s``; ``getfqdn`` runs within :data:`DNS_BUDGET_S`. Only consulted when a
+    listener is bound beyond loopback and the Host is not otherwise allowed.
     """
     now = time.monotonic()
     with _NAMES_LOCK:
@@ -655,7 +676,10 @@ def local_host_names(ttl_s: float = 60.0) -> frozenset:
     names = set(lan_addresses())
     try:
         hostname = socket.gethostname()
-        names.update({hostname, hostname + ".local", socket.getfqdn()})
+        names.update({hostname, hostname + ".local"})
+        fqdn = _bounded(socket.getfqdn)
+        if fqdn:
+            names.add(fqdn)
     except OSError:
         pass
     out = frozenset(n.lower().rstrip(".") for n in names if n)
@@ -664,25 +688,30 @@ def local_host_names(ttl_s: float = 60.0) -> frozenset:
     return out
 
 
-def lan_addresses() -> list[str]:
-    """Best-effort list of non-loopback IPv4 addresses of this host."""
+def lan_addresses(ttl_s: float = 30.0) -> list[str]:
+    """Best-effort list of non-loopback IPv4 addresses of this host (cached for ``ttl_s``)."""
+    now = time.monotonic()
+    with _NAMES_LOCK:
+        if _LAN_CACHE["addrs"] is not None and now - _LAN_CACHE["at"] < ttl_s:
+            return list(_LAN_CACHE["addrs"])
     addrs: list[str] = []
-    try:
-        hostname = socket.gethostname()
-        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
-            ip = info[4][0]
-            if not ip.startswith("127.") and ip not in addrs:
-                addrs.append(ip)
-    except Exception:
-        pass
-    try:
+    try:  # the address of the default route: no DNS, no packet sent
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(0.2)
-        s.connect(("10.255.255.255", 1))
-        ip = s.getsockname()[0]
-        s.close()
-        if not ip.startswith("127.") and ip not in addrs:
-            addrs.insert(0, ip)
+        try:
+            s.settimeout(0.2)
+            s.connect(("10.255.255.255", 1))
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+        if not ip.startswith("127.") and ip != "0.0.0.0":
+            addrs.append(ip)
     except Exception:
         pass
+    infos = _bounded(lambda: socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)) or []
+    for info in infos:
+        ip = info[4][0]
+        if not ip.startswith("127.") and ip not in addrs:
+            addrs.append(ip)
+    with _NAMES_LOCK:
+        _LAN_CACHE.update(at=now, addrs=list(addrs))
     return addrs

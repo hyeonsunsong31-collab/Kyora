@@ -301,7 +301,8 @@ class ShellLauncherRunTests(unittest.TestCase):
         for name in ("python", "python3"):
             (stubs / name).symlink_to(sys.executable)
         for p in stubs.iterdir():
-            p.chmod(0o755)
+            if not p.is_symlink():  # macOS chmod follows the link to the (read-only) interpreter
+                p.chmod(0o755)
         env = dict(self.env, PATH=f"{stubs}{os.pathsep}{os.environ.get('PATH', '')}")
         r = _run(["sh", str(LAUNCHERS / "install-termux.sh"), "--with-claude"], env=env)
         out = r.stdout.decode()

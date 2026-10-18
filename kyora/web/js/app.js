@@ -1038,7 +1038,12 @@
       }
       case 'model.error':
         ctx.delta = null;
-        out.push(line(ev, 'error', 'errors', 'model', sysName(d.role, d.model) + ': ' + (d.error || 'error') + (d.status ? ' (HTTP ' + d.status + ')' : '')));
+        out.push(line(ev, 'error', 'errors', 'model', sysName(d.role, d.model) + ': ' + (d.error || 'error') + (d.status ? ' (HTTP ' + d.status + ')' : '') + (d.hint ? ' - ' + d.hint : '')));
+        break;
+      case 'model.fallback':
+        out.push(line(ev, 'system', 'model', 'fallback', d.kind === 'key'
+          ? sysName(d.role, d.model) + ': ' + (d.from_key || 'own key') + ' refused' + (d.status ? ' (HTTP ' + d.status + ')' : '') + ', now using the ' + (d.to_key || 'other key')
+          : (d.role || 'model') + ': ' + (d.from_model || '?') + (d.status ? ' answered HTTP ' + d.status : ' is unavailable') + ', now answered by ' + (d.to_model || '?') + (d.reason ? ' - ' + d.reason : '')));
         break;
       case 'engine.session':
         ctx.engine = Object.assign({}, ctx.engine, { backend: d.backend || ctx.engine.backend, model: d.model || ctx.engine.model, session_id: d.session_id, effort: d.effort || ctx.engine.effort });

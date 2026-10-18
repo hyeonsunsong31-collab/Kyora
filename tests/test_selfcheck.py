@@ -68,7 +68,7 @@ class FakeStatusError(Exception):
 class FakeKimi:
     effort_field = "top_level"
 
-    def effort_extra(self, effort):
+    def effort_extra(self, effort, model=None):
         return {"reasoning_effort": effort or "max"}
 
 
@@ -216,7 +216,7 @@ class ReportTests(_Base):
         app = self.make_app(nim_nemotron=FakeNIM(result={"chat_ok": False, "status": 401, "error": err,
                                                          "latency_ms": 120.0, "reasoning_seen": None}))
         it = self.by_id(SelfCheck(app).run(probe_models=True))["nemotron"]
-        self.assertEqual(it["status"], "warn")
+        self.assertEqual(it["status"], "fail")  # a refused key: the role cannot answer at all
         self.assertIn("HTTP 401", it["detail"])
         self.assertIn("Unauthorized", it["detail"])
         self.assertIn("API key", it["detail"])

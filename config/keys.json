@@ -3,12 +3,19 @@
     "base_url": "https://integrate.api.nvidia.com/v1",
     "nemotron": {
       "model": "nvidia/nemotron-3-ultra-550b-a55b",
-      "api_key": "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"
+      "api_key": "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",
+      "base_url": "",
+      "fallback_models": []
     },
     "kimi": {
       "model": "moonshotai/kimi-k3",
-      "api_key": "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"
-    }
+      "api_key": "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",
+      "base_url": "",
+      "fallback_models": [
+        "nvidia/nemotron-3-ultra-550b-a55b"
+      ]
+    },
+    "share_keys": true
   },
   "anthropic": {
     "api_key": ""

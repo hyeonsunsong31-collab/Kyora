@@ -19,8 +19,8 @@ from typing import Callable, Iterable
 RUN_CREATED, RUN_STATE, RUN_BLOCKED, RUN_COMPLETED, RUN_FAILED, RUN_CANCELLED, RUN_AWAITING_APPROVAL = (
     "run.created", "run.state", "run.blocked", "run.completed", "run.failed", "run.cancelled", "run.awaiting_approval")
 STAGE_STARTED, STAGE_PROGRESS, STAGE_FINISHED = "stage.started", "stage.progress", "stage.finished"
-MODEL_REQUEST, MODEL_DELTA, MODEL_METRICS, MODEL_DONE, MODEL_ERROR = (
-    "model.request", "model.delta", "model.metrics", "model.done", "model.error")
+MODEL_REQUEST, MODEL_DELTA, MODEL_METRICS, MODEL_DONE, MODEL_ERROR, MODEL_FALLBACK = (
+    "model.request", "model.delta", "model.metrics", "model.done", "model.error", "model.fallback")
 ENGINE_SESSION, ENGINE_MODEL_RESOLVED, ENGINE_TEXT, ENGINE_THINKING, ENGINE_TOOL_USE, ENGINE_TOOL_RESULT, ENGINE_RESULT, ENGINE_ERROR, ENGINE_COMPAT_RETRY, ENGINE_STDERR = (
     "engine.session", "engine.model_resolved", "engine.text", "engine.thinking", "engine.tool_use", "engine.tool_result",
     "engine.result", "engine.error", "engine.compat_retry", "engine.stderr")
