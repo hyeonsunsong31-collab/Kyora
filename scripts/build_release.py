@@ -440,8 +440,15 @@ def check_serve(report: CheckReport, python: str, pyz: Path, repo: Path, work: P
                 time.sleep(0.25)
             if status_body is None:
                 report.fail(f"GET /api/status did not return 200 within {timeout_s:.0f} s ({last_err})")
+                try:  # what the server printed: the reason is usually there (slow start, crash, port)
+                    log_fh.flush()
+                    tail = log_path.read_bytes()[-2000:].decode("utf-8", "replace").strip()
+                    print("  server output (tail):\n    " + ("\n    ".join(tail.splitlines()) or "(nothing)"))
+                except OSError:
+                    pass
                 return
-            report.ok(f"'{pyz.name} serve' answered GET /api/status 200 on port {port}")
+            report.ok(f"'{pyz.name} serve' answered GET /api/status 200 on port {port} "
+                      f"({timeout_s - max(0.0, deadline - time.monotonic()):.1f} s after start)")
             try:
                 status = json.loads(status_body.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:

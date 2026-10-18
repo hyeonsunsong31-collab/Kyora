@@ -39,7 +39,8 @@ NO_ENGINE_REASON = ("no code engine: install Claude Code and run 'claude auth lo
 NO_BROWSER_REASON = ("no browser attached: open the run in Kyora on any device (Pipeline > Run tests on this device), "
                      "then press Resume")
 TEST_ID_RE = re.compile(r"""KyoraTest\.test\(\s*(['"`])([^'"`]+)\1""")
-ENGINE_ATTRS = {"claude_code": "claude_engine", "hub": "hub_client", "anthropic_api": "anthropic_engine"}
+ENGINE_ATTRS = {"claude_code": "claude_engine", "hub": "hub_client", "anthropic_api": "anthropic_engine",
+                "openai_agent": "agent_engine"}
 
 
 # ----------------------------------------------------------------------------- control flow

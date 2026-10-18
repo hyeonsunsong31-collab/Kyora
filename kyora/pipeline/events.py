@@ -24,6 +24,9 @@ MODEL_REQUEST, MODEL_DELTA, MODEL_METRICS, MODEL_DONE, MODEL_ERROR, MODEL_FALLBA
 ENGINE_SESSION, ENGINE_MODEL_RESOLVED, ENGINE_TEXT, ENGINE_THINKING, ENGINE_TOOL_USE, ENGINE_TOOL_RESULT, ENGINE_RESULT, ENGINE_ERROR, ENGINE_COMPAT_RETRY, ENGINE_STDERR = (
     "engine.session", "engine.model_resolved", "engine.text", "engine.thinking", "engine.tool_use", "engine.tool_result",
     "engine.result", "engine.error", "engine.compat_retry", "engine.stderr")
+# engine.failover: a BUILD/FIX continues on the next engine after an account failure (usage limit,
+# subscription ended, credits, login); run.auto_resume: a blocked run resumes by itself at a reset time
+ENGINE_FAILOVER, RUN_AUTO_RESUME = "engine.failover", "run.auto_resume"
 JUDGE_REQUEST, JUDGE_VERDICT, JUDGE_UNAVAILABLE = "judge.request", "judge.verdict", "judge.unavailable"
 TEST_STATIC, TEST_NODE, TEST_AWAIT_BROWSER, TEST_BROWSER_RESULT, GATE_RESULT, FIX_ITERATION, REVIEW_DECISION = (
     "test.static", "test.node", "test.await_browser", "test.browser_result", "gate.result", "fix.iteration", "review.decision")

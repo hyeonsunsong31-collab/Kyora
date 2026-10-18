@@ -12,6 +12,20 @@
     "judge_tools": ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"],
     "extra_args": []
   },
+  "agent_engine": {
+    "enabled": true,
+    "model": "z-ai/glm-5.3",
+    "fallback_models": ["nvidia/nemotron-3-ultra-550b-a55b", "poolside/laguna-xs-2.1", "nvidia/nemotron-3-super-120b-a12b"],
+    "max_turns": 80,
+    "max_tokens": 16384,
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "thinking": true,
+    "timeout_s": 5400,
+    "context_chars": 400000,
+    "self_check_tool": true
+  },
+  "engines": {"order": ["hub", "claude_code", "anthropic_api", "openai_agent"], "failover": true, "auto_resume_on_limit": true},
   "kimi": {"reasoning_effort": "max", "judge_reasoning_effort": "max", "effort_field": "top_level"},
   "nemotron": {"thinking_for_design": true},
   "quality": {

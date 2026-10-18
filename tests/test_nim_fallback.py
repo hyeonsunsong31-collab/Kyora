@@ -189,7 +189,7 @@ class AppWiringTests(unittest.TestCase):
 
     def test_shipped_config_keeps_both_roles_answering(self):
         nv = self.app.config.nvidia
-        self.assertEqual(nv.kimi.fallback_models, [ULTRA])
+        self.assertEqual(nv.kimi.fallback_models[0], ULTRA)
         self.assertTrue(nv.share_keys)
         self.assertEqual(self.app.nemotron.narration("Build passed."), "ok")
         self.assertEqual(self.app.nim_nemotron.key_label, "kimi key")

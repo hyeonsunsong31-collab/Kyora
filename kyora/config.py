@@ -27,14 +27,21 @@ from .util.fs import atomic_write_json, kyora_home, read_json
 DEFAULT_KEYS: dict = {
     "nvidia": {
         "base_url": "https://integrate.api.nvidia.com/v1",
-        "nemotron": {"model": "nvidia/nemotron-3-ultra-550b-a55b", "api_key": "", "base_url": "", "fallback_models": []},
+        # fallback_models: tried in order when the requested model is gone (404/410) or overloaded (503 after
+        # retries); every substitution is shown. Measured on 2026-10-18: Nemotron-3-Ultra answers but is often
+        # "temporarily overloaded" on the free tier; moonshotai/kimi-k3 left the free endpoint on 2026-10-15.
+        "nemotron": {"model": "nvidia/nemotron-3-ultra-550b-a55b", "api_key": "", "base_url": "",
+                     "fallback_models": ["nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-3.5-super-vl-120b-a12b"]},
         "kimi": {"model": "moonshotai/kimi-k3", "api_key": "", "base_url": "",
-                 # moonshotai/kimi-k3 left NVIDIA's free endpoint on 2026-10-15 (HTTP 410); see docs/honesty.md
-                 "fallback_models": ["nvidia/nemotron-3-ultra-550b-a55b"]},
+                 "fallback_models": ["nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3",
+                                     "nvidia/nemotron-3-super-120b-a12b"]},
         # a role whose own key is refused (401/403) may use the other role's key on the same endpoint
         "share_keys": True,
     },
     "anthropic": {"api_key": ""},
+    # The Kyora agent engine (no Claude needed): any OpenAI-compatible endpoint. Empty = the NVIDIA
+    # endpoint above with the NVIDIA keys (each tried in turn, see nvidia.share_keys).
+    "agent": {"base_url": "", "api_key": ""},
     "hub": {"url": "", "token": ""},
     "tokkio": {"ui_url": "", "configurator_url": ""},
 }
@@ -55,6 +62,31 @@ DEFAULT_SETTINGS: dict = {
         "judge_tools": ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"],
         "extra_args": [],
     },
+    # The Kyora agent engine: Kyora's own tool loop (bash + file editor, every write judged) on an
+    # OpenAI-compatible model - BUILD/FIX keep working without a Claude subscription or API key.
+    "agent_engine": {
+        "enabled": True,
+        "model": "z-ai/glm-5.3",
+        "fallback_models": ["nvidia/nemotron-3-ultra-550b-a55b", "poolside/laguna-xs-2.1",
+                            "nvidia/nemotron-3-super-120b-a12b"],
+        "max_turns": 80,
+        "max_tokens": 16384,
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "thinking": True,
+        "timeout_s": 5400,
+        "context_chars": 400000,
+        "self_check_tool": True,
+    },
+    # Which code engine runs a BUILD/FIX, in order of preference (the first available one), and what
+    # happens when it fails for account reasons (usage limit, subscription ended, credits, login):
+    # failover = continue the same job with the next available engine; auto_resume_on_limit = when no
+    # other engine is available, resume the run by itself at the reset time the engine reported.
+    "engines": {
+        "order": ["hub", "claude_code", "anthropic_api", "openai_agent"],
+        "failover": True,
+        "auto_resume_on_limit": True,
+    },
     "kimi": {"reasoning_effort": "max", "judge_reasoning_effort": "max", "effort_field": "top_level"},
     "nemotron": {"thinking_for_design": True},
     "quality": {
@@ -74,7 +106,7 @@ PATCHABLE_KEYS = {
     "nvidia.base_url", "nvidia.nemotron.model", "nvidia.nemotron.api_key",
     "nvidia.kimi.model", "nvidia.kimi.api_key", "anthropic.api_key",
     "nvidia.nemotron.base_url", "nvidia.kimi.base_url", "nvidia.nemotron.fallback_models",
-    "nvidia.kimi.fallback_models", "nvidia.share_keys",
+    "nvidia.kimi.fallback_models", "nvidia.share_keys", "agent.base_url", "agent.api_key",
     "hub.url", "hub.token", "tokkio.ui_url", "tokkio.configurator_url",
 }
 PATCHABLE_SETTINGS = {
@@ -86,7 +118,12 @@ PATCHABLE_SETTINGS = {
     "quality.min_pass_rate", "quality.max_fix_iterations", "quality.browser_wait_s",
     "quality.require_plan_approval", "quality.auto_run_browser_tests",
     "hub.expose_ui",
+    "agent_engine.enabled", "agent_engine.model", "agent_engine.fallback_models", "agent_engine.max_turns",
+    "agent_engine.max_tokens", "agent_engine.temperature", "agent_engine.top_p", "agent_engine.thinking",
+    "agent_engine.timeout_s", "agent_engine.context_chars", "agent_engine.self_check_tool",
+    "engines.order", "engines.failover", "engines.auto_resume_on_limit",
 }
+ENGINE_NAMES = ("hub", "claude_code", "anthropic_api", "openai_agent")
 FILE_ONLY_SETTINGS = {"claude_code.command", "claude_code.extra_args"}
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 KIMI_EFFORTS = ("low", "high", "max")
@@ -130,6 +167,33 @@ class ClaudeCodeCfg:
     resume_for_fixes: bool
     judge_tools: list[str]
     extra_args: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AgentEngineCfg:
+    """settings.agent_engine + the endpoint it talks to (resolved from keys.agent / keys.nvidia)."""
+    enabled: bool
+    model: str
+    fallback_models: list[str]
+    max_turns: int
+    max_tokens: int
+    temperature: float
+    top_p: float
+    thinking: bool
+    timeout_s: int
+    context_chars: int
+    self_check_tool: bool
+    base_url: str
+    api_key: str
+    key_label: str
+    alt_keys: list[tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class EnginesCfg:
+    order: list[str]
+    failover: bool
+    auto_resume_on_limit: bool
 
 
 @dataclass
@@ -330,6 +394,44 @@ class Config:
         )
 
     @property
+    def agent_engine(self) -> AgentEngineCfg:
+        a = self.raw_settings.get("agent_engine") or {}
+        d = DEFAULT_SETTINGS["agent_engine"]
+        k = self.raw_keys.get("agent") or {}
+        nv = self.nvidia
+        own_url = str(k.get("base_url") or "").rstrip("/")
+        own_key = str(k.get("api_key") or "")
+        if own_url or own_key:  # an endpoint of the user's choosing: only its own key is ever sent to it
+            base, key, label, alts = own_url or nv.base_url, own_key, "agent key", []
+            if not own_key and (own_url or nv.base_url) == nv.base_url:  # same NVIDIA endpoint, no own key
+                key, label, alts = nv.kimi.api_key, "kimi key", [("nemotron key", nv.nemotron.api_key)]
+        else:  # the NVIDIA endpoint with the NVIDIA keys, each tried in turn when one is refused
+            base, key, label = nv.base_url, nv.kimi.api_key or nv.nemotron.api_key, "kimi key" if nv.kimi.api_key else "nemotron key"
+            alts = [("nemotron key", nv.nemotron.api_key)] if nv.kimi.api_key and nv.nemotron.api_key else []
+        alts = [(lab, kk) for lab, kk in alts if kk and kk != key]
+
+        def num(name, cast):
+            try:
+                return cast(a.get(name, d[name]))
+            except (TypeError, ValueError):
+                return cast(d[name])
+        return AgentEngineCfg(
+            enabled=bool(a.get("enabled", d["enabled"])), model=str(a.get("model") or d["model"]),
+            fallback_models=[str(m) for m in (a.get("fallback_models") or []) if m],
+            max_turns=num("max_turns", int), max_tokens=num("max_tokens", int), temperature=num("temperature", float),
+            top_p=num("top_p", float), thinking=bool(a.get("thinking", d["thinking"])), timeout_s=num("timeout_s", int),
+            context_chars=num("context_chars", int), self_check_tool=bool(a.get("self_check_tool", d["self_check_tool"])),
+            base_url=base, api_key=key, key_label=label, alt_keys=alts)
+
+    @property
+    def engines(self) -> EnginesCfg:
+        e = self.raw_settings.get("engines") or {}
+        order = [str(n) for n in (e.get("order") or DEFAULT_SETTINGS["engines"]["order"]) if str(n) in ENGINE_NAMES]
+        return EnginesCfg(order=list(dict.fromkeys(order)) or list(DEFAULT_SETTINGS["engines"]["order"]),
+                          failover=bool(e.get("failover", True)),
+                          auto_resume_on_limit=bool(e.get("auto_resume_on_limit", True)))
+
+    @property
     def kimi(self) -> KimiCfg:
         s = self.raw_settings["kimi"]
         return KimiCfg(
@@ -379,7 +481,7 @@ class Config:
     def to_public(self, reveal: bool = False) -> dict:
         keys = copy.deepcopy(self.raw_keys)
         if not reveal:
-            for path in ("nvidia.nemotron.api_key", "nvidia.kimi.api_key", "anthropic.api_key", "hub.token"):
+            for path in ("nvidia.nemotron.api_key", "nvidia.kimi.api_key", "anthropic.api_key", "hub.token", "agent.api_key"):
                 _set(keys, path, _mask(_get(keys, path, "") or ""))
         return {
             "config_dir": str(self.config_dir),
@@ -426,6 +528,25 @@ def _flatten(d: dict, prefix: str = "") -> dict:
 
 
 def _validate(section: str, dotted: str, value) -> None:
+    if dotted == "agent.base_url" and (not isinstance(value, str) or (value and not re.match(r"^https?://[^\s/]+", value))):
+        raise ValueError("agent.base_url must be an http(s) URL or empty")
+    if dotted == "agent_engine.fallback_models" and (not isinstance(value, list)
+                                                     or not all(isinstance(x, str) and x.strip() for x in value)):
+        raise ValueError("agent_engine.fallback_models must be a list of model ids")
+    if dotted == "agent_engine.model" and (not isinstance(value, str) or not value.strip()):
+        raise ValueError("agent_engine.model must be a model id")
+    if dotted in ("agent_engine.max_turns", "agent_engine.max_tokens", "agent_engine.timeout_s",
+                  "agent_engine.context_chars") and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
+        raise ValueError(f"{dotted} must be a positive integer")
+    if dotted in ("agent_engine.temperature", "agent_engine.top_p") and (
+            not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= float(value) <= 2):
+        raise ValueError(f"{dotted} must be a number between 0 and 2")
+    if dotted in ("agent_engine.enabled", "agent_engine.thinking", "agent_engine.self_check_tool", "engines.failover",
+                  "engines.auto_resume_on_limit") and not isinstance(value, bool):
+        raise ValueError(f"{dotted} must be true or false")
+    if dotted == "engines.order" and (not isinstance(value, list) or not value
+                                      or any(v not in ENGINE_NAMES for v in value) or len(set(value)) != len(value)):
+        raise ValueError(f"engines.order must list engines from {ENGINE_NAMES} without repeats")
     if dotted in ("nvidia.base_url", "nvidia.nemotron.base_url", "nvidia.kimi.base_url"):
         if not isinstance(value, str) or (value and not re.match(r"^https?://[^\s/]+", value)):
             raise ValueError(f"{dotted} must be an http(s) URL" + ("" if dotted == "nvidia.base_url" else " or empty"))

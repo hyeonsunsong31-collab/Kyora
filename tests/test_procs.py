@@ -46,14 +46,12 @@ class TermuxShebangTests(unittest.TestCase):
                              [str(self.prefix / "bin" / "env"), "node", str(env_shim)])
 
     def test_popen_falls_back_when_the_interpreter_is_missing(self):
-        sh = shutil.which("sh")
-        if not sh:
-            self.skipTest("no sh")
-        prefix_sh = self.prefix / "bin" / "kyora-missing-sh"
-        prefix_sh.unlink(missing_ok=True)
-        os.symlink(sh, prefix_sh)
+        # Python stands in for the interpreter: busybox sh (Alpine/iSH) picks its applet from the name it
+        # was started under, so a renamed symlink to it would not be a shell
+        prefix_py = self.prefix / "bin" / "kyora-missing-python"
+        os.symlink(sys.executable, prefix_py)
         s = self.bin / "hello"
-        s.write_text("#!/bin/kyora-missing-sh\necho \"hello $1\"\n", encoding="utf-8")
+        s.write_text("#!/bin/kyora-missing-python\nimport sys\nprint('hello', sys.argv[1])\n", encoding="utf-8")
         s.chmod(0o755)
         rc, out, _err = procs.run([str(s), "termux"], env={**os.environ, "PREFIX": str(self.prefix)}, timeout=30)
         self.assertEqual((rc, out.strip()), (0, "hello termux"))

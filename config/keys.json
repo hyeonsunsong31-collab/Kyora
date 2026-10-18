@@ -5,19 +5,28 @@
       "model": "nvidia/nemotron-3-ultra-550b-a55b",
       "api_key": "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",
       "base_url": "",
-      "fallback_models": []
+      "fallback_models": [
+        "nvidia/nemotron-3-super-120b-a12b",
+        "nvidia/nemotron-3.5-super-vl-120b-a12b"
+      ]
     },
     "kimi": {
       "model": "moonshotai/kimi-k3",
       "api_key": "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",
       "base_url": "",
       "fallback_models": [
-        "nvidia/nemotron-3-ultra-550b-a55b"
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "z-ai/glm-5.3",
+        "nvidia/nemotron-3-super-120b-a12b"
       ]
     },
     "share_keys": true
   },
   "anthropic": {
+    "api_key": ""
+  },
+  "agent": {
+    "base_url": "",
     "api_key": ""
   },
   "hub": {
