@@ -78,12 +78,31 @@ def headless_status() -> str:
             else "Node found but no Playwright: browser tests need a browser to open the runner URL")
 
 
-def prepare_config(dest: Path, mock_url: str | None) -> Path:
+def _turn_stats(turns: list[dict]) -> dict:
+    """Measured per-turn model latency of the agent engine (seconds): count, mean, median, max, total."""
+    vals = sorted(float(t["total_ms"]) / 1000.0 for t in turns if isinstance(t.get("total_ms"), (int, float)))
+    if not vals:
+        return {}
+    mid = len(vals) // 2
+    median = vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
+    return {"count": len(vals), "mean": round(sum(vals) / len(vals), 1), "median": round(median, 1),
+            "max": round(vals[-1], 1), "total": round(sum(vals), 1)}
+
+
+def prepare_config(dest: Path, mock_url: str | None, agent_model: str | None = None,
+                   agent_fallbacks: list[str] | None = None, agent_thinking: str = "default") -> Path:
     cfg = dest / "config"
     shutil.copytree(REPO / "config", cfg)
     settings = json.loads((cfg / "settings.json").read_text(encoding="utf-8"))
     settings.setdefault("engines", {})["order"] = ["openai_agent"]  # no Claude engine can run here
-    settings.setdefault("agent_engine", {})["enabled"] = True
+    agent = settings.setdefault("agent_engine", {})
+    agent["enabled"] = True
+    if agent_model:
+        agent["model"] = agent_model
+    if agent_fallbacks is not None:
+        agent["fallback_models"] = [m for m in agent_fallbacks if m and m != agent.get("model")]
+    if agent_thinking in ("on", "off"):
+        agent["thinking"] = agent_thinking == "on"
     settings.setdefault("quality", {}).update(browser_wait_s=900, auto_run_browser_tests=True)
     settings.setdefault("server", {})["workers"] = 1
     atomic_write_json(cfg / "settings.json", settings)
@@ -101,6 +120,11 @@ def main(argv=None) -> int:
     ap.add_argument("--timeout-min", type=float, default=75.0)
     ap.add_argument("--prompt", default=PROMPT)
     ap.add_argument("--mock-nim", action="store_true", help="plumbing check against tests/mock_nim (no network)")
+    ap.add_argument("--agent-model", default=None, help="agent_engine.model for this run (default: settings.json)")
+    ap.add_argument("--agent-fallbacks", default=None,
+                    help="comma-separated agent_engine.fallback_models for this run ('' for none)")
+    ap.add_argument("--agent-thinking", choices=("default", "on", "off"), default="default",
+                    help="agent_engine.thinking for this run")
     args = ap.parse_args(argv)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -111,7 +135,8 @@ def main(argv=None) -> int:
         from tests.mock_nim import MockNIM
         from tests.test_pipeline_e2e import make_handler
         mock = MockNIM(make_handler()).start()
-    cfg_dir = prepare_config(tmp, mock.url if mock else None)
+    fallbacks = None if args.agent_fallbacks is None else [m.strip() for m in args.agent_fallbacks.split(",")]
+    cfg_dir = prepare_config(tmp, mock.url if mock else None, args.agent_model, fallbacks, args.agent_thinking)
     os.environ["KYORA_HOME"] = str(tmp / "home")
 
     from kyora.app import App
@@ -126,15 +151,19 @@ def main(argv=None) -> int:
     app.start(server.url, server.preview_url)
     agent = app.config.agent_engine
     print(f"Kyora {server.url} (games {server.preview_url}); engines.order={app.config.engines.order}")
-    print(f"agent engine: {agent.model} (fallbacks {', '.join(agent.fallback_models) or 'none'}) at "
-          f"{agent.base_url} with the {agent.key_label}; available: {app.agent_engine.availability().to_dict()['available']}")
+    print(f"agent engine: {agent.model} (fallbacks {', '.join(agent.fallback_models) or 'none'}, thinking "
+          f"{agent.thinking}) at {agent.base_url} with the {agent.key_label}; available: "
+          f"{app.agent_engine.availability().to_dict()['available']}")
     print(f"headless browser tests: {headless_status()}")
     sys.stdout.flush()
 
     sub = app.bus.subscribe()
     events: list[dict] = []
     report: dict = {"started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "mock": bool(mock),
-                    "engines_order": app.config.engines.order, "agent_model": agent.model}
+                    "engines_order": app.config.engines.order, "agent_model": agent.model,
+                    "agent_fallbacks": list(agent.fallback_models), "agent_thinking": agent.thinking}
+    stage_ms: dict[str, float] = defaultdict(float)
+    turn_log: list[dict] = []
     models_by_role: dict[str, Counter] = defaultdict(Counter)
     fallbacks: list[dict] = []
     judge = Counter()
@@ -171,8 +200,14 @@ def main(argv=None) -> int:
                 judge[str(d.get("decision"))] += 1
             if t == "engine.tool_use":
                 turns += 1
-                if turns % 10 == 1:
-                    print(f"{stamp} engine tool call #{turns}: {d.get('name')} {str(d.get('summary') or '')[:120]}")
+                print(f"{stamp} engine tool call #{turns}: {d.get('name')} {str(d.get('summary') or '')[:120]}")
+            if t == "stage.progress" and isinstance(d.get("turn_metrics"), dict):
+                tm = d["turn_metrics"]
+                turn_log.append(tm)
+                print(f"{stamp} {d.get('message')} [ttft {tm.get('ttft_ms')} ms, prompt {tm.get('prompt_tokens')} "
+                      f"tokens, reasoning {tm.get('reasoning_chars')} chars, finish {tm.get('finish_reason')}]")
+            if t == "stage.finished" and isinstance(d.get("ms"), (int, float)):
+                stage_ms[str(d.get("stage"))] += float(d["ms"])
             if t in QUIET or t in ("engine.tool_use", "engine.tool_result", "judge.verdict", "model.request",
                                    "model.done"):
                 continue
@@ -207,7 +242,9 @@ def main(argv=None) -> int:
         final_state=final.get("state"), blocked_reason=final.get("blocked_reason"), error_state=final.get("error"),
         iteration=final.get("iteration"), result_slide=final.get("result_slide"), gate=gate,
         models_by_role={r: dict(c) for r, c in models_by_role.items()}, fallbacks=fallbacks,
-        judge_verdicts=dict(judge), engine_tool_calls=turns,
+        judge_verdicts=dict(judge), engine_tool_calls=turns, stage_seconds={k: round(v / 1000.0, 1)
+                                                                            for k, v in stage_ms.items()},
+        agent_turns=len(turn_log), agent_turn_seconds=_turn_stats(turn_log),
         engine_runs=extra.get("engine_runs"), engine_failovers=extra.get("engine_failovers"))
     with open(out / "events.jsonl", "w", encoding="utf-8") as fh:
         for e in events:
@@ -235,6 +272,8 @@ def main(argv=None) -> int:
         print(f"{role} answered by: " + ", ".join(f"{m} x{n}" for m, n in counter.most_common()))
     print(f"model/key fallbacks: {len(fallbacks)}; judge verdicts: {dict(judge)}; agent tool calls: {turns}; "
           f"duration {report['seconds']} s")
+    print(f"stage seconds: {report['stage_seconds']}")
+    print(f"agent turns: {report['agent_turns']}; per-turn seconds: {report['agent_turn_seconds']}")
     ok = report.get("final_state") == "complete"
     print("LIVE PIPELINE WITHOUT CLAUDE: " + ("COMPLETE (gate passed)" if ok else "NOT COMPLETE"))
     return 0 if ok else 1

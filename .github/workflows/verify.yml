@@ -232,9 +232,26 @@ jobs:
           if-no-files-found: ignore
 
   live-pipeline-no-claude:
-    name: live pipeline without Claude (NVIDIA models + Kyora agent engine)
+    name: live pipeline without Claude (${{ matrix.id }})
     runs-on: ubuntu-latest
     timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        # the same game on three agent-engine set-ups; the gate and the wall clock decide the default
+        include:
+          - id: nemotron-3-super-thinking
+            model: nvidia/nemotron-3-super-120b-a12b
+            fallbacks: nvidia/nemotron-3-ultra-550b-a55b,z-ai/glm-5.3
+            thinking: "on"
+          - id: nemotron-3-super-no-thinking
+            model: nvidia/nemotron-3-super-120b-a12b
+            fallbacks: nvidia/nemotron-3-ultra-550b-a55b,z-ai/glm-5.3
+            thinking: "off"
+          - id: glm-5.3-no-thinking
+            model: z-ai/glm-5.3
+            fallbacks: nvidia/nemotron-3-super-120b-a12b,nvidia/nemotron-3-ultra-550b-a55b
+            thinking: "off"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -252,11 +269,14 @@ jobs:
           git config --global user.name "Kyora CI"
           git config --global user.email "ci@kyora.invalid"
       - name: one game from prompt to gate, no Claude engine allowed (engines.order = [openai_agent])
-        run: NODE_PATH="$(npm root -g)" python scripts/live_pipeline_check.py --out live-pipeline --timeout-min 85
+        run: >-
+          NODE_PATH="$(npm root -g)" python scripts/live_pipeline_check.py --out live-pipeline --timeout-min 85
+          --agent-model "${{ matrix.model }}" --agent-fallbacks "${{ matrix.fallbacks }}"
+          --agent-thinking "${{ matrix.thinking }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: live-pipeline-no-claude
+          name: live-pipeline-no-claude-${{ matrix.id }}
           path: live-pipeline
           if-no-files-found: ignore
 

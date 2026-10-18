@@ -241,7 +241,8 @@ class AvailabilityTests(_Base):
         self.assertEqual(endpoint_host("http://127.0.0.1:8080/v1"), "127.0.0.1:8080")
         self.assertEqual(family_extra(ULTRA, True), {"chat_template_kwargs": {"enable_thinking": True}})
         self.assertEqual(family_extra(SUPER, False), {"chat_template_kwargs": {"enable_thinking": False}})
-        self.assertEqual(family_extra(GLM, True), {})
+        self.assertEqual(family_extra(GLM, True), {})  # GLM thinks by default: nothing to send
+        self.assertEqual(family_extra(GLM, False), {"chat_template_kwargs": {"enable_thinking": False}})
         self.assertEqual(family_extra("poolside/laguna-xs-2.1", True), {})
 
 
@@ -357,6 +358,19 @@ class LoopTests(_Base):
         self.assertEqual(turns[0]["model"], GLM)
         self.assertTrue(any("tool_results" in e for e in entries))
         self.assertTrue((self.home / "runs" / "r_agent" / "system_prompt.md").is_file())
+
+    def test_glm_thinking_off_and_per_turn_timing(self):
+        mock_ = self.serve(Script([answer(content="ok")]))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        res, sink = self.run_engine(self.engine(thinking=False, fallback_models=[]))
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(mock_.requests[0]["chat_template_kwargs"], {"enable_thinking": False})
+        turns = [d for d in sink.of("stage.progress") if d.get("turn_metrics")]
+        self.assertEqual(len(turns), 1)
+        tm = turns[0]["turn_metrics"]
+        self.assertEqual((tm["turn"], tm["model"], tm["tool_calls"], tm["finish_reason"]), (1, GLM, 0, "stop"))
+        self.assertIsInstance(tm["total_ms"], (int, float))
+        self.assertTrue(turns[0]["message"].startswith(f"turn 1: {GLM} answered in "), turns[0]["message"])
 
     def test_nemotron_model_gets_thinking_switch(self):
         mock_ = self.serve(Script([answer(content="ok")]))

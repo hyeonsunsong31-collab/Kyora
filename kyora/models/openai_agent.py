@@ -160,9 +160,13 @@ def endpoint_host(base_url: str | None) -> str:
 
 
 def family_extra(model: str, thinking: bool) -> dict:
-    """Request fields a model family reads: Nemotron's thinking switch; nothing for other families."""
+    """Request fields a model family reads: Nemotron's thinking switch both ways; for GLM (which thinks by
+    default) only the switch-off, so ``agent_engine.thinking: false`` can save its reasoning on every turn;
+    nothing for other families."""
     if model_family(model) == "nemotron":
         return {"chat_template_kwargs": {"enable_thinking": bool(thinking)}}
+    if not thinking and "glm" in (model or "").lower():
+        return {"chat_template_kwargs": {"enable_thinking": False}}
     return {}
 
 
@@ -827,6 +831,18 @@ class OpenAIAgentEngine(ToolLoopEngine):
             state["turns"] += 1
             self._account(res, model, c, chain, sink, state)
             state["finish_reason"] = res.finish_reason
+            m = res.metrics.to_dict()
+            turn_metrics = {"turn": state["turns"], "model": model, "total_ms": m.get("total_ms"),
+                            "ttft_ms": m.get("ttft_ms"), "completion_tokens": m.get("completion_tokens"),
+                            "prompt_tokens": m.get("prompt_tokens"), "reasoning_chars": len(res.reasoning or ""),
+                            "tool_calls": len(res.tool_calls or []), "finish_reason": res.finish_reason}
+            secs = (m.get("total_ms") or 0) / 1000.0
+            self._emit(sink, STAGE_PROGRESS, {"stage": job.kind or "build",
+                                              "pct": min(95, int(state["turns"] / max_turns * 100)),
+                                              "message": f"turn {state['turns']}: {model} answered in {secs:.1f} s "
+                                                         f"({m.get('completion_tokens') or '?'} tokens, "
+                                                         f"{len(res.tool_calls or [])} tool call(s))",
+                                              "turn_metrics": turn_metrics})
             msg = dict(res.message)
             truncated = res.finish_reason == "length"
             blocks = self._tool_blocks(msg, state["turns"], truncated, c.max_tokens)
