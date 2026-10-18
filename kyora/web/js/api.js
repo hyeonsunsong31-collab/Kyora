@@ -244,10 +244,11 @@
 
   const EVENT_TYPES = [
     'run.created', 'run.state', 'run.blocked', 'run.completed', 'run.failed', 'run.cancelled', 'run.awaiting_approval',
+    'run.auto_resume',
     'stage.started', 'stage.progress', 'stage.finished',
     'model.request', 'model.delta', 'model.metrics', 'model.done', 'model.error', 'model.fallback',
     'engine.session', 'engine.model_resolved', 'engine.text', 'engine.thinking', 'engine.tool_use', 'engine.tool_result',
-    'engine.result', 'engine.error', 'engine.compat_retry', 'engine.stderr',
+    'engine.result', 'engine.error', 'engine.compat_retry', 'engine.stderr', 'engine.failover',
     'judge.request', 'judge.verdict', 'judge.unavailable',
     'test.static', 'test.node', 'test.await_browser', 'test.browser_result', 'gate.result', 'fix.iteration', 'review.decision',
     'slide.created', 'deck.updated', 'tokkio.narration', 'tokkio.view', 'tokkio.clear', 'selfcheck.update',

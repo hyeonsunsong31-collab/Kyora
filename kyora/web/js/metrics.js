@@ -1,8 +1,10 @@
 /* Measured model metrics: tiles + sparklines.
-   Values come only from model.metrics (Nemotron / Kimi) and engine.* events (Claude Code).
-   Unknown values render as "-". Nothing is estimated here; when the backend reports
-   tokens_source != "usage" the tile says so. The code-engine tile is named after the run's recorded
-   backend and effort; Claude Code's total_cost_usd is labelled as the CLI's list-price estimate. */
+   Values come only from model.metrics (Nemotron / Kimi) and engine.* events (the code engine:
+   Claude Code, the Anthropic API, a Kyora Hub or the Kyora agent engine). Unknown values render
+   as "-". Nothing is estimated here; when the backend reports tokens_source != "usage" the tile
+   says so. The code-engine tile is named after the run's recorded backend (just "Code engine"
+   until one is known) and effort; Claude Code's total_cost_usd is labelled as the CLI's list-price
+   estimate, and an engine that reports no cost shows none. */
 (function () {
   'use strict';
   const K = (window.Kyora = window.Kyora || {});
@@ -10,8 +12,20 @@
   const SYSTEMS = [
     { key: 'nemotron', name: 'Nemotron-3-Ultra', role: 'design director', match: /nemotron/i },
     { key: 'kimi', name: 'Kimi K3', role: 'planner + judge', match: /kimi/i },
-    { key: 'claude', name: 'Claude Code', role: 'code engine', match: /claude|anthropic|hub/i }
+    { key: 'claude', name: 'Code engine', role: 'code engine', match: /claude|anthropic|hub|openai_agent|kyora agent/i }
   ];
+  /* Roles that belong to the code engine although their model may be named like another tile's
+     (the Kyora agent engine's fallback model can be a Nemotron). */
+  const ENGINE_ROLES = ['agent', 'openai_agent', 'engine', 'code_engine'];
+  /* Backends pipeline-chart.js may not name yet; K.engineLabel decides the rest. */
+  const BACKEND_LABELS = { openai_agent: 'Kyora agent', 'hub:openai_agent': 'Kyora agent (Hub)' };
+
+  function backendLabel(backend) {
+    if (!backend) return '';
+    if (BACKEND_LABELS[backend]) return BACKEND_LABELS[backend];
+    return K.engineLabel ? K.engineLabel(backend) : String(backend);
+  }
+  function isAgent(backend) { return /openai_agent/.test(String(backend || '')); }
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -22,14 +36,17 @@
     SYSTEMS.forEach((s) => {
       m[s.key] = { model: null, tps: null, ttft_ms: null, total_ms: null, prompt_tokens: null, completion_tokens: null,
         tokens_source: null, history: [], calls: 0, busy: false, error: null, turns: null, cost_usd: null, duration_ms: null,
-        fallback_used: false, requested: null, backend: null, effort: null, last_at: null };
+        fallback_used: false, requested: null, backend: null, effort: null, last_at: null, failover_note: null };
     });
     return m;
   }
 
   /* Map an event's role/model to a tile key. */
   function systemFor(role, model, backend) {
-    // the role decides first: a Kimi role answered by a Nemotron fallback model stays on the Kimi tile
+    // the role decides first: a Kimi role answered by a Nemotron fallback model stays on the Kimi tile,
+    // the agent engine's role on the code-engine tile
+    if (role && ENGINE_ROLES.indexOf(String(role).toLowerCase()) >= 0) return 'claude';
+    if (backend && SYSTEMS[2].match.test(String(backend))) return 'claude';
     for (const s of SYSTEMS) if (role && role.toLowerCase() === s.key) return s.key;
     const hay = [role, model, backend].filter(Boolean).join(' ');
     for (const s of SYSTEMS) if (s.match.test(hay)) return s.key;
@@ -74,6 +91,12 @@
     }
     if (t.indexOf('engine.') === 0) {
       const m = metrics.claude;
+      if (t === 'engine.failover') {
+        // the next engine takes over: its own session names its model and effort
+        m.busy = false; m.error = null; m.backend = d.to || m.backend; m.model = null; m.effort = null;
+        m.fallback_used = false; m.requested = null;
+        m.failover_note = 'after ' + (backendLabel(d.from) || d.from || 'an engine') + ' stopped' + (d.failure_kind ? ' (' + d.failure_kind + ')' : '');
+      }
       if (t === 'engine.session') { m.busy = true; m.model = d.model || m.model; m.backend = d.backend || m.backend; m.effort = d.effort || m.effort; m.error = null; }
       if (t === 'engine.model_resolved') { m.model = d.active || m.model; m.requested = d.requested || m.requested; m.fallback_used = !!d.fallback_used; }
       if (t === 'engine.result') {
@@ -81,6 +104,10 @@
         if (d.num_turns != null) m.turns = d.num_turns;
         if (d.duration_ms != null) m.duration_ms = d.duration_ms;
         if (d.cost_usd !== undefined) m.cost_usd = d.cost_usd;
+        if (d.usage && typeof d.usage === 'object') {  // the endpoint's own usage numbers, when the engine sends them
+          if (typeof d.usage.prompt_tokens === 'number') m.prompt_tokens = d.usage.prompt_tokens;
+          if (typeof d.usage.completion_tokens === 'number') m.completion_tokens = d.usage.completion_tokens;
+        }
         if (d.is_error) m.error = d.subtype || 'error';
       }
       if (t === 'engine.error') { m.busy = false; m.error = d.error || 'engine error'; }
@@ -126,6 +153,7 @@
   /* Claude Code's total_cost_usd is computed by the CLI at API list prices; with a subscription login
      nothing is charged per run, so it is shown as an API-equivalent estimate, never as a measured cost. */
   const COST_NOTE = 'Claude Code\'s total_cost_usd: an API-equivalent estimate at list prices computed by the CLI, not a measured charge. A Claude subscription login is not billed per run.';
+  const AGENT_COST_NOTE = 'The Kyora agent engine\'s endpoint reports no cost, so none is shown and none is estimated. Token totals are the endpoint\'s own usage numbers.';
 
   /* engine: the run's recorded engine info ({backend, effort}) from run.json / engine events, optional. */
   function renderTiles(metrics, engine) {
@@ -134,15 +162,21 @@
       const m = metrics[s.key];
       const isClaude = s.key === 'claude';
       const backend = isClaude ? (m.backend || engine.backend || '') : '';
+      const agent = isClaude && isAgent(backend);
       const effort = isClaude ? (engine.effort || m.effort || '') : '';
-      const name = isClaude && backend && K.engineLabel ? K.engineLabel(backend) : s.name;
-      const role = isClaude && effort ? s.role + ' · effort ' + effort : s.role;
+      const name = isClaude && backend ? (backendLabel(backend) || s.name) : s.name;
+      // the agent engine has no Claude effort level; its session says whether thinking mode was sent
+      const role = agent ? (effort === 'thinking' ? s.role + ' · thinking' : s.role)
+        : (isClaude && effort ? s.role + ' · effort ' + effort : s.role);
       const big = isClaude
         ? (m.turns != null ? fmtNum(m.turns, 0) + '<small>turns</small>' : '-<small>turns</small>')
         : (fmtNum(m.tps) + '<small>tok/s</small>');
+      const cost = agent && m.cost_usd == null
+        ? ['cost', 'not reported', AGENT_COST_NOTE, 'cost']
+        : ['API-equiv. est.', m.cost_usd == null ? '-' : '~$' + fmtNum(m.cost_usd, 3), COST_NOTE, 'cost'];
       const stats = isClaude
         ? [['duration', fmtMs(m.duration_ms)],
-          ['API-equiv. est.', m.cost_usd == null ? '-' : '~$' + fmtNum(m.cost_usd, 3), COST_NOTE, 'cost'],
+          cost,
           ['tokens', m.completion_tokens == null && m.prompt_tokens == null ? '-' : fmtTokens(m.prompt_tokens, m.completion_tokens)]]
         : [['TTFT', fmtMs(m.ttft_ms)], ['latency', fmtMs(m.total_ms)], ['tokens', fmtTokens(m.prompt_tokens, m.completion_tokens)]];
       const foot = [];
@@ -151,6 +185,7 @@
       if (!isClaude && m.tokens_source && m.tokens_source !== 'usage') foot.push('<span title="Token counts were not reported by the API; backend marked them as ' + esc(m.tokens_source) + '">tokens: ' + esc(m.tokens_source) + '</span>');
       if (m.fallback_used) foot.push('<span style="color:var(--warn)">fallback from ' + esc(m.requested || '?') + '</span>');
       if (m.key_note) foot.push('<span style="color:var(--warn)">' + esc(m.key_note) + '</span>');
+      if (isClaude && m.failover_note) foot.push('<span style="color:var(--warn)">' + esc(m.failover_note) + '</span>');
       foot.push('<span>' + (m.calls ? m.calls + (isClaude ? ' session' : ' call') + (m.calls > 1 ? 's' : '') : 'no calls yet') + '</span>');
       return (
         '<article class="tile" data-sys="' + s.key + '" aria-label="' + esc(s.name) + ' metrics">' +
@@ -164,5 +199,5 @@
     }).join('');
   }
 
-  K.metrics = { SYSTEMS, emptyMetrics, applyMetricsEvent, renderTiles, sparkline, fmtNum, fmtMs, fmtTokens, systemFor };
+  K.metrics = { SYSTEMS, emptyMetrics, applyMetricsEvent, renderTiles, sparkline, fmtNum, fmtMs, fmtTokens, systemFor, backendLabel };
 })();

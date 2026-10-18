@@ -366,8 +366,18 @@
   }
 
   /* ================================================================== status + settings */
-  const ENGINE_NAMES = { claude_code: 'Claude Code CLI', hub: 'Kyora Hub', anthropic_api: 'Anthropic Messages API' };
-  const NO_ENGINE_HINT = 'Install Claude Code and run claude login, link a Kyora Hub, or add an Anthropic API key';
+  const ENGINE_NAMES = { claude_code: 'Claude Code CLI', hub: 'Kyora Hub', anthropic_api: 'Anthropic Messages API', openai_agent: 'Kyora agent engine' };
+  /* Short names in the Auto option of the engine select, in settings.engines.order. */
+  const ENGINE_SHORT = { hub: 'hub', claude_code: 'Claude Code', anthropic_api: 'API', openai_agent: 'Kyora agent' };
+  const NO_ENGINE_HINT = 'Install Claude Code and run claude login, link a Kyora Hub, add an Anthropic API key, or turn on the Kyora agent engine with an NVIDIA API key (Settings)';
+  /* The Kyora agent engine runs a different model than Claude; never presented as equal. */
+  const AGENT_NOTE = 'not a Claude model: its output passes the same measured quality gate';
+  function engineName(backend) {
+    const b = String(backend || '');
+    if (ENGINE_NAMES[b]) return ENGINE_NAMES[b];
+    if (b.indexOf('hub:') === 0) return (ENGINE_NAMES[b.slice(4)] || b.slice(4)) + ' on the Kyora Hub';
+    return b || 'code engine';
+  }
 
   async function refreshStatus() {
     const r = await api.maybe(api.get('/api/status'));
@@ -422,15 +432,18 @@
     if (comp.judge && comp.kimi) out.push(chipHtml('Judge: rules + Kimi K3', 'info', 'Write, Edit, MultiEdit, NotebookEdit and Bash calls of the code engine pass through the judge before they run: local rules allow planned files, standard game paths and read-only commands, Kimi K3 decides the rest. Read, Glob and Grep are not judged.'));
     else if (comp.judge) out.push(chipHtml('Judge: rules only', 'warn', 'Kimi K3 is not configured: only built-in rules judge Write/Edit/Bash calls; calls the rules do not settle are allowed unjudged and counted as unavailable.'));
     else out.push(chipHtml('Judge: missing', 'danger', missing.judge || 'not loaded'));
+    // a missing Claude Code is only a danger when no other engine can run BUILD/FIX
+    const anyEngine = !!(st.selected_engine && st.selected_engine.available);
     const eng = (key, label) => {
       const e = engines[key] || {};
-      if (e.available) out.push(chipHtml(label + ': ready', 'ok', e.reason || 'available'));
-      else if (/not configured|not set/i.test(e.reason || '')) out.push(chipHtml(label + ': off', '', e.reason));
-      else out.push(chipHtml(label + ': unavailable', key === 'claude_code' ? 'danger' : 'warn', e.reason || missing[key] || 'unavailable'));
+      if (e.available) out.push(chipHtml(label + ': ready', 'ok', (e.reason || 'available') + (key === 'openai_agent' ? ' - ' + AGENT_NOTE : '')));
+      else if (/not configured|not set|disabled/i.test(e.reason || '')) out.push(chipHtml(label + ': off', '', e.reason));
+      else out.push(chipHtml(label + ': unavailable', key === 'claude_code' && !anyEngine ? 'danger' : 'warn', e.reason || missing[key] || 'unavailable'));
     };
     eng('claude_code', 'Claude Code');
     eng('hub', 'Hub');
     eng('anthropic_api', 'Anthropic API');
+    if (engines.openai_agent || comp.openai_agent !== undefined) eng('openai_agent', 'Kyora agent');
     out.push(comp.tokkio ? chipHtml('Tokkio: connector', 'info', 'Deployment state is checked in the Presenter view.') : chipHtml('Tokkio: not loaded', '', missing.tokkio || 'connector module missing'));
     out.push(comp.run_manager ? chipHtml('Pipeline: ready', 'ok', 'Run manager loaded') : chipHtml('Pipeline: missing', 'danger', missing.run_manager || 'run manager not loaded'));
     out.push(comp.store ? chipHtml('Projects: ready', 'ok', 'Project store loaded') : chipHtml('Projects: missing', 'danger', missing.store || 'project store not loaded'));
@@ -461,6 +474,10 @@
       if (d.model) bits.push('model <code>' + esc(d.model) + '</code>' + (d.fallback_models && d.fallback_models.length ? ', fallbacks ' + d.fallback_models.map((m) => '<code>' + esc(m) + '</code>').join(', ') : ''));
       if (d.effort) bits.push('effort ' + esc(d.effort));
       if (d.url) bits.push(esc(d.url));
+      if (sel.backend === 'openai_agent') {
+        if (d.endpoint) bits.push('at ' + esc(d.endpoint) + (d.key_label ? ' with the ' + esc(d.key_label) : ''));
+        bits.push(esc(AGENT_NOTE));
+      }
       if (sel.reason) bits.push(esc(sel.reason));
       set('ok', '✓', 'Code engine: ' + (ENGINE_NAMES[sel.backend] || sel.backend || 'available'), bits.join(' · ') || 'available');
       return;
@@ -929,6 +946,13 @@
     return s ? s.name : (role || model || 'model');
   }
 
+  /* Log label of the engine's own text: Claude backends say "claude", Kyora's agent engine "agent". */
+  function engineTag(backend) {
+    const b = String(backend || '');
+    if (/openai_agent/.test(b)) return 'agent';
+    return /claude|anthropic|hub/.test(b) || !b ? 'claude' : 'engine';
+  }
+
   /* Apply one event to a run context; returns the log lines it produced. Pure apart from ctx. */
   function applyRunEvent(ctx, ev) {
     const d = ev.data || {};
@@ -962,8 +986,16 @@
       case 'run.blocked':
         ctx.state = 'blocked';
         ctx.blockedReason = d.reason || 'blocked';
+        ctx.autoResumeAt = d.auto_resume_at || null;
         applyTerminal(ctx, 'blocked', d);
         out.push(line(ev, 'error', 'errors', 'blocked', 'BLOCKED: ' + ctx.blockedReason));
+        break;
+      case 'run.auto_resume':
+        // a usage limit with a known reset time: the run manager resumes the run by itself then
+        ctx.autoResumeAt = d.at || null;
+        out.push(line(ev, 'system', 'gate', 'resume', 'will resume by itself at ' + (d.at ? fmtDate(d.at) : 'the reported reset time') +
+          (typeof d.in_s === 'number' ? ' (in ' + K.metrics.fmtMs(d.in_s * 1000) + ')' : '') + (d.reason ? ' - ' + d.reason : '') +
+          '; Resume starts it earlier', 'warn'));
         break;
       case 'run.awaiting_approval':
         ctx.state = 'awaiting_approval';
@@ -1045,6 +1077,14 @@
           ? sysName(d.role, d.model) + ': ' + (d.from_key || 'own key') + ' refused' + (d.status ? ' (HTTP ' + d.status + ')' : '') + ', now using the ' + (d.to_key || 'other key')
           : (d.role || 'model') + ': ' + (d.from_model || '?') + (d.status ? ' answered HTTP ' + d.status : ' is unavailable') + ', now answered by ' + (d.to_model || '?') + (d.reason ? ' - ' + d.reason : '')));
         break;
+      case 'engine.failover':
+        // the same BUILD/FIX continues on the next engine; its own session and model events follow
+        ctx.engine = Object.assign({}, ctx.engine, { backend: d.to || ctx.engine.backend, effort: null, model: null, session_id: null,
+          active_model: null, requested_model: null, fallback_used: false });
+        out.push(line(ev, 'system', 'engine', 'failover', 'code engine ' + engineName(d.from) + ' stopped (' + (d.failure_kind || 'failure') +
+          (d.reason ? ': ' + d.reason : '') + ') - continuing with ' + engineName(d.to) +
+          (d.tree_changed ? '; its partial work is kept and the next engine is told about it' : ''), 'warn'));
+        break;
       case 'engine.session':
         ctx.engine = Object.assign({}, ctx.engine, { backend: d.backend || ctx.engine.backend, model: d.model || ctx.engine.model, session_id: d.session_id, effort: d.effort || ctx.engine.effort });
         out.push(line(ev, 'system', 'engine', 'session', 'session ' + (d.backend || 'engine') + (d.model ? ' · ' + d.model : '') + (d.permission_mode ? ' · ' + d.permission_mode : '')));
@@ -1054,7 +1094,7 @@
         out.push(line(ev, 'system', 'engine', 'model', 'active model ' + (d.active || '?') + (d.fallback_used ? ' (fallback from ' + (d.requested || '?') + ')' : '')));
         break;
       case 'engine.text':
-        out.push(line(ev, 'text', 'engine', 'claude', d.text));
+        out.push(line(ev, 'text', 'engine', engineTag(ctx.engine && ctx.engine.backend), d.text));
         break;
       case 'engine.thinking':
         out.push(line(ev, 'thinking', 'engine', 'think', d.text));
@@ -1704,6 +1744,13 @@
     const pct = typeof thr === 'number' ? (K.thresholdPct ? K.thresholdPct(thr) : String(Math.round(thr * 100))) + ' %' : null;
     $$('[data-setting-label="effort"]').forEach((n) => { n.textContent = typeof effort === 'string' && effort ? effort : '-'; });
     $$('[data-setting-label="gate"]').forEach((n) => { n.textContent = pct || '-'; });
+    // the Auto engine choice follows settings.engines.order
+    const order = settingValue('engines.order', null);
+    const auto = $('#engine-pref option[value="auto"]');
+    if (auto && Array.isArray(order) && order.length) {
+      const names = order.map((n) => ENGINE_SHORT[n] || String(n));
+      auto.textContent = 'Auto (' + names.join(' › ') + ')';
+    }
   }
 
   /* Public API for the view modules. */

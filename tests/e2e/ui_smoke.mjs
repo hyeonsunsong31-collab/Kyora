@@ -184,11 +184,15 @@ async function checkSettings(page, label, secrets) {
     secrets: Array.from(document.querySelectorAll('#settings-root input[data-type="secret"]')).map((i) => ({ p: i.dataset.p, type: i.type, value: i.value, ph: i.placeholder })),
     workersDisabled: !!(document.querySelector('[data-p="server.workers"]') || {}).disabled,
     portEditable: !(document.querySelector('[data-p="server.port"]') || { disabled: true }).disabled,
+    agentEditable: ['agent_engine.enabled', 'agent_engine.model', 'agent_engine.fallback_models', 'agent.base_url', 'engines.order', 'engines.failover']
+      .filter((p) => { const el = document.querySelector('[data-p="' + p + '"]'); return el && !el.disabled; }).length,
+    agentOption: !!document.querySelector('#engine-pref option[value="openai_agent"]'),
+    autoOption: (document.querySelector('#engine-pref option[value="auto"]') || {}).textContent || '',
     html: document.documentElement.outerHTML,
     values: Array.from(document.querySelectorAll('input, textarea')).map((i) => i.value).join('\n')
   }));
   assert(info.fields >= 25, `[${label}] only ${info.fields} settings fields`);
-  assert(info.secrets.length === 4, `[${label}] expected 4 secret fields, got ${info.secrets.length}`);
+  assert(info.secrets.length === 5, `[${label}] expected 5 secret fields, got ${info.secrets.length}`);
   for (const s of info.secrets) {
     assert(s.type === 'password' && s.value === '', `[${label}] secret ${s.p} is not an empty password input`);
     assert(s.ph === 'not set' || s.ph.indexOf('…') >= 0, `[${label}] secret ${s.p} placeholder is not masked: ${s.ph.slice(0, 12)}...`);
@@ -199,6 +203,9 @@ async function checkSettings(page, label, secrets) {
   assert(!/nvapi-[A-Za-z0-9_-]{16,}/.test(info.html), `[${label}] an unmasked nvapi- key appears in the DOM`);
   assert(info.workersDisabled, `[${label}] non-patchable server.workers should be read-only`);
   assert(info.portEditable, `[${label}] patchable server.port should be editable`);
+  assert(info.agentEditable === 6, `[${label}] Kyora agent engine / code engine settings editable: ${info.agentEditable} of 6`);
+  assert(info.agentOption, `[${label}] the engine select has no Kyora agent option`);
+  assert(/Kyora agent\)$/.test(info.autoOption), `[${label}] Auto option "${info.autoOption}" does not follow engines.order`);
 }
 
 async function checkHubLink(page, label, hashFor, hubUrl, token) {

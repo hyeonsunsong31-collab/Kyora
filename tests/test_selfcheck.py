@@ -498,5 +498,213 @@ class RouteTests(_Base):
             server.shutdown()
 
 
+# --------------------------------------------------------------------------- the Kyora agent engine
+from kyora.selfcheck import AGENT_CAVEAT, AGENT_LABEL, AGENT_NO_TOOL  # noqa: E402
+
+AGENT_DETAILS = {"model": "z-ai/glm-5.3", "fallback_models": ["nvidia/nemotron-3-ultra-550b-a55b"],
+                 "endpoint": "integrate.api.nvidia.com", "key_label": "kimi key", "enabled": True}
+
+
+class FakeAgent:
+    """Availability per the engine contract; ``probe()`` returns a scripted dict and records its calls."""
+
+    name = "openai_agent"
+
+    def __init__(self, enabled=True, api_key=True, probe=None):
+        self.enabled = enabled
+        self.api_key = api_key
+        self.result = probe
+        self.probe_calls: list[float] = []
+
+    def availability(self):
+        d = {**AGENT_DETAILS, "enabled": self.enabled, "key_label": "kimi key" if self.api_key else None}
+        if not self.enabled:
+            return Availability(False, self.name, "the Kyora agent engine is disabled in Settings (agent_engine.enabled)", d)
+        if not self.api_key:
+            return Availability(False, self.name, "no API key for the agent endpoint (integrate.api.nvidia.com)", d)
+        return Availability(True, self.name, "", d)
+
+    def probe(self, timeout_s=60):
+        self.probe_calls.append(timeout_s)
+        out = {"ok": True, "model": "z-ai/glm-5.3", "latency_ms": 812.4, "tool_calls_ok": True, "error": None,
+               "status": None, "key_label": "kimi key", "hint": "", "endpoint": "integrate.api.nvidia.com",
+               "tried": ["z-ai/glm-5.3"], "fallback_used": False}
+        out.update(self.result or {})
+        return out
+
+
+def _missing_cli():
+    return SimpleNamespace(name="claude_code", availability=lambda: Availability(
+        False, "claude_code", "'claude' not found on PATH (install Claude Code and run 'claude auth login')",
+        {"command": ["claude"]}))
+
+
+class AgentEngineItemTests(_Base):
+    def run_item(self, agent, probe_models=True, **over):
+        app = self.make_app(agent_engine=agent, **over)
+        report = SelfCheck(app, agent_probe_timeout_s=7).run(probe_models=probe_models)
+        return self.by_id(report)["agent_engine"], report
+
+    def test_item_sits_after_anthropic_api(self):
+        self.assertEqual(ORDER.index("agent_engine"), ORDER.index("anthropic_api") + 1)
+        self.assertLess(ORDER.index("agent_engine"), ORDER.index("engine_selected"))
+        it, _ = self.run_item(FakeAgent(), probe_models=False)
+        self.assertEqual(it["label"], AGENT_LABEL)
+        self.assertEqual(AGENT_LABEL, "Kyora agent engine (no Claude needed)")
+
+    def test_disabled_is_skipped_and_not_probed(self):
+        agent = FakeAgent(enabled=False)
+        it, report = self.run_item(agent)
+        self.assertEqual(it["status"], "skip")
+        self.assertIn("disabled", it["detail"])
+        self.assertEqual(agent.probe_calls, [])
+        self.assertEqual(report["summary"]["fail"], 0)
+
+    def test_without_probe_models_reports_the_configuration(self):
+        agent = FakeAgent()
+        it, _ = self.run_item(agent, probe_models=False)
+        self.assertEqual(it["status"], "ok", it)
+        self.assertEqual(agent.probe_calls, [], "no request without probe_models")
+        for word in ("z-ai/glm-5.3", "integrate.api.nvidia.com", "kimi key", "not contacted"):
+            self.assertIn(word, it["detail"])
+        self.assertEqual(it["measured"]["endpoint"], "integrate.api.nvidia.com")
+        self.assertEqual(it["measured"]["key_label"], "kimi key")
+
+    def test_enabled_without_key_warns_with_the_reason(self):
+        it, _ = self.run_item(FakeAgent(api_key=False), probe_models=False)
+        self.assertEqual(it["status"], "warn")
+        self.assertIn("no API key", it["detail"])
+
+    def test_probe_ok(self):
+        agent = FakeAgent()
+        it, _ = self.run_item(agent)
+        self.assertEqual(agent.probe_calls, [7.0])
+        self.assertEqual(it["status"], "ok", it)
+        self.assertIn("tool calls work", it["detail"])
+        self.assertIn("812.4 ms", it["detail"])
+        self.assertIn("z-ai/glm-5.3", it["detail"])
+        self.assertTrue(it["measured"]["tool_calls_ok"])
+        self.assertEqual(it["measured"]["latency_ms"], 812.4)
+
+    def test_answer_without_tool_call_warns(self):
+        hint = ("z-ai/glm-5.3 answered but did not call the test function: the agent engine needs a model with "
+                "function calling at this endpoint")
+        it, _ = self.run_item(FakeAgent(probe={"tool_calls_ok": False, "hint": hint}))
+        self.assertEqual(it["status"], "warn")
+        self.assertIn(AGENT_NO_TOOL, it["detail"])
+        self.assertIn("pick another agent_engine.model", it["detail"])
+        self.assertFalse(it["measured"]["tool_calls_ok"])
+
+    def test_refused_gone_and_unreachable_fail_with_the_hint(self):
+        cases = [
+            ({"ok": False, "status": 403, "error": 'HTTP 403: {"detail":"Authorization failed"}', "failure_kind": "auth",
+              "hint": "the endpoint refused the key: this NVIDIA account lacks inference permission"}, "Authorization failed"),
+            ({"ok": False, "status": 410, "model": "moonshotai/kimi-k3", "error": "HTTP 410 Gone", "failure_kind": "model",
+              "hint": "the model reached its end of life on 2026-10-15", "tried": ["z-ai/glm-5.3", "moonshotai/kimi-k3"]},
+             "end of life"),
+            ({"ok": False, "status": None, "error": "integrate.api.nvidia.com unreachable: [Errno -2] Name or service "
+              "not known", "failure_kind": "unavailable", "hint": "check the network connection"}, "Name or service"),
+        ]
+        for probe, needle in cases:
+            it, report = self.run_item(FakeAgent(probe=probe))
+            self.assertEqual(it["status"], "fail", it)
+            self.assertIn(needle, it["detail"])
+            self.assertIn(probe["hint"], it["detail"])
+            self.assertEqual(it["measured"]["hint"], probe["hint"])
+            self.assertEqual(it["measured"]["failure_kind"], probe["failure_kind"])
+            self.assertEqual(report["overall"], "fail")
+        it, _ = self.run_item(FakeAgent(probe=cases[1][0]))
+        self.assertIn("tried z-ai/glm-5.3, moonshotai/kimi-k3", it["detail"])
+
+    def test_overloaded_endpoint_is_a_warning(self):
+        it, _ = self.run_item(FakeAgent(probe={"ok": False, "status": 503, "error": "Service temporarily overloaded",
+                                               "failure_kind": "unavailable", "hint": ""}))
+        self.assertEqual(it["status"], "warn")
+        self.assertIn("HTTP 503", it["detail"])
+
+    def test_fallback_model_or_other_key_is_a_warning(self):
+        it, _ = self.run_item(FakeAgent(probe={"model": "poolside/laguna-xs-2.1", "fallback_used": True,
+                                               "tried": ["z-ai/glm-5.3", "poolside/laguna-xs-2.1"]}))
+        self.assertEqual(it["status"], "warn")
+        self.assertIn("answered by the fallback model poolside/laguna-xs-2.1", it["detail"])
+        self.assertIn("tool calls work", it["detail"])
+        it, _ = self.run_item(FakeAgent(probe={"key_label": "nemotron key", "key_switches": [
+            {"from_key": "kimi key", "to_key": "nemotron key", "status": 403}]}))
+        self.assertEqual(it["status"], "warn")
+        self.assertIn("the kimi key was refused (HTTP 403), the nemotron key answered", it["detail"])
+        self.assertTrue(it["measured"]["key_fallback"])
+
+    def test_missing_component(self):
+        it, _ = self.run_item(None, missing={"openai_agent": "ImportError: cannot import name 'OpenAIAgentEngine'"})
+        self.assertEqual(it["status"], "fail")
+        self.assertIn("ImportError", it["detail"])
+        it, _ = self.run_item(None)  # an app that never had the engine (no recorded failure)
+        self.assertEqual(it["status"], "skip")
+
+    def test_probe_crash_is_reported(self):
+        agent = FakeAgent()
+        agent.probe = lambda timeout_s=60: (_ for _ in ()).throw(RuntimeError("probe exploded"))
+        it, _ = self.run_item(agent)
+        self.assertEqual(it["status"], "fail")
+        self.assertIn("probe exploded", it["detail"])
+
+    def test_no_engine_message_names_the_agent_engine(self):
+        self.assertIn("agent_engine.enabled", NO_ENGINE)
+        self.assertIn("NVIDIA API key", NO_ENGINE)
+
+
+class ClaudeNotNeededWithAgentTests(_Base):
+    def test_missing_cli_warns_when_the_agent_engine_is_selected(self):
+        agent = FakeAgent()
+        app = self.make_app(claude_engine=_missing_cli(), agent_engine=agent, hub_client=None, engine=lambda: agent)
+        atomic_write_json(self.cfg_dir / "keys.json", {"hub": {"url": ""}})
+        app.config = Config.load(self.cfg_dir)
+        report = SelfCheck(app).run(probe_models=False)
+        items = self.by_id(report)
+        cli, sel = items["claude_cli"], items["engine_selected"]
+        self.assertEqual(cli["status"], "warn", cli)
+        self.assertIn("not found on PATH", cli["detail"])
+        self.assertIn("BUILD/FIX run on the Kyora agent engine (z-ai/glm-5.3) instead", cli["detail"])
+        self.assertIn(AGENT_CAVEAT, cli["detail"])
+        self.assertIn("claude auth login", cli["detail"])
+        self.assertEqual(cli["measured"]["not_needed_for"], "openai_agent")
+        self.assertEqual(sel["status"], "ok", sel)
+        self.assertIn("openai_agent - Kyora agent engine", sel["detail"])
+        self.assertIn("model z-ai/glm-5.3 at integrate.api.nvidia.com", sel["detail"])
+        self.assertIn(AGENT_CAVEAT, sel["detail"])
+        self.assertEqual(sel["measured"]["backend"], "openai_agent")
+        self.assertEqual(items["agent_engine"]["status"], "ok")
+        self.assertEqual(report["summary"]["fail"], 0, [it for it in report["items"] if it["status"] == "fail"])
+        self.assertEqual(report["overall"], "warn")
+
+    def test_logged_out_cli_warns_when_the_agent_engine_is_selected(self):
+        # the Claude subscription ended / the login expired: the CLI is still installed
+        agent = FakeAgent()
+        app = self.make_app(claude_engine=FakeClaude(available=False, logged_in=False), agent_engine=agent,
+                            engine=lambda: agent)
+        items = self.by_id(SelfCheck(app).run(probe_models=False))
+        self.assertEqual(items["claude_cli"]["status"], "ok")
+        self.assertEqual(items["claude_auth"]["status"], "warn", items["claude_auth"])
+        self.assertIn("not logged in", items["claude_auth"]["detail"])
+        self.assertIn("Kyora agent engine", items["claude_auth"]["detail"])
+        self.assertEqual(items["engine_selected"]["status"], "ok")
+
+    def test_the_same_claude_models_elsewhere_keep_skip(self):
+        api = SimpleNamespace(name="anthropic_api", availability=lambda: Availability(True, "anthropic_api", "",
+                                                                                       {"model": "claude-fable-5-1"}))
+        items = self.by_id(SelfCheck(self.make_app(claude_engine=_missing_cli(), engine=lambda: api))
+                           .run(probe_models=False))
+        self.assertEqual(items["claude_cli"]["status"], "skip")
+        self.assertIn("not needed: the selected code engine is anthropic_api", items["claude_cli"]["detail"])
+        self.assertIn("anthropic_api - Anthropic Messages API", items["engine_selected"]["detail"])
+
+    def test_no_engine_at_all_still_fails(self):
+        items = self.by_id(SelfCheck(self.make_app(claude_engine=_missing_cli(), agent_engine=FakeAgent(enabled=False),
+                                                   engine=lambda: None)).run(probe_models=False))
+        self.assertEqual(items["claude_cli"]["status"], "fail")
+        self.assertEqual(items["engine_selected"]["status"], "fail")
+        self.assertEqual(items["agent_engine"]["status"], "skip")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -632,7 +632,9 @@ class HubJobStore:
         cutoff = time.time() - float(hours) * 3600.0
         with self._lock:
             jobs = list(self._jobs.values())
-            expired = {j.id for j in jobs if j.terminal and j.updated_ts and j.updated_ts < cutoff}
+            # <=: expire(hours=0) means every finished job, also one updated within the clock's resolution
+            # (Windows' coarse time.time() made a job finished 'now' look newer than the cutoff)
+            expired = {j.id for j in jobs if j.terminal and j.updated_ts and j.updated_ts <= cutoff}
             needed = {j.workspace_of for j in jobs if j.workspace_of and j.id not in expired}
             removed = []
             for job_id in sorted(expired - needed):

@@ -49,6 +49,7 @@ class App:
         self.judge = None
         self.claude_engine = None
         self.anthropic_engine = None
+        self.agent_engine = None  # Kyora's own code engine on the NVIDIA (or any OpenAI-compatible) endpoint
         self.hub_client = None
         self.hub_worker = None
         self.tokkio = None
@@ -115,6 +116,12 @@ class App:
             # callable: an API key added in Settings takes effect without a restart
             return AnthropicAPIEngine(lambda: cfg.anthropic_api_key, cfg.claude_code, self.judge, self.home)
         self.anthropic_engine = self._try("anthropic_api", _anthropic)
+
+        def _agent():
+            from .models.openai_agent import OpenAIAgentEngine
+            # callable: model, endpoint and keys changed in Settings apply to the next BUILD/FIX without a restart
+            return OpenAIAgentEngine(lambda: cfg.agent_engine, self.judge, self.home)
+        self.agent_engine = self._try("openai_agent", _agent)
 
         def _hub_client():
             from .hub import HubClientEngine
@@ -216,7 +223,8 @@ class App:
         except Exception as exc:  # noqa: BLE001
             engine = {"error": str(exc)}
         engines = {}
-        for name, eng in (("hub", self.hub_client), ("claude_code", self.claude_engine), ("anthropic_api", self.anthropic_engine)):
+        for name, eng in (("hub", self.hub_client), ("claude_code", self.claude_engine), ("anthropic_api", self.anthropic_engine),
+                          ("openai_agent", self.agent_engine)):
             if eng is None:
                 engines[name] = {"available": False, "reason": self.missing.get(name, "not configured")}
             else:
@@ -236,7 +244,8 @@ class App:
             "lan": lan_addresses(),
             "components": {k: (v is not None) for k, v in {
                 "store": self.store, "nemotron": self.nemotron, "kimi": self.kimi, "judge": self.judge,
-                "claude_code": self.claude_engine, "anthropic_api": self.anthropic_engine, "hub_client": self.hub_client,
+                "claude_code": self.claude_engine, "anthropic_api": self.anthropic_engine, "openai_agent": self.agent_engine,
+                "hub_client": self.hub_client,
                 "tokkio": self.tokkio, "run_manager": self.run_manager, "selfcheck": self.selfcheck, "bench": self.bench}.items()},
             "missing": self.missing,
             "selected_engine": engine,

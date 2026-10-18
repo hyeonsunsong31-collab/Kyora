@@ -39,7 +39,14 @@ TOOL_TIMEOUT_S = 15.0
 NODE_MISSING = "Node not found: JS syntax checks run in the browser instead; Claude Code needs Node on this device"
 ISH_CLAUDE = "Claude Code cannot run on iSH; use a Kyora Hub"
 NO_ENGINE = ("no code engine: install Claude Code and run claude login, or link a Kyora Hub (hub.url), "
-             "or add ANTHROPIC_API_KEY + pip install anthropic")
+             "or add ANTHROPIC_API_KEY + pip install anthropic, or turn on the Kyora agent engine "
+             "(agent_engine.enabled) with an NVIDIA API key")
+AGENT_LABEL = "Kyora agent engine (no Claude needed)"
+AGENT_NO_TOOL = "model did not call the tool: pick another agent_engine.model"
+# The agent engine runs a different model than Claude: never presented as equal, its output passes the same gate.
+AGENT_CAVEAT = "a non-Claude model; its output passes the same measured quality gate"
+ENGINE_LABELS = {"hub": "Kyora Hub", "claude_code": "Claude Code CLI", "anthropic_api": "Anthropic Messages API",
+                 "openai_agent": "Kyora agent engine"}
 TOKKIO_NOT_DEPLOYED = "Tokkio not deployed (tokkio.ui_url empty) - see docs/tokkio-overlay.md"
 KIMI_EFFORT_HINT = "set kimi.effort_field to extra_body in Settings"
 KIMI_EFFORT_HINT_TOP = "set kimi.effort_field back to top_level in Settings"
@@ -48,7 +55,7 @@ LABELS: dict[str, str] = {
     "python": "Python", "platform": "Platform", "git": "git", "node": "Node.js", "playwright": "Playwright (optional)",
     "claude_cli": "Claude Code CLI", "claude_auth": "Claude Code login", "claude_model": "Claude Code model",
     "nemotron": "NVIDIA Nemotron-3-Ultra", "kimi": "Kimi K3 (Moonshot AI)", "anthropic_api": "Anthropic Messages API (optional)",
-    "engine_selected": "Selected code engine", "hub": "Kyora Hub", "tokkio_ui": "Tokkio UI",
+    "agent_engine": AGENT_LABEL, "engine_selected": "Selected code engine", "hub": "Kyora Hub", "tokkio_ui": "Tokkio UI",
     "tokkio_configurator": "Tokkio ACE Configurator", "disk": "Disk space", "lan": "LAN",
 }
 ORDER = tuple(LABELS)
@@ -104,11 +111,12 @@ class SelfCheck:
     """Builds the self-check report for ``app`` (the composition root, :class:`kyora.app.App`)."""
 
     def __init__(self, app, *, max_workers: int = 8, model_timeout_s: float = MODEL_PROBE_TIMEOUT_S,
-                 claude_probe_timeout_s: float = 150.0):
+                 claude_probe_timeout_s: float = 150.0, agent_probe_timeout_s: float = 60.0):
         self.app = app
         self.max_workers = max(1, int(max_workers))
         self.model_timeout_s = float(model_timeout_s)
         self.claude_probe_timeout_s = float(claude_probe_timeout_s)
+        self.agent_probe_timeout_s = float(agent_probe_timeout_s)
         self._lock = threading.Lock()
         self._run_lock = threading.Lock()
         self._last: dict | None = None
@@ -122,8 +130,9 @@ class SelfCheck:
     def run(self, *, probe_models: bool = True, probe_claude: bool = False) -> dict:
         """Run every probe and return ``{items, platform, lan_urls, generated_at, summary, ...}``.
 
-        ``probe_models`` sends a 1-token chat to Nemotron and Kimi; ``probe_claude``
-        runs a 1-turn ``claude -p`` to resolve the model that actually answers.
+        ``probe_models`` sends a 1-token chat to Nemotron and Kimi and one small tool-call
+        request to the Kyora agent engine's model; ``probe_claude`` runs a 1-turn
+        ``claude -p`` to resolve the model that actually answers.
         Concurrent calls are serialised.
         """
         with self._run_lock:
@@ -168,6 +177,7 @@ class SelfCheck:
             _Probe(("nemotron",), lambda: self._p_nemotron(probe_models), 3 * mt + 15),
             _Probe(("kimi",), lambda: self._p_kimi(probe_models), 5 * mt + 15),
             _Probe(("anthropic_api",), self._p_anthropic, 5.0),
+            _Probe(("agent_engine",), lambda: self._p_agent(probe_models), self.agent_probe_timeout_s + 15.0),
             _Probe(("hub",), self._p_hub, 45.0),
             _Probe(("tokkio_ui", "tokkio_configurator"), self._p_tokkio, 20.0),
             _Probe(("disk",), self._p_disk, 10.0),
@@ -230,17 +240,33 @@ class SelfCheck:
         return (getattr(self.app, "missing", None) or {}).get(name, default)
 
     def _claude_not_needed(self, results: dict[str, dict]) -> None:
-        """A missing Claude Code CLI is no failure while another engine (a linked Hub on Termux or a
-        ``install.ps1 -SkipClaude`` PC, or the Messages API) is the selected one; no engine at all is
-        reported by ``engine_selected``."""
-        cli, sel = results.get("claude_cli"), results.get("engine_selected")
-        if not cli or not sel or cli["status"] != "fail" or sel["status"] != "ok":
+        """A missing Claude Code CLI (or its login) is no failure while another engine is the selected one.
+
+        A linked Hub (Termux, an ``install.ps1 -SkipClaude`` PC) or the Messages API run the same
+        Claude models elsewhere: the CLI line is ``skip`` (not needed). The Kyora agent engine runs a
+        different model: the line is ``warn`` and says so, BUILD/FIX still work. No engine at all is
+        reported by ``engine_selected``.
+        """
+        sel = results.get("engine_selected")
+        if not sel or sel["status"] != "ok":
             return
         backend = (sel.get("measured") or {}).get("backend") or ""
         if not backend or backend == getattr(getattr(self.app, "claude_engine", None), "name", "claude_code"):
             return
-        results["claude_cli"] = item("claude_cli", "skip", f"{cli['detail']}; not needed: the selected code engine "
-                                     f"is {backend}", {**cli["measured"], "not_needed_for": backend})
+        for key in ("claude_cli", "claude_auth"):
+            it = results.get(key)
+            if not it or it["status"] != "fail":
+                continue
+            measured = {**it["measured"], "not_needed_for": backend}
+            if backend == "openai_agent":
+                model = (sel.get("measured") or {}).get("model")
+                results[key] = item(key, "warn", f"{it['detail']}; BUILD/FIX run on the Kyora agent engine"
+                                    f"{f' ({model})' if model else ''} instead - {AGENT_CAVEAT}. To use Claude: "
+                                    "install Claude Code and run 'claude auth login', or add an Anthropic API key",
+                                    measured)
+            else:
+                results[key] = item(key, "skip", f"{it['detail']}; not needed: the selected code engine is {backend}",
+                                    measured)
 
     # ------------------------------------------------------------------ local probes
     def _p_python(self) -> dict:
@@ -574,20 +600,100 @@ class SelfCheck:
         return item("anthropic_api", "skip", "no ANTHROPIC_API_KEY (optional; the default engine is the Claude Code CLI "
                     "with your subscription login)", measured)
 
+    def _p_agent(self, probe_models: bool) -> dict:
+        """The Kyora agent engine: availability from Settings; with ``probe_models`` one tool-call request."""
+        eng = getattr(self.app, "agent_engine", None)
+        if eng is None:
+            reason = self._missing("openai_agent", "")
+            if reason:
+                return item("agent_engine", "fail", f"agent engine component unavailable: {reason}")
+            return item("agent_engine", "skip", "the Kyora agent engine is not loaded in this app")
+        av = eng.availability()
+        d = dict(getattr(av, "details", None) or {})
+        fallbacks = [str(m) for m in (d.get("fallback_models") or []) if m]
+        measured = {"model": d.get("model"), "fallback_models": fallbacks, "endpoint": d.get("endpoint"),
+                    "key_label": d.get("key_label"), "enabled": d.get("enabled")}
+        if d.get("enabled") is False:
+            return item("agent_engine", "skip", f"{av.reason or 'disabled in Settings'} (optional: BUILD/FIX without "
+                        "Claude)", measured)
+        where = f"{d.get('model') or '?'} at {d.get('endpoint') or '?'}"
+        fb = f" (fallbacks {', '.join(fallbacks)})" if fallbacks else ""
+        if not av.available:
+            return item("agent_engine", "warn", f"{where}: not available - {av.reason or 'unavailable'}", measured)
+        configured = f"{where}{fb} with the {d.get('key_label') or 'configured key'}"
+        if not probe_models:
+            return item("agent_engine", "ok", f"configured: {configured}; not contacted (run the full check to send "
+                        "one tool-call request)", measured)
+        probe = getattr(eng, "probe", None)
+        if not callable(probe):
+            return item("agent_engine", "warn", f"configured: {configured}; this engine has no probe", measured)
+        res = probe(timeout_s=self.agent_probe_timeout_s) or {}
+        model = res.get("model") or d.get("model")
+        key = res.get("key_label") or d.get("key_label")
+        measured.update({"model": model, "requested_model": d.get("model"), "latency_ms": res.get("latency_ms"),
+                         "tool_calls_ok": bool(res.get("tool_calls_ok")), "status": res.get("status"),
+                         "key_label": key, "fallback_used": bool(res.get("fallback_used")),
+                         "tried": list(res.get("tried") or []), "failure_kind": res.get("failure_kind")})
+        if res.get("endpoint"):
+            measured["endpoint"] = res["endpoint"]
+        hint = str(res.get("hint") or "")
+        if hint:
+            measured["hint"] = hint
+        host = measured.get("endpoint") or "?"
+        if not res.get("ok"):
+            status_code = res.get("status")
+            head = f"{d.get('model') or '?'} at {host}" + (f": HTTP {status_code}" if status_code else "")
+            detail = f"{head}: {_excerpt(res.get('error') or 'no answer', 300)}"
+            if hint and hint not in detail:
+                detail += f" - {hint}"
+            tried = measured["tried"]
+            if len(tried) > 1:
+                detail += f" (tried {', '.join(tried)})"
+            # overloaded / rate limited may pass; a refused key, a retired model or no connection do not
+            temporary = isinstance(status_code, int) and (status_code == 429 or 500 <= status_code <= 599)
+            return item("agent_engine", "warn" if temporary else "fail", detail, measured)
+        ms = res.get("latency_ms")
+        took = f"{ms} ms" if ms is not None else "latency not measured"
+        if not res.get("tool_calls_ok"):
+            detail = f"{model} at {host} answered in {took} but {AGENT_NO_TOOL}"
+            if hint:
+                detail += f" ({hint})"
+            return item("agent_engine", "warn", detail, measured)
+        detail = f"{model} at {host}: tool calls work ({took}, {key or 'configured key'})"
+        status = "ok"
+        if res.get("fallback_used"):
+            status = "warn"
+            others = [m for m in measured["tried"] if m != model]
+            detail += (f"; answered by the fallback model {model} - {d.get('model') or 'the configured model'} did not "
+                       f"answer" + (f" (tried {', '.join(others)})" if others else ""))
+        switches = [n for n in (res.get("key_switches") or []) if isinstance(n, dict)]
+        if switches:
+            status = "warn"
+            sw = switches[0]
+            code = f" (HTTP {sw.get('status')})" if sw.get("status") else ""
+            detail += f"; the {sw.get('from_key') or 'own key'} was refused{code}, the {sw.get('to_key') or key} answered"
+            measured["key_fallback"] = True
+        return item("agent_engine", status, detail, measured)
+
     def _p_engine_selected(self) -> dict:
         engine_fn = getattr(self.app, "engine", None)
         eng = engine_fn() if callable(engine_fn) else None
         if eng is None:
             return item("engine_selected", "fail", NO_ENGINE)
         name = getattr(eng, "name", type(eng).__name__)
-        detail = name
+        label = ENGINE_LABELS.get(name)
+        detail = f"{name} - {label}" if label else name
         measured: dict = {"backend": name}
         try:
             av = eng.availability()
             d = getattr(av, "details", None) or {}
             if d.get("model"):
                 measured["model"] = d.get("model")
-                detail += f" (model {d['model']})"
+                where = f" at {d['endpoint']}" if name == "openai_agent" and d.get("endpoint") else ""
+                detail += f" (model {d['model']}{where})"
+            if name == "openai_agent":
+                measured["endpoint"] = d.get("endpoint")
+                detail += f"; {AGENT_CAVEAT}"
             if getattr(av, "reason", ""):
                 detail += f"; {av.reason}"
         except Exception as exc:  # noqa: BLE001 - selection already succeeded; details are extra

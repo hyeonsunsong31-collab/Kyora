@@ -18,10 +18,35 @@
       { s: 'keys', p: 'nvidia.nemotron.model', label: 'Nemotron model', type: 'text' },
       { s: 'keys', p: 'nvidia.nemotron.api_key', label: 'Nemotron API key', type: 'secret' },
       { s: 'keys', p: 'nvidia.kimi.model', label: 'Kimi K3 model', type: 'text' },
-      { s: 'keys', p: 'nvidia.kimi.api_key', label: 'Kimi K3 API key', type: 'secret' }
+      { s: 'keys', p: 'nvidia.kimi.api_key', label: 'Kimi K3 API key', type: 'secret' },
+      { s: 'keys', p: 'nvidia.nemotron.base_url', label: 'Nemotron base URL', type: 'url', help: 'Empty = the base URL above.' },
+      { s: 'keys', p: 'nvidia.kimi.base_url', label: 'Kimi K3 base URL', type: 'url', help: 'Empty = the base URL above. Another OpenAI-compatible endpoint works with its own key, e.g. https://api.moonshot.ai/v1 with a Moonshot API key for the real Kimi K3 (set the model id that endpoint uses).' },
+      { s: 'keys', p: 'nvidia.nemotron.fallback_models', label: 'Nemotron fallback models (comma separated)', type: 'csv', help: 'Tried in order when the model is gone (HTTP 404/410) or stays overloaded (503); every substitution is shown in the log and in Self-check.' },
+      { s: 'keys', p: 'nvidia.kimi.fallback_models', label: 'Kimi K3 fallback models (comma separated)', type: 'csv', help: 'Tried in order when the model is gone (HTTP 404/410) or stays overloaded (503). NVIDIA retired moonshotai/kimi-k3 on 2026-10-15 (HTTP 410), so these answer the Kimi role there.' },
+      { s: 'keys', p: 'nvidia.share_keys', label: 'Share keys between the roles', type: 'bool', help: 'A role whose own key is refused (HTTP 401/403) uses the other role\'s key on the same endpoint. A key is never sent to another endpoint.' }
     ] },
-    { title: 'Anthropic', hint: 'optional engine', fields: [
-      { s: 'keys', p: 'anthropic.api_key', label: 'Anthropic API key', type: 'secret', help: 'Only for the optional Messages-API engine. The default code engine is the Claude Code CLI with your subscription login (claude login).' }
+    { title: 'Anthropic', hint: 'Claude without a subscription', fields: [
+      { s: 'keys', p: 'anthropic.api_key', label: 'Anthropic API key', type: 'secret', help: 'For the Messages-API engine: the same Claude models without a Claude subscription, billed per use to this key (needs pip install anthropic). The Claude Code CLI uses your subscription login (claude login) instead.' }
+    ] },
+    { title: 'Kyora agent engine', hint: 'no Claude needed', fields: [
+      { s: 'settings', p: 'agent_engine.enabled', label: 'Use the Kyora agent engine', type: 'bool', help: 'Kyora\'s own code engine: BUILD and FIX run on an OpenAI-compatible model with your NVIDIA keys, with the same judged file and shell tools. It is a different model than Claude and is not claimed to match it; the quality gate measures its output exactly like any other engine\'s.' },
+      { s: 'settings', p: 'agent_engine.model', label: 'Model', type: 'text', help: 'Needs function calling at the endpoint. Self-check (Run full check) sends one tool-call request to verify it.' },
+      { s: 'settings', p: 'agent_engine.fallback_models', label: 'Fallback models (comma separated)', type: 'csv', help: 'Tried in order when a model is gone (HTTP 404/410), stays overloaded or refuses function tools; every substitution is shown in the log.' },
+      { s: 'settings', p: 'agent_engine.max_turns', label: 'Max turns', type: 'int', min: 1 },
+      { s: 'settings', p: 'agent_engine.max_tokens', label: 'Max output tokens per turn', type: 'int', min: 1 },
+      { s: 'settings', p: 'agent_engine.timeout_s', label: 'Wall timeout (s)', type: 'int', min: 1 },
+      { s: 'settings', p: 'agent_engine.context_chars', label: 'Context budget (characters)', type: 'int', min: 1, help: 'Above this, older tool output is elided from the conversation; the newest turns are kept.' },
+      { s: 'settings', p: 'agent_engine.temperature', label: 'Temperature', type: 'float', min: 0, max: 2, step: 0.05 },
+      { s: 'settings', p: 'agent_engine.top_p', label: 'Top p', type: 'float', min: 0, max: 2, step: 0.05 },
+      { s: 'settings', p: 'agent_engine.thinking', label: 'Thinking mode (models that support it)', type: 'bool' },
+      { s: 'settings', p: 'agent_engine.self_check_tool', label: 'Let the model run Kyora\'s checks (kyora_check tool) before it stops', type: 'bool' },
+      { s: 'keys', p: 'agent.base_url', label: 'Endpoint (OpenAI-compatible)', type: 'url', help: 'Empty = the NVIDIA endpoint and keys above (each key tried in turn when one is refused). Any OpenAI-compatible /v1 URL works with its own key below.' },
+      { s: 'keys', p: 'agent.api_key', label: 'Endpoint API key', type: 'secret', help: 'Sent only to the endpoint above. Empty on the NVIDIA endpoint = the NVIDIA keys.' }
+    ] },
+    { title: 'Code engines', hint: 'order + failover', fields: [
+      { s: 'settings', p: 'engines.order', label: 'Order (comma separated)', type: 'csv', help: 'The first available engine runs BUILD and FIX. Names: hub (a linked Kyora Hub), claude_code (Claude Code CLI), anthropic_api (Anthropic Messages API), openai_agent (the Kyora agent engine).' },
+      { s: 'settings', p: 'engines.failover', label: 'Continue on the next engine after an account failure', type: 'bool', help: 'When an engine stops for an account reason - a usage limit, an ended subscription, no credits, a login or key that is refused, an unreachable service or a retired model - the same BUILD/FIX continues on the next available engine in the order above, told about any partial work. Task failures (max turns, timeouts) never fail over; the gate measures the result as always.' },
+      { s: 'settings', p: 'engines.auto_resume_on_limit', label: 'Resume by itself after a usage limit', type: 'bool', help: 'When no other engine is available and the engine reported when its limit resets, the blocked run resumes by itself shortly after that time.' }
     ] },
     { title: 'Claude Code', hint: 'code engine', fields: [
       { s: 'settings', p: 'claude_code.command', label: 'Command (JSON array)', type: 'json', help: 'e.g. ["claude"] or ["npx","@anthropic-ai/claude-code"].', ro: FILE_ONLY_NOTE },
@@ -178,6 +203,16 @@
     if (msg) el.setAttribute('aria-invalid', 'true'); else el.removeAttribute('aria-invalid');
   }
 
+  /* The field's min/max (rendered as input attributes), checked before the server validates them again. */
+  function rangeError(el, n) {
+    const lo = el.min != null && el.min !== '' ? Number(el.min) : null;
+    const hi = el.max != null && el.max !== '' ? Number(el.max) : null;
+    if (lo != null && hi != null && (n < lo || n > hi)) return { error: 'Use a value between ' + lo + ' and ' + hi + '.' };
+    if (lo != null && n < lo) return { error: 'Must be at least ' + lo + '.' };
+    if (hi != null && n > hi) return { error: 'Must be at most ' + hi + '.' };
+    return null;
+  }
+
   /* Parse an input into the JSON value the API expects; returns {value} or {error}. */
   function parseInput(el) {
     const type = el.getAttribute('data-type');
@@ -189,13 +224,13 @@
       const n = parseInt(raw, 10);
       if (n < 0) return { error: 'Must not be negative.' };
       if (path === 'server.port' && (n < 1 || n > 65535)) return { error: 'Port must be 1-65535.' };
-      return { value: n };
+      return rangeError(el, n) || { value: n };
     }
     if (type === 'float') {
       const n = Number(raw);
       if (raw === '' || !isFinite(n)) return { error: 'Enter a number.' };
       if (path === 'quality.min_pass_rate' && (n < 0 || n > 1)) return { error: 'Use a fraction between 0 and 1 (0.94 = 94 %).' };
-      return { value: n };
+      return rangeError(el, n) || { value: n };
     }
     if (type === 'json') {
       let v;
