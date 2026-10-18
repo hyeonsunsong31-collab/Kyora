@@ -4,6 +4,149 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 
 ## Unreleased
 
+### Added - 2026-10-18: working without a Claude subscription
+
+- **The Kyora agent engine** (engine name `openai_agent`, `kyora/models/openai_agent.py`): BUILD and FIX
+  without Claude, as Kyora's own tool loop on an OpenAI-compatible endpoint - by default NVIDIA's API
+  Catalog with the NVIDIA keys, model `z-ai/glm-5.3`, then `nvidia/nemotron-3-ultra-550b-a55b`,
+  `poolside/laguna-xs-2.1`, `nvidia/nemotron-3-super-120b-a12b`. Tools: the judged `bash` (fresh shell in
+  the workspace, secrets scrubbed from its environment, Git Bash on Windows, not offered when no POSIX
+  shell exists), the judged file editor confined to the workspace (with backups outside it) and
+  `kyora_check` (the TEST stage's static checks and Node logic tests on the work tree). Nudges when
+  `index.html` or planned files are missing, "continue" after a cut-off answer, a character budget that
+  elides old tool output without breaking tool-call pairing, max turns and a wall-clock limit, key and
+  model fallbacks, overload cooldowns, a model that refuses function tools skipped. Failures carry
+  `failure_kind` (`auth`, `quota`, `unavailable`, `model`) for engine failover. It runs a different
+  model: its capability is not claimed equal to Claude's, and the gate measures its games exactly like
+  every other engine's. Settings `agent_engine.*` and `keys.agent {base_url, api_key}`; docs:
+  `docs/agent-engine.md`. The shared tool loop moved to `kyora/models/agent_tools.py`
+  (`ToolLoopEngine`); the Messages-API engine subclasses it unchanged.
+- **Engine order and failover.** `settings.engines.order` (default `hub, claude_code, anthropic_api,
+  openai_agent`) decides which engine runs a BUILD/FIX. `models.base.classify_failure` tells account and
+  service failures (usage or session limit, ended subscription, credits, login, refused keys, unreachable
+  or overloaded service, retired model) from task failures; with `engines.failover` (on) the same
+  BUILD/FIX continues on the next available engine, told to continue the partial work when the stopped
+  engine had changed files. Published as `engine.failover`; every attempt is recorded in `run.json`
+  (`engine_runs`, `engine_failures`, `engine_failovers`). Task failures never fail over, and TEST/GATE
+  measure the result as always.
+- **Automatic resume after a usage limit.** When no engine is left (or failover is off) and the engine
+  named its reset time (`reset_time`: `resets_at`, Claude Code's rate-limit `resetsAt`, texts such as
+  "resets 1:20pm (UTC)", "resets at <ISO>", "try again in 3h 20m"), the run blocks with the reset in UTC,
+  the partial work is committed (`partial_work_kept`) and the run manager resumes it a minute after the
+  reset (`engines.auto_resume_on_limit`, on; `run.auto_resume`, `auto_resume_at`, `auto_resumes`).
+  Timers survive a restart, re-check the clock at least every 10 minutes, stop after 24 automatic
+  resumes of a run and are dropped by Resume or Cancel.
+- **Claude Code session continuation**: a run that comes back to Claude Code for the same BUILD/FIX and
+  iteration after its usage limit continues the limited session (`--resume`) with "Continue the task
+  from where you stopped."; an expired session falls back to a fresh one told about the kept work.
+  `claude_code.py` records `failure_kind` and `resets_at`.
+- **NVIDIA key and model fallbacks.** `NIMClient` takes labelled alternate keys: a key refused with
+  401/403 is replaced by the other role's key on the same endpoint (`nvidia.share_keys`, on), sticky,
+  published as `model.fallback {kind: "key"}` with labels only. `ModelChain` +
+  `call_with_model_fallback`: a role's model the endpoint reports gone (404/410) is skipped for its
+  `fallback_models`, one that stays overloaded after retries cools down for 120 s behind the healthy
+  ones (`model.fallback {kind: "model", temporary}`); every `model.*` event names the model that was
+  called and, for a fallback, the requested one. Per-role `nvidia.<role>.base_url` (for example an
+  endpoint that still serves Kimi K3) and `fallback_models`. `explain_http_failure` turns 401, 402, 403,
+  404, 410, 429 and 5xx into what they mean and what to do (`model.error.hint`, self-check). Fallback
+  chains from the 2026-10-18 measurement: Kimi role -> `nvidia/nemotron-3-ultra-550b-a55b`,
+  `z-ai/glm-5.3`, `nvidia/nemotron-3-super-120b-a12b`; Nemotron role ->
+  `nvidia/nemotron-3-super-120b-a12b`, `nvidia/nemotron-3.5-super-vl-120b-a12b`.
+- **Free-tier resilience.** An error object inside a 200 stream that arrives before any output (NVIDIA's
+  "Service temporarily overloaded", seen on 2026-10-18) is retried like an HTTP 503; one after output is
+  raised, never retried (it would repeat the output). Errors record how many attempts were made, so
+  messages claim only retries that happened.
+- **Self-check**: new item "Kyora agent engine (no Claude needed)" (availability; with the full check one
+  real tool-call request: WARN when the model answers without calling the tool, FAIL with the provider's
+  explanation for refused keys or gone models). A role that answers only through a fallback key or model
+  is WARN and says which; a refused key or a gone model without a working fallback is FAIL. A missing
+  Claude Code CLI is WARN (not FAIL) while the agent engine is the selected engine, SKIP while a Hub or
+  the Messages-API engine is.
+- **UI**: engine choice "Kyora agent (NVIDIA models, no Claude)"; the *Auto* label follows
+  `engines.order`; Settings groups for the agent engine, the engine order/failover/auto-resume and the
+  per-role NVIDIA endpoints, fallback models and key sharing (with range checks); log lines for
+  `model.fallback`, `engine.failover` and `run.auto_resume`; the code-engine tile is named after the
+  backend that actually ran (Kyora agent: "not a Claude model", "cost: not reported").
+- A hub runs jobs on the Kyora agent engine when neither Claude Code nor the Messages-API engine is
+  available on it.
+- **Real-platform verification**: `.github/workflows/verify.yml` runs the unit tests on Windows, macOS and
+  Linux (Python 3.10 and 3.13), the PowerShell 5.1 and 7 launchers, Android Termux (bionic, real `pkg`),
+  32-bit Alpine (the iSH userland, real `apk`), the browser e2e tests, the release build, the live NVIDIA
+  API (`scripts/nvidia_diagnose.py`, `scripts/live_nvidia_check.py`), the live pipeline without Claude
+  (`engines.order = ["openai_agent"]`) and the Tokkio overlay in the real `nvidia-pipecat` 0.2.0 /
+  `pipecat-ai` 0.0.68 libraries (`scripts/tokkio_overlay_live_check.py`,
+  `scripts/tokkio_bot_import_check.py`). Each job reports its own result.
+
+### Changed - 2026-10-18
+
+- **No engine means BLOCKED only when the Kyora agent engine is unavailable too** (switched off, or no key
+  for its endpoint). With the committed NVIDIA keys a phone (Termux, iSH) or a PC without Claude Code
+  builds locally on the agent engine when its endpoint is reachable.
+- The Kimi role sends each model its own controls: Kimi's `reasoning_effort` only to a Kimi model, the
+  thinking switch (`chat_template_kwargs.enable_thinking`, off for effort `low`) to a Nemotron fallback,
+  no effort field to other families; `effort_sent` says which value was sent.
+- **A cut-off model answer is asked for once more.** A Nemotron design or UI-spec answer that is
+  truncated (`finish_reason: length`) or invalid is requested again without thinking and with twice the
+  budget (at most 32768 tokens): live on 2026-10-18 a UI spec in thinking mode spent all 12288 tokens and
+  arrived without its `tokens` object. The Kimi role's repair after a cut-off answer gets twice the budget
+  (at most 65536) and effort `low`.
+- NVIDIA endpoints, keys, models and fallbacks changed in Settings apply without a restart (they needed
+  one before, silently).
+- The metrics tile is chosen by the role: a Kimi role answered by a Nemotron fallback model stays on the
+  Kimi K3 tile, which shows the answering model and "fallback from moonshotai/kimi-k3"; key notes show on
+  the tiles too.
+- README, `docs/honesty.md`, `docs/platforms.md`, `docs/architecture.md` and `docs/hub-mode.md` describe the
+  three routes without a Claude subscription, the engine order, failover and automatic resume, every
+  substitution and how it is shown, and NVIDIA's state as measured on 2026-10-18.
+
+### Fixed - 2026-10-18
+
+- **Windows** (GitHub runner, PowerShell 5.1, Python 3.10/3.13/3.14): content types no longer come from
+  the Windows registry (`.zip` came back as `application/x-zip-compressed`, `.js` can be `text/plain`,
+  which browsers refuse for module scripts); `kyora/util/mime.py` answers from Kyora's table and a
+  registry-free `MimeTypes`, and ZIP uploads under the Chrome/Edge alias are treated as `application/zip`.
+  The headless test driver's output is decoded as UTF-8, not in the locale's code page. Tests remove their
+  temp dirs after the app and lock cleanups (Windows cannot delete a held lock or an open SQLite file),
+  handle 8.3 short temp paths, decode Node output as UTF-8 and no longer assert a POSIX-only ZIP name.
+  `scripts/vendor_tokkio.py` prints POSIX paths.
+- **Termux**: Android has no `/bin/sh` or `/usr/bin/env`. When a process starts without `termux-exec`,
+  `kyora.util.procs` runs a script whose shebang names a missing `/bin/...` or `/usr/bin/...` interpreter
+  through `$PREFIX/bin` (npm's `claude` shim is `#!/usr/bin/env node`). `install-termux.sh` no longer ends
+  with a bare exit 127 when `node` is missing after the install; installer test stubs name the real shell.
+- **macOS** (GitHub runner): `GET /api/status` resolved this host's name on every call and mDNS made that
+  so slow that the UI, the release check and several tests timed out. LAN addresses come from the default
+  route; name lookups run with a 1 s budget and are cached. `node --check` errors kept no line number
+  because Node prints the `/private/var/...` real path of the temp dir; both forms are mapped back.
+- **iSH userland**: `tests/test_procs.py` used a renamed symlink to `sh` as a stand-in interpreter, which
+  BusyBox does not run as a shell (it picks its applet from the name it is started under); Python stands
+  in now.
+- **Hub expiry**: `expire(hours=0)` also expires a job that finished within the clock's resolution (failed
+  on the Windows runner with Python 3.10, where Windows' coarse clock made such a job look newer than the
+  cutoff).
+- **CI exit codes**: the Termux and Alpine jobs piped the unit tests into `tail`, which hid two Termux
+  failures behind a green job; the test exit code is kept now. The Windows self-check step no longer
+  fails on the expected exit code 1 of a runner without Claude Code.
+- **Live NVIDIA check**: it reported "Nemotron narration OK" for an empty answer and skipped Nemotron
+  entirely when Kimi failed; a probe whose 1-token chat failed now fails the check.
+- The release check starts the server unbuffered and, when `GET /api/status` does not answer, prints the
+  server's output, its start-up time, whether the process runs and what `lsof` sees on the port.
+
+### Known limitations - 2026-10-18
+
+- Measured on 2026-10-18: `moonshotai/kimi-k3` is retired on NVIDIA's free endpoint (HTTP 410, end of life
+  2026-10-15) and `moonshotai/kimi-k2.6` answers 404, so the Kimi role runs on its fallback models there.
+  The real Kimi K3 needs an endpoint that serves it (`nvidia.kimi.base_url` with that endpoint's key and
+  model id). Static labels still name the role "Kimi K3"; the answering model is shown in events, tiles,
+  the log and self-check.
+- Measured on 2026-10-18: the committed key in the Nemotron slot gets HTTP 403 "Authorization failed" for
+  every model (its account lacks inference access); both roles use the Kimi-slot key through
+  `nvidia.share_keys`. Nemotron-3-Ultra is often overloaded on the free tier.
+- The Kyora agent engine runs a different model than Claude. No capability comparison is claimed or
+  published; each game passes or fails the same measured gate, possibly after more fix rounds.
+- When every model of a role stays overloaded or refused, the stage blocks (resumable). The agent engine
+  records no reset time for its own quota failures, so such a block waits for Resume unless the error text
+  names a reset.
+
 ### Security
 
 - Game code runs on its own origin: a second listener on `server.preview_port` (default port + 1,

@@ -1,32 +1,41 @@
 # Hub mode
 
-Hub mode lets one Kyora (a PC, or an Android phone that can run Claude Code) lend its
-**code engine** to other Kyora instances on the same network. The usual case is an
-iPhone or iPad running Kyora inside iSH.
+Hub mode lets one Kyora (a PC, or a phone) lend its **code engine** to other Kyora
+instances on the same network. The usual case is an iPhone, iPad or Android phone that
+should build with Claude Code, which runs only on a PC. A hub runs each job on its first
+available local engine: the Claude Code CLI, then the Messages-API engine (Anthropic API
+key), then the Kyora agent engine (NVIDIA models, not Claude;
+[`agent-engine.md`](agent-engine.md)). So a hub can also run the agent engine for its
+clients.
 
 ## Why it exists
 
 iSH emulates 32-bit x86 Alpine Linux. It runs Python, so Kyora's server, UI, pipeline,
 the Nemotron and Kimi calls, the static checks, and the browser test harness all work
-there. It cannot run Node.js, so it cannot run the Claude Code CLI, which means it
-cannot run the BUILD and FIX stages itself. Without a hub, a run on iSH stops at
-**BLOCKED** with the reason. Kyora never fakes a build.
+there. It cannot run Node.js, so it cannot run the Claude Code CLI. On a phone, BUILD
+and FIX can run locally on the Kyora agent engine, a different model than Claude (slowly
+under iSH's emulation); a Termux phone may also run the Messages-API engine if the
+`anthropic` package installs there. To build with Claude Code from a phone, or to keep
+the work off a slow phone, link a hub. With no hub and no available local engine, a
+run stops at **BLOCKED** with the reason. Kyora never fakes a build.
 
 With a hub, the phone runs every stage locally except the code engine. Only BUILD and FIX
 go to the hub:
 
 ```
 phone (iSH)                                   hub (PC / Android)
-intake -> plan -> design ->  BUILD/FIX  ---->  Claude Code CLI (--effort max), judged by the hub's Kimi
+intake -> plan -> design ->  BUILD/FIX  ---->  hub's engine (Claude Code --effort max, else the API
+                                               engine, else the Kyora agent engine), judged on the hub
                            <- events (SSE) --  engine.* / judge.* / stage.progress
                            <- result zip ----  workspace after the engine finished
 test -> gate -> review -> finalize (slides, deck) on the phone
 ```
 
 The hub runs the judge for the engine's Write, Edit, MultiEdit, NotebookEdit and Bash
-calls (local rules first, then Kimi K3 for the rest; Read, Glob and Grep are not judged)
-with **its own** NVIDIA keys and Kimi settings, because the PreToolUse hook can only
-reach the judge on the same machine.
+calls (local rules first, then the Kimi role for the rest; Read, Glob and Grep are not
+judged) with **its own** NVIDIA keys and Kimi settings: Claude Code's PreToolUse hook can
+only reach the judge on the same machine, and the API and agent engines ask the hub's
+judge in process.
 
 ## Linking a phone to a hub
 
@@ -49,11 +58,20 @@ reach the judge on the same machine.
    if the phone's Kyora uses a port other than 8765.
 4. You can also enter the hub URL and the token in Settings by hand.
 
-Once `hub.url` is set, engine selection (`select_engine`) tries the hub first. The
-`hub` engine counts as available only when the hub answers `GET /api/code-engine/status`
-and reports a local engine that is available. If the hub has no engine, the
-reason says so (for example *hub has no code engine: install Claude Code and run claude
-login on the hub*), and Kyora falls back to a local engine or to BLOCKED.
+Once `hub.url` is set, engine selection (`select_engine`) considers the hub in the place
+`settings.engines.order` gives it (first by default). The `hub` engine counts as
+available only when the hub answers `GET /api/code-engine/status` and reports a local
+engine that is available. If the hub has no engine, the reason says so (for example
+*hub has no code engine: install Claude Code and run claude login on the hub*), and Kyora
+uses the next engine in the order (on a phone usually its own Kyora agent engine) or
+blocks.
+
+When a hub job fails for an account or service reason (the hub's Claude usage limit, a
+refused key, the hub unreachable), the hub does not switch to another of its own engines
+within that job. The phone classifies the error like any engine result and, with
+`engines.failover` on, continues the same BUILD/FIX on its next available engine
+(`engine.failover`); see
+[`architecture.md`](architecture.md#code-engines-registry-order-failover-and-automatic-resume).
 
 ## Protocol
 
@@ -101,7 +119,8 @@ The client side (`HubClientEngine`) works like this:
 - **Token.** `hub.token` is a random 32-character token (`secrets.token_urlsafe(24)`).
   It is compared with `hmac.compare_digest`. 20 failed attempts from one IP within
   60 s lock that IP out with `429` for 60 s. Treat the token like a password: anyone who
-  has it can run the hub's code engine on your Claude subscription.
+  has it can run the hub's code engine on your Claude subscription, Anthropic API key or
+  NVIDIA keys, whichever that engine uses.
 - **LAN only, no TLS.** The hub speaks plain HTTP, so the token and the workspace cross
   the network unencrypted. Use it only on a network you trust (home Wi-Fi, a phone
   hotspot), or tunnel it through a VPN such as WireGuard or Tailscale. Do not expose the
@@ -123,7 +142,8 @@ The client side (`HubClientEngine`) works like this:
   paths, drive letters, `..`, `:`, symlink entries and anything that resolves outside the
   job directory are rejected, and entries inside `.git` are never written.
 - **No loops.** A hub runs jobs only on its own local engine (Claude Code CLI, else the
-  optional Messages-API engine). It never forwards a job to another hub.
+  optional Messages-API engine, else the Kyora agent engine). It never forwards a job to
+  another hub.
 - **The judge still runs.** Every Write, Edit, MultiEdit, NotebookEdit and Bash call of
   a hub job is judged on the hub, exactly as in a local run.
 
@@ -141,3 +161,6 @@ The client side (`HubClientEngine`) works like this:
   partial result is unpacked.
 - The judge verdict counts for hub jobs come from the hub (`EngineResult.raw.hub.judge`).
   The phone's own judge sees no tool calls for these jobs.
+- A job run by the hub's Kyora agent engine has no session: a FIX job never resumes one
+  and starts a new conversation on the uploaded workspace. The relayed events and the
+  backend (`hub:openai_agent`) say which engine ran.
