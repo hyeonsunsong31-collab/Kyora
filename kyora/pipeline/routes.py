@@ -17,6 +17,7 @@ from typing import Any
 
 from ..server import Request, Response, Router, parse_host
 from . import events as ev
+from .stages import ENGINE_ATTRS
 
 log = logging.getLogger("kyora.pipeline.routes")
 
@@ -88,8 +89,9 @@ def register_routes(router: Router, app) -> None:
             raise ValueError("prompt is required (or choose a ZIP to import as the base)")
         allowed_opts = {"engine_pref", "import_zip_attachment", "bench"}
         options = {k: v for k, v in options.items() if k in allowed_opts}
-        if options.get("engine_pref") not in (None, "auto", "claude_code", "hub", "anthropic_api"):
-            raise ValueError("engine_pref must be auto, claude_code, hub or anthropic_api")
+        prefs = ("auto",) + tuple(ENGINE_ATTRS)  # every registered engine, the Kyora agent engine included
+        if options.get("engine_pref") not in (None,) + prefs:
+            raise ValueError("engine_pref must be one of " + ", ".join(prefs))
         parent = body.get("parent_slide")
         run = store.create_run(params["id"], kind, str(prompt), parent if parent not in ("", None) else None,
                                body.get("attachment_ids") or [], options,

@@ -37,7 +37,10 @@ _IMG_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", 
 _COLOR_RE = re.compile(r"^(#[0-9a-fA-F]{3,8}|(rgb|rgba|hsl|hsla)\([0-9\s.,%a-z/+-]{1,60}\)|[a-zA-Z]{3,20})$")
 _ITER_RE = re.compile(r"^iter-(\d+)$")
 _NOT_PENDING = frozenset({"complete", "failed_gate", "failed", "cancelled", "blocked"})
-_BACKEND_LABELS = {"claude_code": "Claude Code", "anthropic_api": "Anthropic API (Claude)", "hub": "Kyora Hub (Claude Code)",
+_BACKEND_LABELS = {"claude_code": "Claude Code", "anthropic_api": "Anthropic API (Claude)", "hub": "Kyora Hub",
+                   "openai_agent": "Kyora agent engine (not a Claude model)",
+                   "hub:claude_code": "Claude Code on the Kyora Hub", "hub:anthropic_api": "Anthropic API (Claude) on the Kyora Hub",
+                   "hub:openai_agent": "Kyora agent engine on the Kyora Hub (not a Claude model)",
                    "import": "imported ZIP - no code engine ran"}
 
 

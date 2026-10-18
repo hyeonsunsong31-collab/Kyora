@@ -46,7 +46,7 @@ log = logging.getLogger("kyora.runner")
 ACTIVE_STATES = ("intake", "plan", "awaiting_approval", "design", "build", "test", "gate", "review", "fix", "finalize")
 INTERRUPTED_REASON = "interrupted: Kyora stopped while this run was active; press Resume to continue"
 _ENGINE_LABELS = {"claude_code": "Claude Code", "anthropic_api": "The Anthropic API engine",
-                  "hub": "Claude Code on the Kyora Hub", "openai_agent": "Kyora's own code engine"}
+                  "hub": "The code engine on the Kyora Hub", "openai_agent": "Kyora's own code engine"}
 AUTO_RESUME_GRACE_S = 60.0  # resume a minute after the reported reset (clock skew, the provider's own rounding)
 AUTO_RESUME_STEP_S = 600.0  # a timer wakes at least every 10 min and re-checks the wall clock (sleep/suspend)
 AUTO_RESUME_MAX = 24  # automatic resumes per run; after that the run waits for the user's Resume
@@ -560,8 +560,21 @@ class Runner:
         ctx.engine = ctx.engine or select_engine(ctx)
         name = str(getattr(ctx.engine, "name", "") or "")
         label = _ENGINE_LABELS.get(name) or (f"The {name} code engine" if name else "The code engine")
-        if name == "openai_agent":  # its own model; Claude Code's effort setting does not apply to it
+        backend, model = name, ""
+        if name == "hub":  # name what the Hub really runs (its status was read when the engine was selected)
+            try:
+                details = ctx.engine.availability().details or {}
+            except Exception:  # noqa: BLE001 - narration only; the generic label stays
+                details = {}
+            backend = str(details.get("remote_backend") or "")
+            if backend in _ENGINE_LABELS and backend != "hub":
+                label = f"{_ENGINE_LABELS[backend]} on the Kyora Hub"
+            remote = details.get("remote_engine") if isinstance(details.get("remote_engine"), dict) else {}
+            model = str(((remote.get("details") or {}) if isinstance(remote.get("details"), dict) else {})
+                        .get("model") or "")
+        elif name == "openai_agent":
             model = str(getattr(getattr(self.cfg, "agent_engine", None), "model", "") or "")
+        if backend == "openai_agent":  # its own model; Claude Code's effort setting does not apply to it
             how = f" with {model}" if model else ""
         else:
             effort = str(getattr(getattr(self.cfg, "claude_code", None), "effort", "") or "")

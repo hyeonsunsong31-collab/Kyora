@@ -24,8 +24,8 @@
 
   /* Display name of a code-engine backend as recorded by the run (engine.session / run.engine). */
   const ENGINE_LABELS = {
-    claude_code: 'Claude Code', anthropic_api: 'Anthropic API', hub: 'Kyora Hub',
-    'hub:claude_code': 'Claude Code (Hub)', 'hub:anthropic_api': 'Anthropic API (Hub)'
+    claude_code: 'Claude Code', anthropic_api: 'Anthropic API', hub: 'Kyora Hub', openai_agent: 'Kyora agent',
+    'hub:claude_code': 'Claude Code (Hub)', 'hub:anthropic_api': 'Anthropic API (Hub)', 'hub:openai_agent': 'Kyora agent (Hub)'
   };
   function engineLabel(backend) {
     if (!backend) return '';

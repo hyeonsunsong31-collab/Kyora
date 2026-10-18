@@ -219,7 +219,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: what the configured keys can call (models listed, per-model status)
-        run: python scripts/nvidia_diagnose.py --all-models --out nvidia-diagnose.json
+        run: python scripts/nvidia_diagnose.py --all-models --tool-probe --out nvidia-diagnose.json
       - name: every model role against integrate.api.nvidia.com
         run: python scripts/live_nvidia_check.py --out nvidia-live-report.json
       - uses: actions/upload-artifact@v4
@@ -229,6 +229,35 @@ jobs:
           path: |
             nvidia-diagnose.json
             nvidia-live-report.json
+          if-no-files-found: ignore
+
+  live-pipeline-no-claude:
+    name: live pipeline without Claude (NVIDIA models + Kyora agent engine)
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Playwright with Chromium (the TEST stage drives the browser harness headless)
+        run: |
+          npm install -g playwright@1.56.1
+          npx -y playwright@1.56.1 install --with-deps chromium
+      - name: git identity for slide commits
+        run: |
+          git config --global user.name "Kyora CI"
+          git config --global user.email "ci@kyora.invalid"
+      - name: one game from prompt to gate, no Claude engine allowed (engines.order = [openai_agent])
+        run: NODE_PATH="$(npm root -g)" python scripts/live_pipeline_check.py --out live-pipeline --timeout-min 85
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-pipeline-no-claude
+          path: live-pipeline
           if-no-files-found: ignore
 
   tokkio-overlay:

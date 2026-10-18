@@ -69,6 +69,9 @@ def main(argv=None) -> int:
     ap.add_argument("--keys", default=str(REPO / "config" / "keys.json"))
     ap.add_argument("--out", default=None)
     ap.add_argument("--all-models", action="store_true", help="also try every listed chat model with each key")
+    ap.add_argument("--tool-probe", action="store_true",
+                    help="send a function-calling request to every model that answered (needs --all-models or --models)")
+    ap.add_argument("--models", default="", help="comma-separated extra models for --tool-probe")
     args = ap.parse_args(argv)
     keys = json.loads(Path(args.keys).read_text(encoding="utf-8"))
     nv = keys["nvidia"]
@@ -135,6 +138,46 @@ def main(argv=None) -> int:
             for model, status, ms in ok:
                 print(f"    200 {ms:>6} ms  {model}")
             sys.stdout.flush()
+
+    # Which answering models really call tools (the Kyora agent engine and the structured roles need it)
+    if args.tool_probe:
+        answered: dict[str, str] = {}  # model -> a key that answered it
+        for slot in ("kimi", "nemotron"):
+            key = str(nv.get(slot, {}).get("api_key") or "")
+            for model, _status, _ms in (report.get("all_models", {}).get(slot, {}).get("ok") or []):
+                answered.setdefault(model, key)
+        for model in [m.strip() for m in (args.models or "").split(",") if m.strip()]:
+            answered.setdefault(model, str(nv.get("kimi", {}).get("api_key") or ""))
+        tool = {"type": "function", "function": {"name": "add", "description": "Add two integers.", "parameters": {
+            "type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}, "required": ["a", "b"]}}}
+        rows = []
+        print(f"\n== tool-call probe ({len(answered)} models): one function call add(2, 3), then the same with "
+              "chat_template_kwargs.enable_thinking")
+        for model, key in answered.items():
+            body = {"model": model, "max_tokens": 512, "stream": False, "tool_choice": "auto", "tools": [tool],
+                    "messages": [{"role": "user", "content": "Use the add tool to add 2 and 3."}]}
+            r = _req(base + "/chat/completions", key, body, timeout=90)
+            calls, args_ok = [], False
+            try:
+                msg = (r.get("json") or {}).get("choices", [{}])[0].get("message") or {}
+                calls = msg.get("tool_calls") or []
+                if calls:
+                    parsed = json.loads(calls[0].get("function", {}).get("arguments") or "{}")
+                    args_ok = int(parsed.get("a")) == 2 and int(parsed.get("b")) == 3
+            except (ValueError, TypeError, AttributeError, IndexError):
+                pass
+            t = _req(base + "/chat/completions", key, {**body, "chat_template_kwargs": {"enable_thinking": True}},
+                     timeout=90)
+            row = {"model": model, "status": r.get("status"), "ms": r.get("ms"), "tool_call": bool(calls),
+                   "args_ok": args_ok, "thinking_status": t.get("status"),
+                   "error": None if r.get("status") == 200 else (r.get("error") or r.get("body"))}
+            rows.append(row)
+        rows.sort(key=lambda x: (not x["args_ok"], not x["tool_call"], x["status"] != 200, x["ms"] or 1e9))
+        for x in rows:
+            print(f"  {'TOOLS OK ' if x['args_ok'] else 'tool call' if x['tool_call'] else 'no call  '} "
+                  f"HTTP {x['status']} {x['ms']:>6} ms  thinking-field HTTP {x['thinking_status']}  {x['model']}"
+                  + (f"  - {str(x['error'])[:160]}" if x["error"] else ""))
+        report["tool_probe"] = rows
 
     if args.out:
         Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")

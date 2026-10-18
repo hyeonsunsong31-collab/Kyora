@@ -504,8 +504,16 @@ class BuildNarrationTests(_RunnerHome):
     def test_names_the_selected_backend_and_configured_effort(self):
         said, _ = self._run_until_build(lambda ctx: SimpleNamespace(name="anthropic_api"), "high")
         self.assertEqual(said, ["The Anthropic API engine is now building your game at high effort."])
-        said, _ = self._run_until_build(lambda ctx: SimpleNamespace(name="hub"), "max")
+        def hub(backend, details=None):
+            av = SimpleNamespace(details={"remote_backend": backend, "remote_engine": {"details": details or {}}})
+            return lambda ctx: SimpleNamespace(name="hub", availability=lambda: av)
+
+        said, _ = self._run_until_build(hub("claude_code"), "max")
         self.assertEqual(said[-1], "Claude Code on the Kyora Hub is now building your game at maximum effort.")
+        said, _ = self._run_until_build(hub("openai_agent", {"model": "z-ai/glm-5.3"}), "max")
+        self.assertEqual(said[-1], "Kyora's own code engine on the Kyora Hub is now building your game with z-ai/glm-5.3.")
+        said, _ = self._run_until_build(lambda ctx: SimpleNamespace(name="hub"), "max")  # status unknown
+        self.assertEqual(said[-1], "The code engine on the Kyora Hub is now building your game at maximum effort.")
 
     def test_nothing_is_announced_when_no_engine_is_available(self):
         def no_engine(ctx):
