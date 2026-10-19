@@ -66,14 +66,15 @@ DEFAULT_SETTINGS: dict = {
     # OpenAI-compatible model - BUILD/FIX keep working without a Claude subscription or API key.
     "agent_engine": {
         "enabled": True,
+        # measured live 2026-10-18 (CI, NVIDIA free tier): glm-5.3 without thinking built a game that passed the
+        # gate 28/28 on its first iteration; with thinking it had not finished BUILD after 85 minutes
         "model": "z-ai/glm-5.3",
-        "fallback_models": ["nvidia/nemotron-3-ultra-550b-a55b", "poolside/laguna-xs-2.1",
-                            "nvidia/nemotron-3-super-120b-a12b"],
+        "fallback_models": ["nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-3-ultra-550b-a55b"],
         "max_turns": 80,
         "max_tokens": 16384,
         "temperature": 0.6,
         "top_p": 0.95,
-        "thinking": True,
+        "thinking": False,
         "timeout_s": 5400,
         "context_chars": 400000,
         "self_check_tool": True,

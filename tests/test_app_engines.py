@@ -171,7 +171,7 @@ class SettingsRoundTripTests(_AppBase):
                      "agent_engine.fallback_models": ["z-ai/glm-5.3", "poolside/laguna-xs-2.1"],
                      "agent_engine.max_turns": 40, "agent_engine.max_tokens": 8192, "agent_engine.timeout_s": 1800,
                      "agent_engine.context_chars": 200000, "agent_engine.temperature": 0.4, "agent_engine.top_p": 0.9,
-                     "agent_engine.thinking": False, "agent_engine.self_check_tool": False,
+                     "agent_engine.thinking": True, "agent_engine.self_check_tool": False,
                      "engines.order": ["openai_agent", "claude_code"], "engines.failover": False,
                      "engines.auto_resume_on_limit": False},
     }
@@ -218,7 +218,8 @@ class SettingsRoundTripTests(_AppBase):
                          ("openai/gpt-oss-20b", "https://llm.example.test/v1", "sk-agent-secret-0123456789", "agent key", []))
         self.assertEqual((c.max_turns, c.max_tokens, c.timeout_s, c.context_chars, c.temperature, c.top_p),
                          (40, 8192, 1800, 200000, 0.4, 0.9))
-        self.assertFalse(c.thinking or c.self_check_tool)
+        self.assertTrue(c.thinking)  # the non-default value (default: off, measured faster)
+        self.assertFalse(c.self_check_tool)
         eng = self.app.config.engines
         self.assertEqual((eng.order, eng.failover, eng.auto_resume_on_limit), (["openai_agent", "claude_code"], False, False))
         nv = self.app.config.nvidia

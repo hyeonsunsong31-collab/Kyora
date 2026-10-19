@@ -78,6 +78,25 @@ def headless_status() -> str:
             else "Node found but no Playwright: browser tests need a browser to open the runner URL")
 
 
+def _failing_checks(home: Path, rid: str, out: Path) -> dict[str, list[dict]]:
+    """Failing checks per iteration from the run's own gate.json files (copied to --out with the agent journal)."""
+    found: dict[str, list[dict]] = {}
+    for run_dir in home.glob(f"projects/*/runs/{rid}"):
+        for gate_file in sorted(run_dir.glob("iter-*/gate.json")):
+            try:
+                gate = json.loads(gate_file.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            it = gate_file.parent.name.split("-", 1)[-1]
+            shutil.copyfile(gate_file, out / f"gate-iter-{it}.json")
+            found[it] = [{"id": c.get("id"), "group": c.get("group"), "name": str(c.get("name") or "")[:80],
+                          "detail": " ".join(str(c.get("detail") or "").split())[:240]}
+                         for c in gate.get("checks") or [] if c.get("status") == "fail"]
+        for journal in run_dir.rglob("agent_turns.jsonl"):
+            shutil.copyfile(journal, out / journal.name)
+    return found
+
+
 def _turn_stats(turns: list[dict]) -> dict:
     """Measured per-turn model latency of the agent engine (seconds): count, mean, median, max, total."""
     vals = sorted(float(t["total_ms"]) / 1000.0 for t in turns if isinstance(t.get("total_ms"), (int, float)))
@@ -256,6 +275,8 @@ def main(argv=None) -> int:
             (out / "deck.html").write_bytes(api(server.url, "GET", f"/projects/{report['project_id']}/deck", raw=True))
         except (urllib.error.URLError, OSError) as exc:
             print(f"artifact download failed: {exc}")
+    failing = _failing_checks(tmp / "home", rid, out) if rid else {}
+    report["failing_checks"] = failing
     atomic_write_json(out / "report.json", report)
     server.shutdown()
     app.stop()
@@ -268,6 +289,10 @@ def main(argv=None) -> int:
     if gate:
         print(f"gate: {gate.get('passed')}/{gate.get('total')} = {gate.get('pass_rate')} (threshold {gate.get('threshold')}), "
               f"ok={gate.get('ok')}")
+    for it, fails in sorted(failing.items()):
+        print(f"iteration {it}: {len(fails)} failing check(s)")
+        for f in fails[:25]:
+            print(f"  - [{f['group']}] {f['id']}: {f['name']} - {f['detail']}")
     for role, counter in sorted(models_by_role.items()):
         print(f"{role} answered by: " + ", ".join(f"{m} x{n}" for m, n in counter.most_common()))
     print(f"model/key fallbacks: {len(fallbacks)}; judge verdicts: {dict(judge)}; agent tool calls: {turns}; "
