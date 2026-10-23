@@ -9,7 +9,7 @@
 // match /api/status, the settings form masks secrets, the hub-link hash flow updates
 // /api/settings, and after the driver publishes a scripted run the chart, metric tiles, gate
 // gauge (94, run threshold 90 %), engine labels (effort high) and judge counters (3 allowed / 1 denied / 2 unavailable, one of them an engine-detected
-// unjudged call; 1 by rule, 1 by Kimi K3) reflect it, and that game previews load
+// unjudged call; 1 by rule, 1 by the Kimi-role model) reflect it, and that game previews load
 // from the separate preview origin (which serves no API).
 // Optional: KYORA_SMOKE_SHOTS=<dir> saves a screenshot of every view.
 import { spawn, execSync } from 'node:child_process';
@@ -171,7 +171,7 @@ async function checkBoot(page, label) {
   const cc = status.engines && status.engines.claude_code;
   const ccChip = ui.chips.find((c) => /^Claude Code/.test(c)) || '';
   assert(cc && (cc.available ? /ready/.test(ccChip) : /unavailable|off/.test(ccChip)), `[${label}] Claude Code chip "${ccChip}" disagrees with /api/status`);
-  const nem = ui.chips.find((c) => /^Nemotron-3-Ultra/.test(c)) || '';
+  const nem = ui.chips.find((c) => /^Nemotron role/.test(c)) || '';
   assert(status.components.nemotron ? /configured/.test(nem) : /missing/.test(nem), `[${label}] Nemotron chip "${nem}" disagrees with /api/status`);
   return status;
 }

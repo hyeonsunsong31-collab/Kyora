@@ -543,9 +543,12 @@ def _validate(section: str, dotted: str, value) -> None:
     if dotted in ("agent_engine.max_turns", "agent_engine.max_tokens", "agent_engine.timeout_s",
                   "agent_engine.context_chars") and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
         raise ValueError(f"{dotted} must be a positive integer")
-    if dotted in ("agent_engine.temperature", "agent_engine.top_p") and (
+    if dotted == "agent_engine.temperature" and (
             not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= float(value) <= 2):
         raise ValueError(f"{dotted} must be a number between 0 and 2")
+    if dotted == "agent_engine.top_p" and (  # OpenAI-compatible servers (vLLM, NIM) refuse top_p outside (0, 1]
+            not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 < float(value) <= 1):
+        raise ValueError(f"{dotted} must be greater than 0 and at most 1")
     if dotted in ("agent_engine.enabled", "agent_engine.thinking", "agent_engine.self_check_tool", "engines.failover",
                   "engines.auto_resume_on_limit") and not isinstance(value, bool):
         raise ValueError(f"{dotted} must be true or false")

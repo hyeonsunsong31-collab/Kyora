@@ -257,7 +257,8 @@ class Nemotron:
 
     @property
     def thinking_for_design(self) -> bool:
-        return bool(getattr(self.cfg, "thinking_for_design", True))
+        c = self.cfg() if callable(self.cfg) else self.cfg  # a NemotronCfg, or a provider of the current one
+        return bool(getattr(c, "thinking_for_design", True))
 
     # ------------------------------------------------------------------ core call
     def generate(self, *, role: str = ROLE, system: str, messages: list[dict], thinking: bool,

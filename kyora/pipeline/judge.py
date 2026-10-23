@@ -972,7 +972,8 @@ class JudgeService:
         self._append_journal(ctx, entry)
         self._publish(JUDGE_VERDICT, {"decision": verdict.get("decision"), "reason": verdict.get("reason"),
                                       "source": source, "latency_ms": verdict.get("latency_ms"), "tool_name": tool_name,
-                                      "tool_use_id": tool_use_id, "risk": verdict.get("risk"), "summary": summary},
+                                      "tool_use_id": tool_use_id, "risk": verdict.get("risk"), "summary": summary,
+                                      "judge_model": verdict.get("judge_model")},
                       run_id, ctx.get("project_id"))
 
     def _record_late(self, run_id: str, ctx: dict, call: dict, summary: str, verdict: dict,

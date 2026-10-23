@@ -186,6 +186,8 @@ class ChatResult:
     usage: dict
     metrics: Metrics
     message: dict
+    model: str | None = None  # the model that answered (set by the role that made the call)
+    images_sent: int = 0      # image parts in the request as sent (0: none, or the model takes no images)
 
     def to_dict(self) -> dict:
         return {"content": self.content, "reasoning": self.reasoning, "tool_calls": self.tool_calls,

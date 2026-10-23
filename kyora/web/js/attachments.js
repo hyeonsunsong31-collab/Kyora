@@ -154,7 +154,7 @@
       const st = state();
       if (st.projectsMissing) help.textContent = 'Attachments need the projects API, which is not available on this server.';
       else if (!st.projectId) help.textContent = 'Files are stored in the selected project. Choosing files without a project asks for a project name first.';
-      else if (!items.length && !pending.length) help.textContent = 'No attachments yet. Images become visual references for Kimi K3; text and code files are quoted in the intake.';
+      else if (!items.length && !pending.length) help.textContent = 'No attachments yet. Images become visual references for the Kimi role (when its answering model takes images); text and code files are quoted in the intake.';
       else {
         const n = selectedIds().length;
         help.textContent = n + ' of ' + items.length + ' attached file' + (items.length === 1 ? '' : 's') + ' included in the next run. Tap a tile to include or exclude it.';

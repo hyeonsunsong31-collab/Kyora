@@ -610,7 +610,8 @@ class Runner:
             rec["review"] = review.get("decision")
             self.store.save_run(run)
             if review.get("decision") == "stop":
-                self._finish(ctx, gate, ok=False, reason="Kimi K3 review stopped the fix loop: "
+                who = f"the Kimi role's review ({review['model']})" if review.get("model") else "the review"
+                self._finish(ctx, gate, ok=False, reason=f"{who} stopped the fix loop: "
                                                          + "; ".join(review.get("reasons") or [])[:300])
                 return
             run.iteration = n + 1

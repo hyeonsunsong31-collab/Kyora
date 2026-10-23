@@ -670,16 +670,29 @@ def _require(obj: Any, what: str, stage: str):
     return obj
 
 
+TEMPORARY_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+
+
 def _model_call(stage: str, who: str, fn, *args, **kwargs):
-    """Call a model wrapper; network/API failures block the run (resumable) instead of failing it."""
-    from ..models.nim_client import NIMCancelled, NIMError
+    """Call a model wrapper; network/API failures block the run (resumable) instead of failing it.
+
+    A failure that usually passes by itself (endpoint unreachable, 429, a 5xx, after the client's own
+    retries and the role's fallback models) blocks with ``resume_at`` = now + the busy cooldown, so the
+    run manager resumes the run by itself (at most ``AUTO_RESUME_MAX`` times); any other failure waits
+    for the user's Resume.
+    """
+    from ..models.nim_client import BUSY_COOLDOWN_S, NIMCancelled, NIMError, NIMUnreachable
     try:
         return fn(*args, **kwargs)
     except NIMCancelled:
         raise RunCancelled() from None
     except NIMError as exc:
         status = f" (HTTP {exc.status})" if exc.status else ""
-        raise StageBlocked(f"{who} request failed{status}: {str(exc)[:400]}", stage) from None
+        temporary = isinstance(exc, NIMUnreachable) or exc.status in TEMPORARY_STATUSES
+        resume_at = time.time() + BUSY_COOLDOWN_S if temporary else None
+        then = f"; Kyora tries again by itself in {BUSY_COOLDOWN_S:g} s" if temporary else ""
+        raise StageBlocked(f"{who} request failed{status}: {str(exc)[:400]}{then}", stage,
+                           resume_at=resume_at) from None
 
 
 def intake_stage(ctx: StageContext) -> dict:
@@ -687,7 +700,7 @@ def intake_stage(ctx: StageContext) -> dict:
     if isinstance(existing, dict):
         return existing
     app = ctx.app
-    kimi = _require(app.kimi, "Kimi K3", "intake")
+    kimi = _require(app.kimi, "The Kimi role (planner)", "intake")
     opts = ctx.run.options or {}
     import_id = opts.get("import_zip_attachment")
     if import_id and not opts.get("imported"):
@@ -704,13 +717,49 @@ def intake_stage(ctx: StageContext) -> dict:
     views = app.store.attachment_views(ctx.project_id, ids) if ids else []
     ctx.data["attachment_views"] = views
     prompt = ctx.run.prompt or ("Continue from the imported game base." if import_id else "")
+    meta: dict = {}
     try:
-        intake = _model_call("intake", "Kimi K3", kimi.intake, prompt, views, ctx.run_id, ctx.project_id, ctx.cancel,
-                             import_attachment_id=import_id)
+        intake = _model_call("intake", "The Kimi role", kimi.intake, prompt, views, ctx.run_id, ctx.project_id,
+                             ctx.cancel, import_attachment_id=import_id, meta=meta)
     except ValueError as exc:
-        raise StageBlocked(f"Kimi K3 returned no valid intake: {exc}", "intake") from None
+        raise StageBlocked(f"the Kimi role returned no valid intake: {exc}", "intake") from None
+    _record_role_model(ctx, "intake", meta)
     ctx.write_artifact("intake", intake)
     return intake
+
+
+def _record_role_model(ctx: StageContext, stage: str, meta: dict) -> None:
+    """Keep which model answered a role's stage (``run.extra.role_models``): the deck names it, not the role's default."""
+    if meta.get("model"):
+        ctx.run.extra.setdefault("role_models", {})[stage] = {k: meta.get(k) for k in
+                                                              ("model", "requested_model", "fallback", "images_sent")}
+
+
+RULE_REVIEW_CHECKS = 20  # failing checks a rule-based fix decision lists
+
+
+def rule_review(gate: dict, why: str) -> dict:
+    """A ``fix`` decision built from the measured gate alone, for when the review model could not answer.
+
+    Lists the failing checks (required ones first, at most :data:`RULE_REVIEW_CHECKS`) and the acceptance
+    tests without a result. ``source: "rules"`` and ``model: None``: no model reviewed this iteration.
+    """
+    failing = [c for c in gate.get("checks") or [] if isinstance(c, dict) and c.get("status") == "fail"]
+    failing.sort(key=lambda c: not c.get("required"))  # stable: the gate's own order within each group
+    lines = []
+    for c in failing[:RULE_REVIEW_CHECKS]:
+        detail = " ".join(str(c.get("detail") or "").split())
+        lines.append(f"- {c.get('id')}{' (required)' if c.get('required') else ''}: {c.get('name') or c.get('id')}"
+                     + (f" - {detail[:300]}" if detail else ""))
+    if len(failing) > RULE_REVIEW_CHECKS:
+        lines.append(f"- ... and {len(failing) - RULE_REVIEW_CHECKS} more failing checks (gate.json)")
+    missing = [str(t) for t in gate.get("missing_spec_tests") or []]
+    if missing:
+        lines.append("- acceptance tests that reported no result (write or repair them): " + ", ".join(missing[:20]))
+    text = ("Make these failing checks of the measured gate pass, most important first:\n" + "\n".join(lines)
+            if lines else "The gate did not pass: run the tests, find the failing checks in gate.json and fix them.")
+    return {"decision": "fix", "source": "rules", "reasons": [why[:400]], "fix_instructions": text,
+            "suspected_files": [], "coerced": False, "model": None, "images_sent": 0}
 
 
 def unrunnable_node_tests(plan: dict, node: str | None) -> list[str]:
@@ -723,7 +772,7 @@ def _block_unrunnable_node_tests(plan: dict, node: str | None, stage: str) -> No
     if ids:
         raise StageBlocked(f"the plan has Node acceptance tests ({', '.join(ids)}) but Node.js is not installed on this "
                            "device, so they can never run: install Node.js and press Resume, or start a new run "
-                           "(Kimi K3 then plans browser tests only)", stage)
+                           "(the Kimi role then plans browser tests only)", stage)
 
 
 def plan_stage(ctx: StageContext) -> dict:
@@ -731,13 +780,15 @@ def plan_stage(ctx: StageContext) -> dict:
     node = find_node()
     plan = ctx.read_artifact("plan")
     if not isinstance(plan, dict):
-        kimi = _require(ctx.app.kimi, "Kimi K3", "plan")
+        kimi = _require(ctx.app.kimi, "The Kimi role (planner)", "plan")
         intake = ctx.read_artifact("intake") or {}
+        meta: dict = {}
         try:
-            plan = _model_call("plan", "Kimi K3", kimi.plan, intake, ctx.run_id, ctx.project_id, ctx.cancel,
-                               node_available=bool(node))
+            plan = _model_call("plan", "The Kimi role", kimi.plan, intake, ctx.run_id, ctx.project_id, ctx.cancel,
+                               node_available=bool(node), meta=meta)
         except ValueError as exc:
-            raise StageBlocked(f"Kimi K3 returned no valid plan: {exc}", "plan") from None
+            raise StageBlocked(f"the Kimi role returned no valid plan: {exc}", "plan") from None
+        _record_role_model(ctx, "plan", meta)
         plan = _apply_bench_contract(ctx, plan)
         ctx.write_artifact("plan", plan)
         ctx.save_run()
@@ -778,7 +829,7 @@ def design_stage(ctx: StageContext) -> tuple[dict, dict]:
     ui = ctx.read_artifact("ui_spec")
     if isinstance(design, dict) and isinstance(ui, dict):
         return design, ui
-    nemo = _require(ctx.app.nemotron, "NVIDIA Nemotron-3-Ultra", "design")
+    nemo = _require(ctx.app.nemotron, "The Nemotron role (design)", "design")
     intake = ctx.read_artifact("intake") or {}
     plan = ctx.read_artifact("plan") or {}
     views = ctx.data.get("attachment_views")
@@ -787,21 +838,32 @@ def design_stage(ctx: StageContext) -> tuple[dict, dict]:
         views = ctx.app.store.attachment_views(ctx.project_id, ids) if ids else []
     if not isinstance(design, dict):
         try:
-            design = _model_call("design", "Nemotron-3-Ultra", nemo.design_doc, intake, plan, views, ctx.run_id,
+            design = _model_call("design", "The Nemotron role", nemo.design_doc, intake, plan, views, ctx.run_id,
                                  ctx.project_id, ctx.cancel)
         except ValueError as exc:
-            raise StageBlocked(f"Nemotron-3-Ultra returned no usable design: {exc}", "design") from None
+            raise StageBlocked(f"the Nemotron role returned no usable design: {exc}", "design") from None
+        _record_nemotron(ctx, nemo, "design")
         ctx.write_artifact("design", design)
         ctx.save_run()
     ctx.check_cancel()
     if not isinstance(ui, dict):
         try:
-            ui = _model_call("design", "Nemotron-3-Ultra", nemo.ui_spec, intake, plan, ctx.run_id, ctx.project_id, ctx.cancel)
+            ui = _model_call("design", "The Nemotron role", nemo.ui_spec, intake, plan, ctx.run_id, ctx.project_id, ctx.cancel)
         except ValueError as exc:
-            raise StageBlocked(f"Nemotron-3-Ultra returned no usable UI spec: {exc}", "design") from None
+            raise StageBlocked(f"the Nemotron role returned no usable UI spec: {exc}", "design") from None
+        _record_nemotron(ctx, nemo, "ui_spec")
         ctx.write_artifact("ui_spec", ui)
         ctx.save_run()
     return design, ui
+
+
+def _record_nemotron(ctx: StageContext, nemo: Any, purpose: str) -> None:
+    answered = getattr(nemo, "answered_by", None)
+    chain = getattr(nemo, "chain", None)
+    if callable(answered):
+        model = answered(purpose)
+        _record_role_model(ctx, purpose, {"model": model, "requested_model": getattr(chain, "requested", None),
+                                          "fallback": bool(chain) and model != chain.requested})
 
 
 def write_build_files(ctx: StageContext) -> None:
@@ -878,6 +940,8 @@ def fix_stage(ctx: StageContext, n: int, prev_gate: dict, review: dict) -> Engin
         pass_pct=f"{(prev_gate.get('pass_rate') or 0) * 100:.1f}", passed=prev_gate.get("passed", 0),
         total=prev_gate.get("total", 0), threshold_pct=threshold_pct(ctx), failing_list=_bullets(failing[:60]),
         fix_instructions=review.get("fix_instructions") or "(no instructions)",
+        reviewer=(f"The review ({review['model']}) looked at the result and" if review.get("model") else
+                  "No review model could answer, so Kyora's rules list the failing checks; the gate"),
         suspected_files=", ".join(review.get("suspected_files") or []) or "(none named)")
     write_build_files(ctx)  # restores the contract files if the engine changed them
     return run_engine(ctx, "fix", prompt)
@@ -994,7 +1058,7 @@ def review_stage(ctx: StageContext, n: int, gate: dict) -> dict:
     existing = read_json(ctx.run_dir / f"review-{n}.json", default=None)
     if isinstance(existing, dict):
         return existing
-    kimi = _require(ctx.app.kimi, "Kimi K3", "review")
+    kimi = _require(ctx.app.kimi, "The Kimi role (reviewer)", "review")
     shots: list[bytes] = []
     collector = ctx.app.browser_results
     if collector is not None:
@@ -1013,14 +1077,26 @@ def review_stage(ctx: StageContext, n: int, gate: dict) -> dict:
                                              "missing_spec_tests")}
     compact_gate["failing_checks"] = [{k: c.get(k) for k in ("id", "group", "name", "required", "detail")}
                                       for c in gate.get("checks") or [] if c.get("status") == "fail"][:80]
+    # a review model that cannot answer does not stop a run whose gate was measured: the failing checks become
+    # the fix instructions (source "rules"); the runner still stops at quality.max_fix_iterations
     try:
-        review = _model_call("review", "Kimi K3", kimi.review, summary, compact_gate, shots, ctx.run_id, ctx.project_id,
-                             ctx.cancel)
+        review = _model_call("review", "The Kimi role", kimi.review, summary, compact_gate, shots, ctx.run_id,
+                             ctx.project_id, ctx.cancel)
     except ValueError as exc:
-        raise StageBlocked(f"Kimi K3 returned no valid review: {exc}", "review") from None
+        review = rule_review(gate, f"the review model returned no valid review ({str(exc)[:200]}); "
+                                   "the failing checks of the measured gate are the fix instructions")
+    except StageBlocked as exc:
+        review = rule_review(gate, f"the review model was unavailable ({exc.reason[:200]}); "
+                                   "the failing checks of the measured gate are the fix instructions")
+    review.setdefault("source", "model")
+    if review.get("model"):
+        _record_role_model(ctx, f"review-{n}", {"model": review.get("model"), "requested_model": getattr(
+            getattr(kimi, "chain", None), "requested", None), "images_sent": review.get("images_sent", 0)})
     atomic_write_json(ctx.run_dir / f"review-{n}.json", review)
     ctx.publish(ev.REVIEW_DECISION, {"iteration": n, "decision": review.get("decision"),
-                                     "reasons": (review.get("reasons") or [])[:5]})
+                                     "reasons": (review.get("reasons") or [])[:5], "source": review.get("source"),
+                                     "model": review.get("model"), "images_sent": review.get("images_sent"),
+                                     "screenshots": review.get("screenshots")})
     return review
 
 
@@ -1116,6 +1192,6 @@ __all__ = [
     "StageBlocked", "RunCancelled", "StageContext", "render_template", "select_engine", "run_engine",
     "intake_stage", "plan_stage", "design_stage", "write_build_files", "build_stage", "fix_stage", "test_stage",
     "gate_stage", "load_gate", "review_stage", "finalize_stage", "show_view", "narrate", "plan_tests", "plan_files",
-    "NO_ENGINE_REASON", "NO_BROWSER_REASON", "gate_threshold", "served_models", "served_engines", "tree_fingerprint",
+    "NO_ENGINE_REASON", "NO_BROWSER_REASON", "gate_threshold", "rule_review", "RULE_REVIEW_CHECKS", "served_models", "served_engines", "tree_fingerprint",
     "CONTINUE_PREFIX", "PARTIAL_WORK_PREFIX", "CHANGED_SINCE_TEXT", "KEPT_WORK_TEXT", "failure_reason", "utc_iso",
 ]

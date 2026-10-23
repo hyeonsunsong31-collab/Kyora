@@ -58,7 +58,7 @@ _TAG_RE = re.compile(r"^slide/v(\d+)$")
 _REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@{}^~-]{0,200}$")
 _UNSET: Any = object()
 _GATE_KEYS = ("pass_rate", "passed", "total", "ok", "threshold", "required_failures", "missing_spec_tests")
-_ENGINE_KEYS = ("backend", "requested_model", "active_model", "fallback_used", "ok", "engine_errors")
+_ENGINE_KEYS = ("backend", "requested_model", "active_model", "fallback_used", "ok", "engine_errors", "served")
 # Directories the gate never measures (quality.SKIP_DIRS): never part of a slide, export or preview, at any depth.
 UNSHIPPED_DIRS: tuple[str, ...] = tuple(sorted(SKIP_DIRS - {".git"}))
 _UNSHIPPED_GLOBS: tuple[str, ...] = tuple(f"**/{d}/**" for d in UNSHIPPED_DIRS)

@@ -141,7 +141,8 @@ class SelfCheck:
             phase1 = self._phase1(bool(probe_models), bool(probe_claude))
             results.update(self._execute(phase1))
             # the engine choice reuses the availability results cached by phase 1
-            results.update(self._execute([_Probe(("engine_selected",), self._p_engine_selected, 60.0)]))
+            results.update(self._execute([_Probe(("engine_selected",), lambda: self._p_engine_selected(results),
+                                                 60.0)]))
             self._claude_not_needed(results)
             items = [results[i] for i in ORDER if i in results]
             summary = {s: sum(1 for it in items if it["status"] == s) for s in STATUSES}
@@ -248,8 +249,8 @@ class SelfCheck:
         reported by ``engine_selected``.
         """
         sel = results.get("engine_selected")
-        if not sel or sel["status"] != "ok":
-            return
+        if not sel or sel["status"] not in ("ok", "warn"):
+            return  # the selected engine was measured not to work: Claude Code is not "not needed"
         backend = (sel.get("measured") or {}).get("backend") or ""
         if not backend or backend == getattr(getattr(self.app, "claude_engine", None), "name", "claude_code"):
             return
@@ -679,7 +680,8 @@ class SelfCheck:
             measured["key_fallback"] = True
         return item("agent_engine", status, detail, measured)
 
-    def _p_engine_selected(self) -> dict:
+    def _p_engine_selected(self, results: dict[str, dict] | None = None) -> dict:
+        """The engine BUILD/FIX would use; for the agent engine its live probe (``results``) decides the status."""
         engine_fn = getattr(self.app, "engine", None)
         eng = engine_fn() if callable(engine_fn) else None
         if eng is None:
@@ -702,6 +704,10 @@ class SelfCheck:
                 detail += f"; {av.reason}"
         except Exception as exc:  # noqa: BLE001 - selection already succeeded; details are extra
             log.warning("selfcheck: availability details for %s failed: %s", name, exc)
+        probe = (results or {}).get("agent_engine") if name.endswith("openai_agent") else None
+        if probe and probe.get("status") in ("fail", "warn"):  # configured is not working: say what was measured
+            measured["probe_status"] = probe["status"]
+            return item("engine_selected", probe["status"], f"{detail}; measured: {probe.get('detail')}", measured)
         return item("engine_selected", "ok", detail, measured)
 
     def _p_hub(self) -> dict:

@@ -677,6 +677,20 @@ class ClaudeNotNeededWithAgentTests(_Base):
         self.assertEqual(report["summary"]["fail"], 0, [it for it in report["items"] if it["status"] == "fail"])
         self.assertEqual(report["overall"], "warn")
 
+    def test_a_selected_agent_engine_measured_not_to_work_fails_and_claude_stays_needed(self):
+        # every key refused (HTTP 403), no Claude installed: the report must not say the build path works
+        agent = FakeAgent(probe={"ok": False, "status": 403, "error": "HTTP 403: Authorization failed",
+                                 "tool_calls_ok": False, "hint": "the key has no inference permission"})
+        app = self.make_app(claude_engine=_missing_cli(), agent_engine=agent, hub_client=None, engine=lambda: agent)
+        items = self.by_id(SelfCheck(app).run(probe_models=True))
+        self.assertEqual(items["agent_engine"]["status"], "fail", items["agent_engine"])
+        sel = items["engine_selected"]
+        self.assertEqual(sel["status"], "fail", sel)
+        self.assertIn("measured:", sel["detail"])
+        self.assertIn("403", sel["detail"])
+        self.assertEqual(items["claude_cli"]["status"], "fail", "Claude Code is needed: the agent engine cannot build")
+        self.assertNotIn("instead", items["claude_cli"]["detail"])
+
     def test_logged_out_cli_warns_when_the_agent_engine_is_selected(self):
         # the Claude subscription ended / the login expired: the CLI is still installed
         agent = FakeAgent()

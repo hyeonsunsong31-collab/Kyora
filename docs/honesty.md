@@ -44,9 +44,11 @@ actually answered is in the events, the tiles, the log and self-check.
   PreToolUse hook to `POST /api/judge`, authenticated by a per-run token (so it works even when Kyora
   binds a specific LAN IP); the Messages-API engine and the Kyora agent engine ask the same judge in
   process before each file write and shell command. Deterministic local rules answer the obvious cases
-  (reads are allowed; path escapes, `sudo`, `git push`, writes into `.git/` are denied; a shell command
-  is only treated as read-only when its whole argument shape is safe, never when it sets an environment
-  variable or a subprocess-spawning flag), repeated calls hit a verdict cache, everything else is
+  (reads are allowed; path escapes, `sudo`, `git push`, writes into `.git/` and any read or write of
+  Kyora's key files are denied; a shell command is only treated as read-only when its whole argument
+  shape is safe and every path it names lies inside the workspace, never when it sets an environment
+  variable, prints the environment or uses a subprocess-spawning flag), repeated calls hit a verdict
+  cache, everything else is
   decided by the Kimi role (on NVIDIA's endpoint today: its fallback model, named in the judge journal
   as `judge_model`). Each decision has a deadline below the hook timeout: a verdict that arrives after
   the hook gave up is logged as late and never governs the call. If the judge cannot be reached, the
@@ -74,7 +76,7 @@ in the UI) and shown where the original would have been.
 
 | Substitution | When it happens | How it is shown |
 |---|---|---|
-| **Fallback model for a role** (Nemotron, Kimi): the next of `nvidia.<role>.fallback_models` | The endpoint says the model is gone (HTTP 404/410: skipped until the role's settings change or Kyora restarts), or it stayed overloaded or failing (HTTP 500/502/503/504 or overload wording) after the client's retries (cooldown 120 s, then it is tried first again) | `model.fallback {kind: "model", role, requested, from_model, to_model, status, reason, temporary, cooldown_s?, purpose?}`; log line "<role>: X answered HTTP 410, now answered by Y - <reason>"; the role's tile shows the answering model and "fallback from X"; every `model.request` / `model.metrics` / `model.done` / `model.error` of the call carries `requested_model` and `fallback: true`; self-check WARN "... The role is answered by the fallback model Y" |
+| **Fallback model for a role** (Nemotron, Kimi): the next of `nvidia.<role>.fallback_models` | The endpoint says the model is gone (HTTP 404/410: skipped until the role's settings change or Kyora restarts), or it stayed overloaded or failing (HTTP 500/502/503/504 or overload wording) after the client's retries (cooldown 120 s, then it is tried first again); for Nemotron's design and UI spec also when a model gave no usable answer twice (the next model is asked once) | `model.fallback {kind: "model", role, requested, from_model, to_model, status, reason, temporary, cooldown_s?, purpose?}`; log line "<role>: X answered HTTP 410, now answered by Y - <reason>"; the role's tile shows the answering model and "fallback from X"; every `model.request` / `model.metrics` / `model.done` / `model.error` of the call carries `requested_model` and `fallback: true`; self-check WARN "... The role is answered by the fallback model Y" |
 | **Shared key** (`nvidia.share_keys`, on): the other role's key on the same endpoint | A role's own key is refused (HTTP 401/403); the switch holds until the keys change in Settings or Kyora restarts | `model.fallback {kind: "key", role, model, from_key, to_key, status, reason}` with key labels only, never key material; log line "<role>: nemotron key refused (HTTP 403), now using the kimi key"; tile footer "nemotron key refused (HTTP 403), using kimi key"; self-check WARN "the nemotron key was refused (HTTP 403); the kimi key answered (nvidia.share_keys) - ..." |
 | **Agent engine model or key fallback** | The same causes inside a Kyora agent engine run, plus a model that refuses function tools | `engine.stderr {kind: "model", from_model, to_model, status, reason, temporary}` / `{kind: "key", from_key, to_key, status}` lines in the log; `engine.model_resolved {requested, active, fallback_used, reason?}`; code-engine tile "fallback from X"; self-check WARN when only a fallback model or key answered |
 | **Engine failover**: the same BUILD/FIX continues on the next available engine of `engines.order` | An engine stopped for an account or service reason: usage limit, ended subscription, credits, login, refused keys, unreachable or overloaded service, retired model (`engines.failover`, on). Task failures never fail over | `engine.failover {from, to, reason, failure_kind, kind, iteration, pinned, tree_changed}`; log line "code engine X stopped (<kind>: <reason>) - continuing with Y" (plus "its partial work is kept and the next engine is told about it" when files had changed); code-engine tile "after X stopped (<kind>)"; `run.json` `extra.engine_failovers`, `extra.engine_failures[].failover_to`, and one `extra.engine_runs` entry per attempt; slides and the deck name every model that served the run |
@@ -165,9 +167,13 @@ The keys are NVIDIA keys only: they do not work for Claude. Claude Code uses you
 login (`claude auth login`), which never leaves the Claude Code CLI; no Anthropic API key is stored
 unless you add one for the optional Messages-API engine. By default the Kyora agent engine sends the
 Kimi-slot key, then the Nemotron-slot key, to `nvidia.base_url`; a key set in `agent.api_key` goes only
-to the agent endpoint, and an agent endpoint other than NVIDIA's never receives the NVIDIA keys. Shell
-commands of the Messages-API and agent engines run with API keys, tokens and other secrets removed
-from their environment.
+to the agent endpoint, and an agent endpoint other than NVIDIA's never receives the NVIDIA keys; a
+role's key goes to the agent endpoint only when that role uses the same endpoint (a Moonshot key in the
+Kimi slot never reaches NVIDIA). Shell commands of the Messages-API and agent engines, and the Node
+logic tests the model writes, run with an allowlisted environment (what a shell and Node need, no
+credential-looking value); what they print is redacted (every configured key and token becomes
+`[redacted <label>]`) before the model, the log, `gate.json` or the FIX prompt see it. These are
+defences in depth, not a sandbox: model-written code still runs as your user.
 
 ## 8. Platform limits, stated up front
 

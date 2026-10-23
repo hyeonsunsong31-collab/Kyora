@@ -203,6 +203,13 @@ rules read: `workspace`, `run_dir`, `project_id`, `files` / `plan.files`,
 Decision order in `decide(run_id, call)`:
 
 1. **Rules** (`source: "rule"`, no model):
+   * Kyora's secrets (`rule: "kyora_secrets"`) -> deny, for every tool with a path and for `Bash`: the
+     config directory (`keys.json`, `settings.json`), `$KYORA_CONFIG_DIR`, `<KYORA_HOME>/config`, the
+     Hub token, symlinks into them, and a file named `keys.json`, `settings.json` or `hub.token` outside
+     the workspace that exists; a `Grep`/`Glob`/`LS` rooted at a directory above the config directory
+     (its search would reach the keys). Heredoc bodies are not read as paths. Claude Code also gets
+     `Read`/`Edit`/`Write` deny rules for those directories in its `--settings`, so its own permission
+     system refuses them before the hook;
    * read-only tools (`Read`, `Glob`, `Grep`, `LS`, `NotebookRead`, `TodoWrite`, `Task`, ...) -> allow;
    * `WebFetch`, `WebSearch` -> deny;
    * file tools (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`): no path -> deny; path
@@ -220,11 +227,15 @@ Decision order in `decide(run_id, call)`:
      workspace (tracking `cd`), the workspace or `.git` -> deny; a chain of
      read-only commands (`ls`, `cat`, `grep`, `find` without `-exec/-delete`,
      `node --check`, `git status|diff|log|show|...`, ...) without redirection or
-     command substitution -> allow; anything else -> defer.
+     command substitution, and with every path argument inside the workspace
+     (`$`, `~`, `/proc`, an absolute path elsewhere or a symlink-following flag
+     defer) -> allow; `env`/`printenv` (they print the environment), a leading
+     variable assignment, `xargs`/`awk`/`sed`/`tar` -> defer; anything else -> defer.
 2. **Cache** (`source: "cache"`, `cached_from: "kimi"`): per run, keyed by
    `sha256(tool_name, normalized input)`; only Kimi verdicts are cached (LRU 512).
-3. **Kimi-K3** (`source: "kimi"`): `kimi.judge(ctx, call, run_id)` must return
-   `{"decision":"allow|deny","reason","risk"}`.
+3. **The Kimi role** (`source: "kimi"`): `kimi.judge(ctx, call, run_id)` must return
+   `{"decision":"allow|deny","reason","risk"}`; `judge_model` names the model that answered this call
+   (Kimi K3, or the fallback that answers for it), never the chain's next model.
 4. **Fail-open** (`source: "unavailable"`, decision allow, risk `unknown`) when
    Kimi is not configured, raises, or returns no usable verdict; each case
    publishes `judge.unavailable{reason,tool_name,tool_use_id}`.

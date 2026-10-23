@@ -14,7 +14,7 @@ What it is not:
   [`../README.md#without-a-claude-subscription`](../README.md#without-a-claude-subscription).
 * **It does not lower the bar.** The quality gate (at least `quality.min_pass_rate` of the measured
   checks, 94 % by default, every required check, every planned acceptance test reported), the tests in
-  a real browser, Kimi's review and the fix loop are the same for every engine. A game built by this
+  a real browser, the review and the fix loop are the same for every engine. A game built by this
   engine is accepted only when it reaches the same measured bar. It may need more fix rounds or more
   time than another engine, or end below the gate (`failed_gate`).
 
@@ -42,7 +42,8 @@ measured by the full self-check and by the run itself.
 2. The system prompt is Kyora's engine prompt (`kyora/pipeline/templates/claude_system.md`, the same
    for every engine) plus a short environment note: the workspace path, how each tool behaves on this
    device, the per-answer token limit and the `kyora_check` tool. The user message is the BUILD or FIX
-   prompt (for a FIX: the failing checks and Kimi's review). Both are saved as `<run>/system_prompt.md`
+   prompt (for a FIX: the failing checks and the review - by the Kimi-role model, or by Kyora's rules
+   from the failing checks when no review model could answer). Both are saved as `<run>/system_prompt.md`
    and `<run>/prompt.txt`.
 3. Each turn is one streamed request with the conversation so far, the function tools, `tool_choice:
    "auto"`, `agent_engine.max_tokens`, `temperature` and `top_p`. The tool calls of an answer run in
@@ -52,14 +53,32 @@ measured by the full self-check and by the run itself.
    * If `index.html` or a file the plan names does not exist yet, the model is asked to create it
      (and to run `kyora_check`), at most 2 times per call. If files are still missing, the engine
      finishes and says which (`stage.progress`: "still missing: ... (the quality gate measures it)").
-   * An answer cut off at `max_tokens` without a tool call is answered with "continue", at most 3
-     times in a row; then the call ends with an error. Arguments of a tool call that were cut off are
-     returned to the model as an "invalid JSON arguments" error that says so and asks for smaller parts.
-   * An answer the endpoint stopped (`finish_reason` `content_filter`, `error`, `abort`, `cancelled`)
-     ends the call with an error.
+   * An answer whose **text** was cut off at `max_tokens` without a tool call is answered with
+     "continue", at most 3 times in a row; then the call ends with an error. Arguments of a tool call
+     that were cut off are returned to the model as an "invalid JSON arguments" error that says so and
+     asks for smaller parts.
+   * An answer cut off **while the model was still thinking** (no text, no tool call) is not answered
+     with "continue" (chat templates drop old reasoning, so the same request would come back): the
+     same turn is sent again with thinking switched off (when the model has a switch), then with
+     `max_tokens` doubled (at most 32768), at most 2 times. When the endpoint refuses the larger
+     `max_tokens` (HTTP 400/422, the model's output or context limit), the call ends with an error that
+     says the answer was cut off while thinking; no context retry is used up for it.
+   * An answer that **writes a tool call as text** (`<tool_call>`, `<|tool_call...`, `<function=`, or a
+     JSON `{"name": <tool>, "arguments": ...}`) ran nothing: the model is reminded to use function
+     calling, at most 3 times. After that the model is skipped for this endpoint (its tool calls are not
+     parsed there) and the next model of the chain continues the same conversation; with none left the
+     call fails with `failure_kind: "model"`, so the pipeline can fail over.
+   * A **first** final answer that called no tool at all, or is empty, is answered once with a
+     reminder to do the work through the tools.
+   * An answer ended with `finish_reason` `error` or `abort` (the server gave up on it) is dropped -
+     its tool calls are not run - and the same turn is retried like a transient failure (below). An
+     answer stopped with `content_filter` or `cancelled` ends the call with an error; its tool calls
+     are never run.
 5. Limits: `agent_engine.max_turns` model turns (`error_max_turns`) and `agent_engine.timeout_s` of wall
    clock for the whole call (`error_timeout`); one request may take at most 600 s (less when the wall
-   clock has less left). Cancel is honoured while a request streams and between tool calls.
+   clock has less left); at most 32 tool calls of one answer are run. Cancel is honoured while a
+   request streams, between tool calls and inside a running `bash` command or `kyora_check` (the
+   process tree is stopped at once); a tool never runs past the call's deadline.
 6. There are no server-side sessions: every BUILD and every FIX starts a new conversation from the
    prompt and the files in the work tree. A FIX is never "resumed" (`engine.session` says so when a
    resume was asked for).
@@ -71,9 +90,9 @@ JSON-encoded `view_range`, arguments encoded twice); anything else goes back to 
 
 | Tool | What it does | Judged as |
 |---|---|---|
-| `bash` | Runs one command with `<shell> -c` in the workspace root. Every call starts a fresh shell (`cd` and exported variables do not persist), runs at most 120 s (then it is killed) and returns stdout and stderr, cut to 30000 characters (the middle is elided), plus the exit code when it is not 0. | `Bash` |
+| `bash` | Runs one command with `<shell> -c` in the workspace root. Every call starts a fresh shell (`cd` and exported variables do not persist), runs at most 120 s (then its process tree is killed) and returns stdout and stderr, each captured up to 60000 characters while it runs and cut to 30000 characters (the middle is elided), plus the exit code when it is not 0. On macOS, Linux, Termux and iSH what the command left running in the background is stopped when it returns (its whole session); on Windows it is not (only a timeout or cancel ends the tree), and the tool description tells the model so. | `Bash` |
 | `str_replace_based_edit_tool` | `view` (a file with line numbers, optional `view_range`; or a directory listing two levels deep, hidden entries and `node_modules` left out, at most 1000 entries), `create` (the whole file), `str_replace` (`old_str` must occur exactly once), `insert` (`new_str` after line `insert_line`, 0 = top). `view` and the edits read UTF-8 text files of at most 4 MB. | `create` = `Write`, `str_replace`/`insert` = `Edit`, `view` = `Read` (not judged) |
-| `kyora_check` | Runs Kyora's static checks on the work tree (entry page, manifest, HTML, JSON and JavaScript syntax, local-only dependencies, size, test ids) with the run's plan, and, when Node is installed, the Node logic tests (`node --test tests/logic-tests.mjs`), as the TEST stage does. Returns the failing checks (at most 40 lines), or "all N checks pass", the checks deferred because Node is missing, and a reminder that the in-browser acceptance tests are not measured here. Off with `agent_engine.self_check_tool: false`. | not judged |
+| `kyora_check` | Runs Kyora's static checks on the work tree (entry page, manifest, HTML, JSON and JavaScript syntax, local-only dependencies, size, test ids) with the run's plan, and, when Node is installed, the Node logic tests (`node --test tests/logic-tests.mjs`), as the TEST stage does. Returns the failing checks (at most 40 lines), or "all N checks pass", the checks deferred because Node is missing, and a reminder that the in-browser acceptance tests are not measured here. Off with `agent_engine.self_check_tool: false`. | the Node run as `Bash` (`node --test tests/logic-tests.mjs`, with the test file's content); the static checks run no model code and are not judged |
 
 `bash` and the editor are the same code as the Anthropic Messages-API engine's tools
 (`kyora/models/agent_tools.py`, class `ToolLoopEngine`).
@@ -86,22 +105,30 @@ any write under `.git/`. Before a file is overwritten or edited, its previous co
 
 **Shell (bash).** The command starts in the workspace root but a shell is not a sandbox: what keeps it
 in its lane is the judge (local rules deny path escapes and destructive commands such as `sudo`,
-`git push` or writes into `.git/`; Kimi decides what the rules do not settle). Its environment is
-Kyora's own minus every variable whose name contains `API_KEY`, `APIKEY`, `TOKEN`, `SECRET`,
-`PASSWORD`, `PASSWD`, `CREDENTIAL`, `PRIVATE_KEY` or `ACCESS_KEY` (any case), and minus `CLAUDECODE`;
-the keys in `keys.json` are never put into it.
+`git push`, writes into `.git/` and reads of Kyora's key files; the Kimi-role model decides what the
+rules do not settle). Its environment is an **allowlist** (`kyora/util/envsafe.py`): what a shell, Node
+and npm need (`PATH`, `HOME`, the locale, temp directories, the Windows system variables, `PREFIX`,
+`NODE_PATH`, the proxy and CA variables, `LC_*`, `ANDROID_*`, `TERMUX_*`), minus any value that looks
+like a credential whatever its name (`sk-...`, `nvapi-...`, `ghp_...`, a URL with a password). Nothing
+else of Kyora's environment reaches it, and the keys in `keys.json` are never put into it. Everything a
+command prints is passed through Kyora's redaction before the model, the log or the journal sees it:
+every configured key and token, and every credential-looking value of Kyora's own environment, is
+replaced by `[redacted <label>]`.
 
 **kyora_check** writes no file itself. The Node logic tests it runs are files in the workspace that
-were written through the judged editor or a judged command; Node runs them with Kyora's own
-environment, exactly as the TEST stage does. Its result helps the model; it is not part of the gate:
-TEST and GATE measure everything again after the engine has finished.
+were written through the judged editor or a judged command, and running them is judged once more as
+the `Bash` command `node --test tests/logic-tests.mjs` with the file's content (a denial returns the
+judge's reason instead of a result). Node runs them as the TEST stage does: with the allowlisted
+environment, bounded output (200000 characters per stream, head and tail kept), the run's cancel, and
+the output redacted. Its result helps the model; it is not part of the gate: TEST and GATE measure
+everything again after the engine has finished.
 
 ## The judge
 
 Each `create`, `str_replace` and `insert` (as `Write` / `Edit`) and each `bash` command (as `Bash`) is
 decided by Kyora's judge service before it runs, in process (no hook): the same local rules, verdict
 cache and Kimi role as for the Claude Code hook ([`claude-code-engine.md`](claude-code-engine.md)).
-`view` and `kyora_check` are not judged. A denied call returns `Denied by the Kyora judge: <reason>`
+`view` and the static part of `kyora_check` are not judged; its Node run is (see above). A denied call returns `Denied by the Kyora judge: <reason>`
 to the model as an error and is listed in the run's `permission_denials`. When the judge itself fails,
 the call runs (fail-open), `judge.unavailable` is published with `ran_unjudged: true` and the run's
 judge statistics count it.
@@ -114,19 +141,18 @@ On a phone the agent engine runs on the phone, so the phone's own judge (and its
 
 | `keys.agent.base_url` | `keys.agent.api_key` | Endpoint | Keys, in the order tried |
 |---|---|---|---|
-| empty | empty (default) | `nvidia.base_url` | the Kimi-slot key ("kimi key"), then the Nemotron-slot key ("nemotron key") |
+| empty | empty (default) | `nvidia.base_url` | the Kimi-slot key ("kimi key"), then the Nemotron-slot key ("nemotron key") - each only when that role's own endpoint is `nvidia.base_url` |
 | empty | set | `nvidia.base_url` | that key only ("agent key") |
 | another URL | set | that URL | that key only; no NVIDIA key is ever sent there |
 | another URL | empty | that URL | none: the engine is unavailable ("no API key for the agent endpoint") |
 | same as `nvidia.base_url` | empty | `nvidia.base_url` | the NVIDIA keys, as in the default row |
+| another URL | empty, and a role's endpoint is that URL | that URL | that role's key |
 
 Only the host is shown in events and in self-check (`endpoint`), never the path or the key; keys are
-named by their label.
-
-Caveat: in the default row the agent engine uses `nvidia.base_url` even when `nvidia.kimi.base_url`
-points the Kimi role at another endpoint. If you put a non-NVIDIA key (for example a Moonshot key) into
-the Kimi slot, set `keys.agent.api_key` to a working NVIDIA key; otherwise the Kimi-slot key is sent to
-the NVIDIA endpoint, refused, and only the Nemotron-slot key is left to try.
+named by their label. A role's key is sent to the agent endpoint only when that role uses the same
+endpoint: with the Kimi role moved to `https://api.moonshot.ai/v1` and a Moonshot key in its slot, the
+agent engine on NVIDIA's endpoint uses the Nemotron-slot key alone, and the Moonshot key never reaches
+NVIDIA.
 
 ### Key fallback
 
@@ -137,17 +163,27 @@ engine now uses the nemotron key"), with labels only, never key material.
 
 ### Retries
 
-HTTP 429 and 5xx answers, and an error object that arrives inside a 200 stream before any output
-(NVIDIA's free tier sends "Service temporarily overloaded" that way), are retried by the client: up to
-4 requests in total, waiting 0.5, 1 and 2 s (for an HTTP error with `Retry-After`: what it asks, at most
-60 s). An error after
-output was delivered is not retried, because a retry would repeat that output.
+HTTP 429 and 5xx answers, an error object that arrives inside a 200 stream before any output
+(NVIDIA's free tier sends "Service temporarily overloaded" that way), and a connection that fails before
+any answer (reset, refused, DNS, a dropped TLS stream; not a timeout, which would double a wait the
+caller bounded) are retried by the client: up to 4 requests in total, waiting 0.5, 1 and 2 s (for an
+HTTP error with `Retry-After`: what it asks). An error after output was delivered is not retried,
+because a retry would repeat that output. When `Retry-After` asks for more than 60 s, nothing is
+retried: the error (with that wait) goes up at once, so the engine fails over instead of sending
+requests the endpoint already said it would refuse.
+
+On top of that the engine retries a **turn** after a transient failure (the endpoint unreachable, 429,
+5xx, an answer ended with `error`/`abort`): up to 6 times in a row, waiting 5, 10, 20, 40, 60, 60 s or
+what the endpoint asked (`Retry-After` or wording such as "try again in 250ms"), never longer than 60 s
+and never when the wait would end within 10 s of the call's deadline. Each retry is an `engine.stderr`
+line with `kind: "retry"`. Settings changed during a retry never mix endpoints: endpoint and keys
+change in one step, and a request whose endpoint changed meanwhile is not resent.
 
 ### Model chain
 
 `agent_engine.model` comes first, then `agent_engine.fallback_models` in order (default
-`z-ai/glm-5.3` -> `nvidia/nemotron-3-ultra-550b-a55b` -> `poolside/laguna-xs-2.1` ->
-`nvidia/nemotron-3-super-120b-a12b`). The next model is tried when
+`z-ai/glm-5.3` -> `nvidia/nemotron-3-super-120b-a12b` -> `nvidia/nemotron-3-ultra-550b-a55b`). The next
+model is tried when
 
 * the endpoint says the model is gone (HTTP 404 or 410): it is skipped for good while the endpoint, the
   model and the fallback list stay the same (the chain is kept across runs; it starts over when every
@@ -155,7 +191,9 @@ output was delivered is not retried, because a retry would repeat that output.
 * it stays temporarily unavailable after the client's retries (HTTP 500/502/503/504 or overload wording):
   it cools down for 120 s, moves behind the healthy models and returns to its place afterwards;
 * it refuses function tools (HTTP 400/422 that names tools or functions) before it has answered in this
-  run: it is skipped like a gone model, because this engine cannot work without tool calls.
+  run: it is skipped like a gone model, because this engine cannot work without tool calls;
+* it keeps writing its tool calls as text after 3 reminders (the endpoint does not parse them): it is
+  skipped like a gone model and the next one continues the same conversation.
 
 A refused key (401/403), an unreachable endpoint and a cancel never change the model.
 
@@ -167,9 +205,13 @@ code-engine tile shows the answering model and "fallback from <requested>"; `run
 
 ### Thinking
 
-`agent_engine.thinking` is sent as `chat_template_kwargs.enable_thinking` only to Nemotron-family
-models, which read that switch. Other families (for example `z-ai/glm-5.3`, `poolside/laguna-xs-2.1`)
-get no thinking field and run with the endpoint's default. `engine.session.effort` is `thinking` when
+`agent_engine.thinking` (default **off**) is sent as `chat_template_kwargs.enable_thinking` to
+Nemotron-family models (both ways) and, when off, to GLM models (which think by default and read the
+same switch). Other families get no thinking field and run with the endpoint's default. The default was
+chosen from a live comparison on NVIDIA's free tier on 2026-10-18 (CI, one game, one run each, not a
+benchmark): `z-ai/glm-5.3` without thinking built a game that passed the gate 28/28 on its first
+iteration (BUILD about 71 minutes); with thinking it had not finished BUILD after 85 minutes;
+`nvidia/nemotron-3-super-120b-a12b` built faster (9-16 minutes) but passed fewer checks. `engine.session.effort` is `thinking` when
 the switch was sent to the first model of the call, otherwise `default`; the tile shows "code engine ·
 thinking" in the first case. The engine has no Claude effort level.
 
@@ -200,9 +242,9 @@ A call that fails after every key, retry and fallback is classified in the engin
 | The endpoint cannot be reached | `unavailable` | next engine in `engines.order` (`engines.failover`) |
 | HTTP 401/403 for every configured key | `auth` | next engine |
 | HTTP 402, HTTP 429 after retries, or quota/credit wording | `quota` | next engine |
-| Every model gone (404/410) or refusing tools | `model` | next engine |
+| Every model gone (404/410), refusing tools, or writing its tool calls as text | `model` | next engine |
 | 5xx / overload after retries on every model | `unavailable` | next engine |
-| Max turns, wall timeout, 3 cut-off answers in a row, an answer the endpoint stopped, other errors | none | task failure: no failover, the normal rules apply |
+| Max turns, wall timeout, 3 cut-off answers in a row, an answer cut off while thinking (also after the retries), an answer the endpoint stopped, other errors | none | task failure: no failover, the normal rules apply |
 | Cancel | none | the run is cancelled |
 
 With the default order the agent engine is last, so after its own account failure no engine is left and
@@ -226,7 +268,7 @@ Failover, partial work and automatic resume are described in
   Termux's `bash`; `nodejs-lts` (installed by `install-termux.sh`) runs the Node logic tests.
 * **iOS / iPadOS (iSH)**: runs on the phone too. The shell is whatever `bash` or `sh` exists (Alpine's
   BusyBox `sh` unless you `apk add bash`). There is no Node, so `kyora_check` reports the static checks
-  and lists the Node checks as deferred, JavaScript syntax is checked later in the browser, and Kimi plans
+  and lists the Node checks as deferred, JavaScript syntax is checked later in the browser, and the Kimi role plans
   browser tests only. Everything runs under iSH's x86 emulation, so it is slow; keep iSH in the
   foreground. The unit tests of this engine run in the CI's 32-bit Alpine (iSH userland) job.
 * **On a Kyora Hub**: a hub can run this engine for its clients: it runs a job on its first available

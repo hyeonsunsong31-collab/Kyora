@@ -15,7 +15,7 @@ from pathlib import Path
 from kyora.config import KimiCfg, NemotronCfg
 from kyora.models.kimi import (
     DEFAULT_CONSTRAINTS, EXTRA_BODY_EFFORT_NOTE, GATE_NOT_PASSED_REASON, MAX_INTAKE_IMAGES, Kimi, KimiConversation,
-    apply_gate_guard,
+    accepts_images, apply_gate_guard,
     build_intake_content, normalize_intake, normalize_plan, normalize_review, normalize_rel_path, normalize_verdict,
     truncate_strings, unwrap_payload,
 )
@@ -867,6 +867,77 @@ class KimiReviewTests(_MockCase):
                 self.assertEqual(apply_gate_guard({"decision": "complete", "reasons": []}, gate)["decision"], "fix")
         with self.assertRaises(ValueError):
             normalize_review({"decision": "ship it"})
+
+
+class KimiVisionTests(_MockCase):
+    """Screenshots go only to a model that takes images; the result names the model that really answered."""
+
+    GATE_FAIL = KimiReviewTests.GATE_FAIL
+    REVIEW = {"decision": "fix", "reasons": ["Score never increments."], "fix_instructions": "1. Count coins.",
+              "suspected_files": ["src/game.js"]}
+    ULTRA, GLM = "nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3"
+
+    def fallback_kimi(self, *fallbacks) -> Kimi:
+        cfg = KimiCfg(reasoning_effort="max", judge_reasoning_effort="high", effort_field="top_level")
+        return Kimi(self.client, KIMI_MODEL, cfg, self.bus, fallback_models=list(fallbacks))
+
+    def test_a_text_only_fallback_gets_a_note_instead_of_the_screenshots(self):
+        gone = {"status": 410, "error_body": {"status": 410, "detail": "end of life"}}
+        self.handler = lambda req: gone if req["model"] == KIMI_MODEL else tool_response("emit_review", self.REVIEW)
+        meta: dict = {}
+        out = self.fallback_kimi(self.ULTRA).review({"iteration": 1}, self.GATE_FAIL, [PNG_1x1] * 2, meta=meta)
+        sent = self.mock.requests[-1]
+        self.assertEqual(sent["model"], self.ULTRA)
+        self.assertFalse(has_image(sent))
+        self.assertIn("2 image(s) left out", json.dumps(sent["messages"]))
+        self.assertNotIn("up to 2 screenshots", _system_text(sent))  # not told to look at images it never gets
+        self.assertIn("up to 0 screenshots", _system_text(sent))
+        self.assertTrue(has_image(self.mock.requests[0]), "Kimi K3 itself is sent the screenshots")
+        self.assertEqual((out["model"], out["screenshots"], out["images_sent"]), (self.ULTRA, 2, 0))
+        self.assertEqual((meta["model"], meta["requested_model"], meta["fallback"]), (self.ULTRA, KIMI_MODEL, True))
+
+    def test_a_request_refused_with_images_is_retried_once_without_them_and_not_marked_busy(self):
+        vision = "meta/llama-3.2-90b-vision-instruct"
+
+        def handler(req):
+            if has_image(req):  # what NVIDIA's gateway did with screenshots: an error before any output
+                return {"status": 500, "error_body": {"error": {"message": "Internal error", "code": 500}}}
+            return tool_response("emit_review", self.REVIEW)
+        self.handler = handler
+        k = Kimi(self.client, vision, KimiCfg("max", "high", "top_level"), self.bus)
+        out = k.review({"iteration": 1}, self.GATE_FAIL, [PNG_1x1])
+        self.assertEqual((out["model"], out["images_sent"], out["screenshots"]), (vision, 0, 1))
+        self.assertEqual([has_image(r) for r in self.mock.requests][-1], False)
+        self.assertEqual(k.chain.busy(), {}, "a refusal of the images is no overload of the model")
+
+    def test_judge_names_the_model_that_answered_not_the_chain_after_the_call(self):
+        gone = {"status": 410, "error_body": {"status": 410, "detail": "end of life"}}
+        verdict = {"decision": "allow", "reason": "planned file", "risk": "low"}
+        self.handler = lambda req: gone if req["model"] == KIMI_MODEL else tool_response("verdict", verdict)
+        k = self.fallback_kimi(self.GLM, self.ULTRA)
+        out = k.judge({"workspace": "/w"}, {"tool_name": "Write", "tool_input": {"file_path": "/w/index.html"}})
+        self.assertEqual((out["judge_model"], out["requested_model"]), (self.GLM, KIMI_MODEL))
+
+    def test_vision_hints(self):
+        for m in ("moonshotai/kimi-k3", "nvidia/llama-3.1-nemotron-nano-vl-8b-v1", "meta/llama-3.2-90b-vision-instruct",
+                  "google/gemma-3-27b-it", "microsoft/phi-4-multimodal-instruct"):
+            self.assertTrue(accepts_images(m), m)
+        for m in ("nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3", "nvidia/nemotron-3-super-120b-a12b", "", None):
+            self.assertFalse(accepts_images(m), m)
+
+
+class LiveSettingsTests(unittest.TestCase):
+    def test_effort_and_thinking_changed_in_settings_reach_the_roles(self):
+        state = {"kimi": KimiCfg("max", "max", "top_level"), "nemotron": NemotronCfg(thinking_for_design=True)}
+        client = NIMClient("http://127.0.0.1:9/v1", "nvapi-x")
+        k = Kimi(client, KIMI_MODEL, lambda: state["kimi"], EventBus(None))
+        n = Nemotron(client, NEMOTRON_MODEL, EventBus(None), lambda: state["nemotron"])
+        self.assertEqual(k.effort_extra(None, KIMI_MODEL), {"reasoning_effort": "max"})
+        state["kimi"] = KimiCfg("low", "high", "extra_body")
+        state["nemotron"] = NemotronCfg(thinking_for_design=False)
+        self.assertEqual(k.effort_extra(None, KIMI_MODEL), {"chat_template_kwargs": {"reasoning_effort": "low"}})
+        self.assertEqual(k.judge_reasoning_effort, "high")
+        self.assertFalse(n.thinking_for_design)
 
 
 class ConcurrencyTests(_MockCase):

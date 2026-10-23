@@ -162,9 +162,10 @@ Not a launcher target, but the same code runs: `python3 kyora.pyz serve --open` 
 
 * macOS: resolving the machine's own name can take seconds (`<name>.local` over mDNS), which made
   `GET /api/status` so slow on the GitHub macOS runner that the UI, the release check and several tests
-  timed out. LAN addresses now come from the default route,
-  and name lookups run with a 1 s budget and are cached. `node --check` errors keep their line numbers
-  although Node prints the `/private/var/...` real path of the temp directory.
+  timed out. LAN addresses now come from the default route, and name lookups run with a 1 s budget and
+  are cached. Kyora's HTTP server also binds without the reverse lookup that Python's `http.server` runs
+  between `bind()` and `listen()`. `node --check` errors keep their line numbers although Node prints the
+  `/private/var/...` real path of the temp directory.
 
 ## Runtime data
 

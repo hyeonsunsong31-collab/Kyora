@@ -97,7 +97,7 @@
           '<td><b>' + U().esc(it.label || it.id) + '</b><div style="color:var(--fg-muted);word-break:break-word">' + U().esc(it.detail || '') + '</div></td>' +
           '<td style="font-family:var(--font-mono);font-size:var(--fs-0);min-width:120px">' + fmtMeasured(it.measured) + '</td></tr>';
       }).join('') + '</tbody></table></div>' +
-      (report.probe_models === false ? '<p class="help" style="margin:8px 0 0;color:var(--fg-subtle);font-size:var(--fs-0)">Nemotron and Kimi K3 were not contacted in this report. "Run full check" sends one tiny request to each and measures the latency.</p>' : '');
+      (report.probe_models === false ? '<p class="help" style="margin:8px 0 0;color:var(--fg-subtle);font-size:var(--fs-0)">The Nemotron and Kimi roles were not contacted in this report. "Run full check" sends one tiny request to each and measures the latency.</p>' : '');
   }
 
   /* ---------------------------------------------------------------- platform */

@@ -266,6 +266,8 @@ class SettingsRoundTripTests(_AppBase):
             ({"settings": {"agent_engine.max_turns": 0}}, "agent_engine.max_turns"),
             ({"settings": {"agent_engine.temperature": 2.5}}, "agent_engine.temperature"),
             ({"settings": {"agent_engine.top_p": -0.1}}, "agent_engine.top_p"),
+            ({"settings": {"agent_engine.top_p": 1.2}}, "agent_engine.top_p"),
+            ({"settings": {"agent_engine.top_p": 0}}, "agent_engine.top_p"),
             ({"settings": {"agent_engine.model": "  "}}, "agent_engine.model"),
             ({"settings": {"agent_engine.enabled": "yes"}}, "agent_engine.enabled"),
             ({"settings": {"engines.order": ["openai_agent", "gpt"]}}, "engines.order"),

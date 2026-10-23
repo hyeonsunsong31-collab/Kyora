@@ -91,14 +91,15 @@ class App:
 
         def _nemotron():
             from .models.nemotron import Nemotron
-            return Nemotron(self.nim_nemotron, cfg.nvidia.nemotron.model, self.bus, cfg.nemotron,
+            # lambdas, not snapshots: effort and thinking changed in Settings apply to the next call
+            return Nemotron(self.nim_nemotron, cfg.nvidia.nemotron.model, self.bus, lambda: self.config.nemotron,
                             fallback_models=cfg.nvidia.nemotron.fallback_models)
         if self.nim_nemotron:
             self.nemotron = self._try("nemotron", _nemotron)
 
         def _kimi():
             from .models.kimi import Kimi
-            return Kimi(self.nim_kimi, cfg.nvidia.kimi.model, cfg.kimi, self.bus,
+            return Kimi(self.nim_kimi, cfg.nvidia.kimi.model, lambda: self.config.kimi, self.bus,
                         fallback_models=cfg.nvidia.kimi.fallback_models)
         if self.nim_kimi:
             self.kimi = self._try("kimi", _kimi)

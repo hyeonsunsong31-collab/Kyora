@@ -94,7 +94,7 @@
 
   K.util = { $, $$, esc, lsGet, lsSet, toDate, fmtClock, fmtDate, relTime, debounce, unwrapList, pctText, clip, errText, enc, previewOrigin, previewHref };
 
-  /* Judge verdict counters of a run: decisions plus where each verdict came from (rule, cache, Kimi K3). */
+  /* Judge verdict counters of a run: decisions plus where each verdict came from (rule, cache, the Kimi role's model). */
   function emptyJudge() { return { allowed: 0, denied: 0, unavailable: 0, rule: 0, cached: 0, kimi: 0 }; }
 
   /* ================================================================== store */
@@ -427,10 +427,10 @@
       if (comp[key]) out.push(chipHtml(name + ': configured', 'info', 'Client configured. Reachability and latency are measured in Self-check, not assumed.'));
       else out.push(chipHtml(name + ': missing', 'danger', missing[key] || missing.nim_client || 'component not loaded'));
     };
-    model('Nemotron-3-Ultra', 'nemotron');
-    model('Kimi K3', 'kimi');
-    if (comp.judge && comp.kimi) out.push(chipHtml('Judge: rules + Kimi K3', 'info', 'Write, Edit, MultiEdit, NotebookEdit and Bash calls of the code engine pass through the judge before they run: local rules allow planned files, standard game paths and read-only commands, Kimi K3 decides the rest. Read, Glob and Grep are not judged.'));
-    else if (comp.judge) out.push(chipHtml('Judge: rules only', 'warn', 'Kimi K3 is not configured: only built-in rules judge Write/Edit/Bash calls; calls the rules do not settle are allowed unjudged and counted as unavailable.'));
+    model('Nemotron role', 'nemotron');
+    model('Kimi role', 'kimi');
+    if (comp.judge && comp.kimi) out.push(chipHtml('Judge: rules + Kimi-role model', 'info', 'Write, Edit, MultiEdit, NotebookEdit and Bash calls of the code engine pass through the judge before they run: local rules allow planned files, standard game paths and read-only commands; the Kimi role\'s model (Kimi K3, or the fallback model that answers for it - the log names it) decides the rest. Read, Glob and Grep are not judged.'));
+    else if (comp.judge) out.push(chipHtml('Judge: rules only', 'warn', 'The Kimi role is not configured: only built-in rules judge Write/Edit/Bash calls; calls the rules do not settle are allowed unjudged and counted as unavailable.'));
     else out.push(chipHtml('Judge: missing', 'danger', missing.judge || 'not loaded'));
     // a missing Claude Code is only a danger when no other engine can run BUILD/FIX
     const anyEngine = !!(st.selected_engine && st.selected_engine.available);
@@ -940,10 +940,12 @@
     else if (typeof d.checks === 'number') parts.push(d.checks + ' total');
     return parts.join(', ') || 'done';
   }
+  /* "Kimi role · nvidia/nemotron-3-ultra-550b-a55b": the role and the model that really answered. */
   function sysName(role, model, backend) {
     const key = K.metrics.systemFor(role, model, backend);
     const s = K.metrics.SYSTEMS.find((x) => x.key === key);
-    return s ? s.name : (role || model || 'model');
+    const name = s ? s.name : (role || 'model');
+    return model && model !== name ? name + ' · ' + model : name;
   }
 
   /* Log label of the engine's own text: Claude backends say "claude", Kyora's agent engine "agent". */
@@ -1059,7 +1061,7 @@
         break;
       case 'model.metrics': {
         ctx.delta = null;
-        const parts = [sysName(d.role, d.model) + (d.role ? ' (' + d.role + ')' : '')];
+        const parts = [sysName(d.role, d.model) + (d.purpose ? ' (' + d.purpose + ')' : '')];
         if (typeof d.tps === 'number') parts.push(K.metrics.fmtNum(d.tps) + ' tok/s');
         if (d.ttft_ms != null) parts.push('TTFT ' + K.metrics.fmtMs(d.ttft_ms));
         if (d.total_ms != null) parts.push('total ' + K.metrics.fmtMs(d.total_ms));
@@ -1125,7 +1127,7 @@
         else if (d.source === 'cache') ctx.judge.cached += 1;
         else if (d.source === 'kimi') ctx.judge.kimi += 1;
         out.push(line(ev, 'judge', 'judge', d.decision === 'deny' ? 'deny' : 'allow',
-          (d.tool_name ? d.tool_name + ': ' : '') + (d.reason || '') + ' (' + (d.source || 'judge') + (d.latency_ms != null ? ', ' + K.metrics.fmtMs(d.latency_ms) : '') + ')', d.decision === 'deny' ? 'deny' : 'allow'));
+          (d.tool_name ? d.tool_name + ': ' : '') + (d.reason || '') + ' (' + (d.source === 'kimi' && d.judge_model ? 'judged by ' + d.judge_model : (d.source || 'judge')) + (d.latency_ms != null ? ', ' + K.metrics.fmtMs(d.latency_ms) : '') + ')', d.decision === 'deny' ? 'deny' : 'allow'));
         break;
       case 'judge.unavailable':
         ctx.judge.unavailable += 1;
@@ -1167,7 +1169,8 @@
         break;
       case 'review.decision':
         ctx.review = d;
-        out.push(line(ev, 'judge', 'judge', 'review', 'review: ' + (d.decision || '?') + (Array.isArray(d.reasons) && d.reasons.length ? ' - ' + d.reasons.join('; ') : '')));
+        // who decided: the Kimi role's model (named), or Kyora's rules when that model could not answer
+        out.push(line(ev, 'judge', 'judge', 'review', (d.source === 'rules' ? 'review by rules (no model answered)' : 'review' + (d.model ? ' by ' + d.model : '') + (d.screenshots > 0 && d.images_sent === 0 ? ', screenshots not sent (the model takes no images)' : '')) + ': ' + (d.decision || '?') + (Array.isArray(d.reasons) && d.reasons.length ? ' - ' + d.reasons.join('; ') : '')));
         break;
       case 'slide.created':
         ctx.slide = d.number;
@@ -1432,7 +1435,8 @@
     if (!w) return; // hidden view: rendered when shown
     lastChartWidth = w;
     const stages = ctx ? ctx.stages : {};
-    host.innerHTML = K.renderPipelineChart(stages, { width: w, threshold: gateThreshold(ctx), backend: ctx && ctx.engine ? ctx.engine.backend : '' });
+    const roleModels = ctx && ctx.metrics ? { kimi: ctx.metrics.kimi.model, nemotron: ctx.metrics.nemotron.model } : {};
+    host.innerHTML = K.renderPipelineChart(stages, { width: w, threshold: gateThreshold(ctx), backend: ctx && ctx.engine ? ctx.engine.backend : '', models: roleModels });
     const summary = STAGE_IDS.map((id) => id + ' ' + ((stages[id] && stages[id].status) || 'idle')).join(', ');
     host.setAttribute('aria-label', 'Pipeline stage chart: ' + summary);
   }
@@ -1468,9 +1472,10 @@
     if (!host) return;
     const j = ctx ? ctx.judge : emptyJudge();
     const cell = (tone, n, key, label) => '<div class="counter" data-tone="' + tone + '" data-counter="' + key + '"><b>' + (ctx ? esc(n) : '-') + '</b><span>' + esc(label || key) + '</span></div>';
-    // verdict sources: local rules and the per-run cache answer without a model call; only "Kimi K3" asked Kimi
+    // verdict sources: local rules and the per-run cache answer without a model call; only "by model" asked the
+    // Kimi role's model (Kimi K3 or its fallback; each verdict in the log names the model that judged)
     host.innerHTML = cell('ok', j.allowed, 'allowed') + cell('danger', j.denied, 'denied') + cell('warn', j.unavailable, 'unavailable') +
-      cell('', j.rule, 'rule', 'by rule') + cell('', j.cached, 'cached') + cell('', j.kimi, 'kimi', 'by Kimi K3');
+      cell('', j.rule, 'rule', 'by rule') + cell('', j.cached, 'cached') + cell('', j.kimi, 'kimi', 'by model');
   }
 
   function renderControls(ctx) {
@@ -1506,7 +1511,8 @@
       else hint = 'Fix the cause, then press Resume; the run re-enters at the blocked stage.';
       out.push('<div class="notice" data-tone="warn" role="status"><strong>BLOCKED:</strong> ' + esc(reason) + '<br><span>' + esc(hint) + '</span></div>');
     } else if (st === 'awaiting_approval') {
-      out.push('<div class="notice" data-tone="info" role="status"><strong>Plan ready.</strong> Kimi K3 produced the plan and acceptance tests; approve to continue to design and build (Settings › Quality › require plan approval).</div>');
+      const planner = (ctx.metrics && ctx.metrics.kimi && ctx.metrics.kimi.model) || 'model not reported';
+      out.push('<div class="notice" data-tone="info" role="status"><strong>Plan ready.</strong> The Kimi role (' + esc(planner) + ') produced the plan and acceptance tests; approve to continue to design and build (Settings › Quality › require plan approval).</div>');
     } else if (st === 'failed_gate') {
       out.push('<div class="notice" data-tone="warn" role="status"><strong>Below the gate.</strong> ' + (ctx.slide != null ? 'Slide v' + esc(ctx.slide) + ' was committed but ' : 'The result ') + 'is not complete: measured ' + esc(g ? pctText(g.pass_rate) : '-') + ' after the maximum number of fix iterations.</div>');
     } else if (st === 'failed') {

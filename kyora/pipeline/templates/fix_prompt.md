@@ -3,7 +3,7 @@ The quality gate measured iteration $iteration of "$title" at $pass_pct % ($pass
 Failing or missing checks:
 $failing_list
 
-Kimi K3 reviewed the result and asks for these fixes:
+$reviewer asks for these fixes:
 $fix_instructions
 
 Files it suspects: $suspected_files

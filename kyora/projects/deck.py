@@ -16,7 +16,7 @@ import html
 import logging
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from ..util.fs import atomic_write_text, read_json, safe_join
 
@@ -25,7 +25,9 @@ if TYPE_CHECKING:  # pragma: no cover
 
 log = logging.getLogger("kyora.projects.deck")
 
-HONESTY_TEXT = ("Kyora orchestrates NVIDIA Nemotron-3-Ultra, Kimi K3, Claude Code and NVIDIA Tokkio over their APIs. "
+HONESTY_TEXT = ("Kyora orchestrates NVIDIA Nemotron-3-Ultra, Kimi K3, a code engine (Claude Code, the Anthropic API, "
+                "a Kyora Hub or the Kyora agent engine) and NVIDIA Tokkio over their APIs; a role whose model is "
+                "unavailable is answered by its configured fallback model, named in this deck where it was recorded. "
                 "Every number in this deck was measured by this project's own runs.")
 SECTION_IDS = ("cover", "concept", "design", "architecture", "screenshots", "tests", "changelog", "honesty")
 MAX_SCREENSHOTS = 8
@@ -42,6 +44,45 @@ _BACKEND_LABELS = {"claude_code": "Claude Code", "anthropic_api": "Anthropic API
                    "hub:claude_code": "Claude Code on the Kyora Hub", "hub:anthropic_api": "Anthropic API (Claude) on the Kyora Hub",
                    "hub:openai_agent": "Kyora agent engine on the Kyora Hub (not a Claude model)",
                    "import": "imported ZIP - no code engine ran"}
+# labels that fit an architecture node; a backend without one is shortened, never replaced by another engine's name
+_SHORT_BACKEND = {"claude_code": "Claude Code", "anthropic_api": "Anthropic API", "hub": "Kyora Hub",
+                  "openai_agent": "Kyora agent", "hub:claude_code": "Claude Code (Hub)",
+                  "hub:anthropic_api": "Anthropic API (Hub)", "hub:openai_agent": "Kyora agent (Hub)"}
+
+
+def _short_backend(backend: Any) -> str:
+    label = _SHORT_BACKEND.get(str(backend)) or _BACKEND_LABELS.get(str(backend)) or str(backend)
+    return label if len(label) <= 22 else label[:21] + "…"
+
+
+def _served(run: "Run | None", engine: Mapping | None = None) -> list[dict]:
+    """``{"backend", "model"}`` of every engine call that served the version, in order (run or slide meta)."""
+    out: list[dict] = []
+    calls = (getattr(run, "extra", None) or {}).get("engine_runs") or [] if run is not None else []
+    for c in calls:
+        if isinstance(c, dict) and c.get("active_model"):
+            item = {"backend": c.get("backend"), "model": str(c["active_model"])}
+            if item not in out:
+                out.append(item)
+    if not out and isinstance(engine, Mapping):
+        out = [dict(e) for e in engine.get("served") or [] if isinstance(e, Mapping) and e.get("model")]
+    return out
+
+
+def _served_text(served: list[dict]) -> str:
+    """"Kyora agent engine (not a Claude model) (z-ai/glm-5.3), then Claude Code (claude-fable-5-1)"."""
+    return ", then ".join(f"{_BACKEND_LABELS.get(str(e.get('backend')), e.get('backend') or 'engine')} ({e['model']})"
+                          for e in served)
+
+
+def _role_model(run: "Run | None", *stages: str) -> str | None:
+    """The model that answered a role's stage of ``run`` (``extra.role_models``), when recorded."""
+    rec = (getattr(run, "extra", None) or {}).get("role_models") or {} if run is not None else {}
+    for st in stages:
+        m = (rec.get(st) or {}).get("model") if isinstance(rec.get(st), dict) else None
+        if m:
+            return str(m)
+    return None
 
 
 def esc(value: Any) -> str:
@@ -360,7 +401,10 @@ class DeckBuilder:
         engine = _run_engine(run) or \
                  ((slide or {}).get("engine") if isinstance((slide or {}).get("engine"), dict) else None) or {}
         eng_line = ""
-        if engine.get("backend"):
+        served = _served(run, engine)
+        if len(served) > 1:  # after a failover: each engine with its own model, in order
+            eng_line = f"<p class=\"muted\">Code engines: {esc(_served_text(served))}</p>"
+        elif engine.get("backend"):
             model = engine.get("active_model")
             eng_line = (f"<p class=\"muted\">Code engine: {esc(_BACKEND_LABELS.get(engine.get('backend'), engine.get('backend')))}"
                         + (f" · {'models' if ' + ' in str(model) else 'model'} {esc(model)}" if model else "")
@@ -439,22 +483,29 @@ class DeckBuilder:
                  ((slide or {}).get("engine") if isinstance((slide or {}).get("engine"), dict) else {}) or {}
         backend = engine.get("backend")
         models = [m for m in str(engine.get("active_model") or "").split(" + ") if m]
+        served = _served(run, engine)
+        backends = list(dict.fromkeys(str(e.get("backend")) for e in served))
         if backend == "import":  # a slide imported from a ZIP: no code engine built it
             engine_label, model = "imported ZIP", "no code engine ran"
         elif not backend:
             engine_label, model = "not built yet", "no code engine ran"
+        elif len(backends) > 1:
+            engine_label, model = f"{len(backends)} code engines", "each below"
         else:
-            engine_label = _BACKEND_LABELS.get(backend, str(backend))
-            engine_label = engine_label if len(engine_label) <= 22 else "Claude Code"
+            engine_label = _short_backend(backend)
             model = (models[0] if len(models) == 1 else f"{len(models)} models (below)" if models
                      else engine.get("requested_model") or "model not resolved")
         threshold = (gate or {}).get("threshold")
         if threshold is None and run is not None and isinstance(run.gate, dict):
             threshold = run.gate.get("threshold")
+        # role nodes name the model that answered when the run recorded it (a fallback answers a retired model)
+        kimi_intake = _role_model(run, "intake") or "Kimi role"
+        kimi_plan = _role_model(run, "plan") or "Kimi role"
+        nemo = _role_model(run, "design", "ui_spec") or "Nemotron role"
         nodes = [
-            ("Intake", "Kimi K3", "vision intake"),
-            ("Plan", "Kimi K3", "plan + tests"),
-            ("Design", "Nemotron-3-Ultra", "GDD + UI spec"),
+            ("Intake", kimi_intake.split("/")[-1][:22], "intake"),
+            ("Plan", kimi_plan.split("/")[-1][:22], "plan + tests"),
+            ("Design", nemo.split("/")[-1][:22], "GDD + UI spec"),
             ("Build", engine_label, str(model)[:24]),
             ("Test", "browser + node", "tests"),
             ("Gate", f"gate {_threshold_pct(threshold)}", "measured"),
@@ -479,15 +530,25 @@ class DeckBuilder:
         gx = x0 + 5 * (w + gap)
         svg.append(f"<path d=\"M{gx + w / 2:g},{y0 + h + 4} v26 H{x0 + 3 * (w + gap) + w / 2:g} v-22\" class=\"edge dashed\" "
                    f"marker-end=\"url(#arrow)\"/>"
-                   f"<text x=\"{(gx + bx + w) / 2:g}\" y=\"{y0 + h + 46}\" class=\"sys2\">below threshold: Kimi K3 review → fix</text>")
-        svg.append(f"<text x=\"{bx + w / 2:g}\" y=\"{y0 - 14}\" class=\"sys2\">writes + shell judged: local rules, then Kimi K3</text>")
+                   f"<text x=\"{(gx + bx + w) / 2:g}\" y=\"{y0 + h + 46}\" class=\"sys2\">below threshold: Kimi-role review → fix</text>")
+        svg.append(f"<text x=\"{bx + w / 2:g}\" y=\"{y0 - 14}\" class=\"sys2\">writes + shell judged: local rules, then the Kimi-role model</text>")
         svg.append("</svg>")
-        served = (f"<p class=\"muted\">Models that served the code engine for this version: {esc(', '.join(models))}.</p>"
-                  if len(models) > 1 else "")
+        if len(served) > 1:
+            served_p = f"<p class=\"muted\">Code engines that served this version, in order: {esc(_served_text(served))}.</p>"
+        elif len(models) > 1:
+            served_p = f"<p class=\"muted\">Models that served the code engine for this version: {esc(', '.join(models))}.</p>"
+        else:
+            served_p = ""
+        roles = {"intake": _role_model(run, "intake"), "plan": _role_model(run, "plan"),
+                 "design": _role_model(run, "design", "ui_spec")}
+        answered = "; ".join(f"{k} by {v}" for k, v in roles.items() if v)
         return ("<section id=\"architecture\" class=\"slide\"><h2>Architecture</h2>" + "".join(svg) +
-                "<p class=\"muted\">Fixed roles over their own APIs: Kimi K3 plans, judges and reviews; "
-                "NVIDIA Nemotron-3-Ultra writes the design; the code engine implements; tests run in a real "
-                "browser and Node; the gate decides from measured results.</p>" + served + "</section>")
+                "<p class=\"muted\">Fixed roles over their own APIs: the Kimi role (Kimi K3, or its configured "
+                "fallback model) plans, judges and reviews; the Nemotron role (Nemotron-3-Ultra or its fallback) "
+                "writes the design; the code engine implements; tests run in a real browser and Node; the gate "
+                "decides from measured results."
+                + (f" Models that answered this version's roles: {esc(answered)}." if answered else "")
+                + "</p>" + served_p + "</section>")
 
     def _screenshots(self, d: dict) -> str:
         shots = d["screenshots"]
@@ -557,9 +618,13 @@ class DeckBuilder:
         else:
             g = "no gate"
         engine = engine if isinstance(engine, dict) else {}
-        eng = _BACKEND_LABELS.get(engine.get("backend"), engine.get("backend") or "engine n/a")
-        if engine.get("active_model"):
-            eng += f" · {engine.get('active_model')}"
+        served = _served(None, engine)
+        if len(served) > 1:
+            eng = _served_text(served)
+        else:
+            eng = _BACKEND_LABELS.get(engine.get("backend"), engine.get("backend") or "engine n/a")
+            if engine.get("active_model"):
+                eng += f" · {engine.get('active_model')}"
         par = f"v{parent}" if parent is not None else "—"
         return (f"<li><span class=\"ver\">v{esc(number)}</span> <strong>{esc(title)}</strong>"
                 f"<span class=\"muted\"> · {esc(date)} · {esc(g)} · {esc(eng)} · parent {esc(par)}</span></li>")

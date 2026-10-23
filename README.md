@@ -126,16 +126,17 @@ in a source checkout).
    (the full check sends it one tool-call request), the selected code engine, Tokkio and Hub
    reachability, and the LAN URLs. Fix anything marked FAIL first; WARN says what was substituted.
 2. **Create a project** - *New*, give it a name. Optionally drop attachments: reference images (sent
-   as images to the model that answers the Kimi role; whether a fallback model reads them depends on
-   that model), design notes, code, or a game ZIP to import as the base.
+   as images only to a model that takes images - Kimi K3 or a vision model; a text-only fallback is told
+   they were left out), design notes, code, or a game ZIP to import as the base.
 3. **Run** - write the prompt ("a one-button endless runner with a day/night cycle, touch controls")
    and press *Run pipeline*. The pipeline chart shows each stage with measured times; the live log
    streams model output, the code engine's tool calls, every judge verdict and every model, key or
    engine substitution; the metrics tiles show time to first token, tokens/s and token counts per model.
 4. **Test and gate** - when BUILD finishes, the browser test harness runs the acceptance tests in your
    browser (keep the tab open). The gate shows `passed / total` and the pass rate against the configured
-   threshold (default 94 %, `quality.min_pass_rate`). Below it, Kimi K3 reviews and the code engine fixes,
-   up to `quality.max_fix_iterations` rounds (default 3).
+   threshold (default 94 %, `quality.min_pass_rate`). Below it, the Kimi role reviews (the log names the
+   model that answered; when none can, Kyora's rules turn the failing checks into the fix instructions)
+   and the code engine fixes, up to `quality.max_fix_iterations` rounds (default 3).
 5. **Preview on your phone** - *Open on another device* shows a LAN link and QR code (the PC must run
    `kyora hub` or `serve --host 0.0.0.0` with *Settings -> hub.expose_ui* on, the phone must be on
    the same network, and the PC firewall must let in both ports, 8765 for the UI and 8766 for games).
@@ -249,10 +250,11 @@ show the current state.
   for 120 s and the Nemotron role continues on `nvidia/nemotron-3-super-120b-a12b` (then
   `nvidia/nemotron-3.5-super-vl-120b-a12b`); after the cooldown it returns to Ultra. `model.fallback`
   says `temporary: true`.
-* **A live UI-spec call once spent all 12288 tokens in thinking mode and arrived truncated.** A Nemotron
-  design or UI-spec answer that is cut off or unusable is now asked for once more without thinking and
-  with twice the budget (at most 32768 tokens); the Kimi role's repair of a cut-off answer gets twice the
-  budget (at most 65536) and effort `low`.
+* **A live UI-spec call once spent all 12288 tokens in thinking mode and arrived truncated.** Nemotron's
+  design and UI-spec calls are now sampled at the model card's defaults (temperature 1.0, top_p 0.95);
+  an answer that is cut off or unusable is asked for once more without thinking, as plain JSON text with
+  the same budget, and then once from the next model of the Nemotron role's chain (`model.fallback`).
+  The Kimi role's repair of a cut-off answer gets twice the budget (at most 65536) and effort `low`.
 
 ## Hub mode (phones and tablets)
 
@@ -395,10 +397,12 @@ decides who counts as "the same machine" carefully.
   one as if it had served. Details: [`docs/claude-code-engine.md`](docs/claude-code-engine.md).
 * **Anthropic API engine** (`anthropic_api`): the same `claude_code.model`, `fallback_models` and
   `effort` on the Messages API, with Kyora's judged `bash` and file-editor tools.
-* **Kyora agent engine** (`openai_agent`): `z-ai/glm-5.3` and its fallbacks at `temperature` 0.6,
-  `top_p` 0.95, at most 16384 output tokens per answer, at most 80 turns. It has no Claude effort level;
-  `agent_engine.thinking` is sent only to models that read a thinking switch (the Nemotron family).
-  Details: [`docs/agent-engine.md`](docs/agent-engine.md).
+* **Kyora agent engine** (`openai_agent`): `z-ai/glm-5.3`, then `nvidia/nemotron-3-super-120b-a12b` and
+  `nvidia/nemotron-3-ultra-550b-a55b`, at `temperature` 0.6, `top_p` 0.95 (at most 1), at most 16384
+  output tokens per answer, at most 80 turns. It has no Claude effort level; `agent_engine.thinking`
+  (default off: in one live comparison on 2026-10-18 GLM-5.3 without thinking passed the gate 28/28,
+  with thinking it had not finished BUILD after 85 minutes) is sent to the models that read a thinking
+  switch (Nemotron, and GLM's switch-off). Details: [`docs/agent-engine.md`](docs/agent-engine.md).
 * **Kimi K3** (`moonshotai/kimi-k3`; retired on NVIDIA's free endpoint, see
   [NVIDIA status](#nvidia-status-measured-2026-10-18)): temperature 1.0, top_p 1.0, `reasoning_effort` max
   for planning, judging and reviewing. A fallback model gets its own controls instead: a Nemotron model
@@ -410,10 +414,10 @@ decides who counts as "the same machine" carefully.
   verdict at max effort takes seconds; lower `kimi.judge_reasoning_effort` to `high` or `low` for faster
   builds. The Pipeline view's Judge card counts how many verdicts came from rules, the cache and Kimi.
 * **Nemotron-3-Ultra** (`nvidia/nemotron-3-ultra-550b-a55b`, fallbacks
-  `nvidia/nemotron-3-super-120b-a12b`, `nvidia/nemotron-3.5-super-vl-120b-a12b`): thinking on
-  (temperature 1.0, top_p 0.95) for design and UI spec, off (temperature 0.2) for narration; a design or
-  UI-spec answer that is cut off or unusable is asked for once more without thinking and with twice the
-  budget.
+  `nvidia/nemotron-3-super-120b-a12b`, `nvidia/nemotron-3.5-super-vl-120b-a12b`): design and UI spec with
+  thinking on (`nemotron.thinking_for_design`) at temperature 1.0, top_p 0.95; an answer that is cut off
+  or unusable is asked for once more without thinking as plain JSON, then once from the next model of
+  the chain. Narration with thinking off at temperature 0.2.
   Reference and published scores: [`docs/nemotron-reference.md`](docs/nemotron-reference.md).
 
 ## Troubleshooting

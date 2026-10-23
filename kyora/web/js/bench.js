@@ -16,7 +16,7 @@
   function benchWarning(effort, engine) {
     const usage = (engine && ENGINE_USAGE[engine]) || (engine ? 'code-engine usage (' + engine + ')' : 'code-engine usage');
     const at = typeof effort === 'string' && effort ? ' at effort ' + effort : '';
-    return 'Each task runs the full pipeline: Nemotron + Kimi K3 tokens on your NVIDIA keys and ' + usage + at + '; typically 10-30 min per task.';
+    return 'Each task runs the full pipeline: Nemotron-role and Kimi-role tokens on your NVIDIA keys and ' + usage + at + '; typically 10-30 min per task.';
   }
 
   let tasks = null;

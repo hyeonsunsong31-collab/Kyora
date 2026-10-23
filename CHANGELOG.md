@@ -4,6 +4,49 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 
 ## Unreleased
 
+### Changed - 2026-10-23: resilience and honest attribution
+
+- **Every surface names the role and the model that answered.** NVIDIA retired Kimi K3 on 2026-10-15, so
+  its fallback models answer the Kimi role there. The pipeline chart, metrics tiles, log lines, plan
+  notice, judge counters and chips, the deck and the Honesty card name the role ("Kimi role", "Nemotron
+  role") and the model that answered, not a model that did not. The deck no longer labels an
+  agent-engine build "Claude Code" (a long label was replaced by that name); after an engine failover
+  each engine is listed with its own model. The judge verdict, the review result and
+  `run.extra.role_models` record the model that answered each call. The model prompts no longer tell a
+  fallback model that it is Kimi K3, and the FIX prompt says who asked for the fixes.
+- **Screenshots go only to models that take images.** Live on 2026-10-18 Nemotron-3-Ultra answered a
+  review with screenshots with an error 500 inside a 200, and GLM-5.3 with HTTP 400; both answer the same
+  request as text. A model without vision gets one line saying the images were left out (and a system
+  prompt that does not mention them); a request with images that fails is sent once more without them,
+  without marking the model busy. The review records `images_sent`.
+- **A review no model can give no longer stops the run.** With the gate measured and fix iterations left,
+  the failing checks (required first) become the fix instructions of a `fix` decision with
+  `source: "rules"` and `model: null`; the log says "review by rules (no model answered)".
+- **Temporary role failures resume by themselves.** An unreachable endpoint, 429 or 5xx after the
+  client's retries and the role's fallbacks blocks the stage with an automatic resume after 120 s (at
+  most 24 automatic resumes per run). A connection reset or DNS failure before any answer is retried by
+  the client.
+- **Keys never go to another endpoint.** A role's key is sent to the agent endpoint only when the role
+  uses that endpoint (a Moonshot key in the Kimi slot never reaches NVIDIA). Endpoint and keys change in
+  one step in Settings, and a retry whose endpoint changed meanwhile is not resent. A role whose own key
+  is empty uses the shared key at once (`nvidia.share_keys`), and self-check says so.
+- **Settings apply live** to Kimi's effort and effort field and to Nemotron's design thinking (they were
+  saved but only applied after a restart).
+- **Self-check** reports the selected agent engine as failing when its live probe fails, and then keeps
+  Claude Code's missing CLI or login a failure instead of "not needed". The agent probe sends the run's
+  temperature and top_p. `agent_engine.top_p` must be greater than 0 and at most 1.
+- **Agent engine**: bash and the Node logic tests run with an allowlisted environment, bounded output, the
+  run's cancel and deadline, and their output is redacted; `kyora_check`'s Node run is judged; tool calls
+  written as text move to the next model, then fail as a model failure; a `Retry-After` above 60 s fails
+  over at once; a refused `max_tokens` increase after a thought cut off is reported as such; the
+  background-process note says what holds on Windows.
+- **Judge**: heredoc bodies are not read as paths; Kyora's key files and config directory are denied to
+  every engine (Claude Code also through `--settings` deny rules), and a search rooted above them too.
+- **Engine failover**: only a quota failure is waited out; a reset already past waits a back-off; the
+  highest-ranked usable engine is taken again; a hard kill keeps and announces only what the attempt
+  changed. Process sessions are killed before their leader is reaped, so a reused PID is never signalled.
+- The metrics tile drops "fallback from X" when X answers again.
+
 ### Added - 2026-10-18: working without a Claude subscription
 
 - **The Kyora agent engine** (engine name `openai_agent`, `kyora/models/openai_agent.py`): BUILD and FIX
@@ -75,7 +118,9 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   API (`scripts/nvidia_diagnose.py`, `scripts/live_nvidia_check.py`), the live pipeline without Claude
   (`engines.order = ["openai_agent"]`) and the Tokkio overlay in the real `nvidia-pipecat` 0.2.0 /
   `pipecat-ai` 0.0.68 libraries (`scripts/tokkio_overlay_live_check.py`,
-  `scripts/tokkio_bot_import_check.py`). Each job reports its own result.
+  `scripts/tokkio_bot_import_check.py`). `scripts/live_pipeline_check.py` runs one game end to end with
+  only the agent engine allowed; `scripts/nvidia_diagnose.py --tool-probe` asks each listed model for one
+  function call. Each job reports its own result.
 
 ### Changed - 2026-10-18
 
@@ -85,11 +130,13 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - The Kimi role sends each model its own controls: Kimi's `reasoning_effort` only to a Kimi model, the
   thinking switch (`chat_template_kwargs.enable_thinking`, off for effort `low`) to a Nemotron fallback,
   no effort field to other families; `effort_sent` says which value was sent.
-- **A cut-off model answer is asked for once more.** A Nemotron design or UI-spec answer that is
-  truncated (`finish_reason: length`) or invalid is requested again without thinking and with twice the
-  budget (at most 32768 tokens): live on 2026-10-18 a UI spec in thinking mode spent all 12288 tokens and
-  arrived without its `tokens` object. The Kimi role's repair after a cut-off answer gets twice the budget
-  (at most 65536) and effort `low`.
+- **A cut-off or unusable model answer is asked for again.** Live on 2026-10-18 a Nemotron UI spec in
+  thinking mode spent all 12288 tokens and arrived without its `tokens` object, and a forced-tool retry at
+  temperature 0.2 repeated itself. Nemotron's design and UI-spec calls are now sampled at the model card's
+  defaults (temperature 1.0, top_p 0.95); an answer that is truncated (`finish_reason: length`) or invalid
+  is asked for once more without thinking as plain JSON text (no forced tool call, same budget), then once
+  the same way from the next model of the role's chain, published as `model.fallback`. The Kimi role's
+  repair after a cut-off answer gets twice the budget (at most 65536) and effort `low`.
 - NVIDIA endpoints, keys, models and fallbacks changed in Settings apply without a restart (they needed
   one before, silently).
 - The metrics tile is chosen by the role: a Kimi role answered by a Nemotron fallback model stays on the
@@ -115,8 +162,10 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   with a bare exit 127 when `node` is missing after the install; installer test stubs name the real shell.
 - **macOS** (GitHub runner): `GET /api/status` resolved this host's name on every call and mDNS made that
   so slow that the UI, the release check and several tests timed out. LAN addresses come from the default
-  route; name lookups run with a 1 s budget and are cached. `node --check` errors kept no line number
-  because Node prints the `/private/var/...` real path of the temp dir; both forms are mapped back.
+  route; name lookups run with a 1 s budget and are cached. Kyora's HTTP server (and the test mock) bind
+  without the reverse lookup `http.server` runs between `bind()` and `listen()`, which on the macOS runner
+  took long enough for connections to time out. `node --check` errors kept no line number because Node
+  prints the `/private/var/...` real path of the temp dir; both forms are mapped back.
 - **iSH userland**: `tests/test_procs.py` used a renamed symlink to `sh` as a stand-in interpreter, which
   BusyBox does not run as a shell (it picks its applet from the name it is started under); Python stands
   in now.
@@ -127,7 +176,14 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   failures behind a green job; the test exit code is kept now. The Windows self-check step no longer
   fails on the expected exit code 1 of a runner without Claude Code.
 - **Live NVIDIA check**: it reported "Nemotron narration OK" for an empty answer and skipped Nemotron
-  entirely when Kimi failed; a probe whose 1-token chat failed now fails the check.
+  entirely when Kimi failed; a probe whose 1-token chat failed now fails the check. The agent-engine
+  self-check item is judged by its own status (it fails only on FAIL), not by `chat_ok`.
+- **A usage-limit reset already in the past** (a stale value, clock skew) no longer lets TEST/GATE grade
+  the half-finished work as the result: the run blocks and resumes after the usual grace (still at most
+  24 automatic resumes).
+- `POST /api/projects/{id}/runs` rejected `engine_pref: "openai_agent"` with 400; the allowed values now
+  come from the engine table, so every engine can be requested for a run. Narration names the engine a
+  Hub really runs.
 - The release check starts the server unbuffered and, when `GET /api/status` does not answer, prints the
   server's output, its start-up time, whether the process runs and what `lsof` sees on the port.
 
@@ -136,16 +192,15 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - Measured on 2026-10-18: `moonshotai/kimi-k3` is retired on NVIDIA's free endpoint (HTTP 410, end of life
   2026-10-15) and `moonshotai/kimi-k2.6` answers 404, so the Kimi role runs on its fallback models there.
   The real Kimi K3 needs an endpoint that serves it (`nvidia.kimi.base_url` with that endpoint's key and
-  model id). Static labels still name the role "Kimi K3"; the answering model is shown in events, tiles,
-  the log and self-check.
+  model id). Since 2026-10-23 the UI, the log and the deck name the role and the answering model.
 - Measured on 2026-10-18: the committed key in the Nemotron slot gets HTTP 403 "Authorization failed" for
   every model (its account lacks inference access); both roles use the Kimi-slot key through
   `nvidia.share_keys`. Nemotron-3-Ultra is often overloaded on the free tier.
 - The Kyora agent engine runs a different model than Claude. No capability comparison is claimed or
   published; each game passes or fails the same measured gate, possibly after more fix rounds.
-- When every model of a role stays overloaded or refused, the stage blocks (resumable). The agent engine
-  records no reset time for its own quota failures, so such a block waits for Resume unless the error text
-  names a reset.
+- When every model of a role stays overloaded or unreachable, the stage blocks and resumes by itself after
+  120 s (since 2026-10-23); a refusal (401/403, 400) waits for Resume. The agent engine records no reset
+  time for its own quota failures, so such a block waits for Resume unless the error text names a reset.
 
 ### Security
 

@@ -102,7 +102,11 @@
   function cardHtml(s, lay, pid, current) {
     const n = s.number;
     const eng = s.engine || {};
-    const engText = [eng.backend, eng.active_model].filter(Boolean).join(' · ');
+    // after a failover each engine is named with its own model, in order (engine.served)
+    const served = Array.isArray(eng.served) ? eng.served.filter((e) => e && e.model) : [];
+    const engText = served.length > 1
+      ? served.map((e) => (e.backend || 'engine') + ' (' + e.model + ')').join(', then ')
+      : [eng.backend, eng.active_model].filter(Boolean).join(' · ');
     const hasKids = !!(lay.children[n] && lay.children[n].length);
     const modifyLabel = hasKids ? 'Branch from here' : 'Stack change';
     const parent = s.parent != null && s.parent !== '' ? 'from v' + s.parent : 'root';

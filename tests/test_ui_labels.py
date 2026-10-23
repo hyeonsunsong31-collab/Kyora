@@ -84,13 +84,18 @@ class JudgeWordingTests(unittest.TestCase):
         html = (WEB / "index.html").read_text(encoding="utf-8")
         note = re.search(r'id="judge-note">(.*?)</p>', html, re.S)
         self.assertIsNotNone(note, "the Judge card explains what passes through the judge")
-        for word in ("Write", "Bash", "Local rules", "Kimi K3 decides the rest", "Read, Glob and Grep are not judged"):
+        # the judging model is the Kimi ROLE's (Kimi K3 or its fallback): no surface says Kimi K3 decided
+        for word in ("Write", "Bash", "Local rules", "Kimi-role model", "decides the rest",
+                     "Read, Glob and Grep are not judged"):
             self.assertIn(word, note.group(1))
         prompt = (REPO / "kyora/pipeline/templates/claude_system.md").read_text(encoding="utf-8")
         self.assertIn("local rules", prompt)
-        self.assertIn("Kimi K3 decides the rest", prompt)
+        self.assertIn("the Kimi-role model decides the rest", prompt)
         deck = (REPO / "kyora/projects/deck.py").read_text(encoding="utf-8")
-        self.assertIn("local rules, then Kimi K3", deck)
+        self.assertIn("local rules, then the Kimi-role model", deck)
+        for rel in ("kyora/web/index.html", "kyora/web/js/app.js", "kyora/pipeline/templates/claude_system.md",
+                    "kyora/projects/deck.py"):
+            self.assertNotIn("Kimi K3 decides the rest", (REPO / rel).read_text(encoding="utf-8"), rel)
 
     def test_judge_card_counts_verdict_sources(self):
         app = (WEB / "js" / "app.js").read_text(encoding="utf-8")
@@ -120,6 +125,33 @@ class RunLabelRenderTests(unittest.TestCase):
         self.assertIn(">below threshold<", out["unknown"])
         self.assertIn("code engine", out["unknown"])
         self.assertNotIn("Claude Code", out["unknown"])
+
+    def test_role_nodes_name_the_model_that_answered_never_a_retired_one(self):
+        out = run_node(["js/pipeline-chart.js"], """{
+            answered: K.renderPipelineChart({}, { width: 900, models: { kimi: 'z-ai/glm-5.3',
+                                                                      nemotron: 'nvidia/nemotron-3-super-120b-a12b' } }),
+            unknown: K.renderPipelineChart({}, { width: 900 }) }""")
+        self.assertIn("glm-5.3", out["answered"])
+        self.assertIn("nemotron-3-super-120b…", out["answered"])
+        for svg in out.values():
+            self.assertNotIn("Kimi K3", svg)
+        self.assertIn("Kimi role", out["unknown"])
+
+    def test_a_tile_drops_the_fallback_note_when_the_requested_model_answers_again(self):
+        out = run_node(["js/pipeline-chart.js", "js/metrics.js"], """(function () {
+            const m = K.metrics.emptyMetrics();
+            K.metrics.applyMetricsEvent(m, { type: 'model.metrics', data: { role: 'nemotron', tps: 9,
+                model: 'nvidia/nemotron-3-super-120b-a12b', fallback: true,
+                requested_model: 'nvidia/nemotron-3-ultra-550b-a55b' } });
+            const during = { fb: m.nemotron.fallback_used, req: m.nemotron.requested };
+            K.metrics.applyMetricsEvent(m, { type: 'model.metrics', data: { role: 'nemotron', tps: 12,
+                model: 'nvidia/nemotron-3-ultra-550b-a55b' } });
+            return { during: during, after: { fb: m.nemotron.fallback_used, req: m.nemotron.requested,
+                     model: m.nemotron.model }, name: K.metrics.SYSTEMS[1].name };
+        })()""")
+        self.assertEqual(out["during"], {"fb": True, "req": "nvidia/nemotron-3-ultra-550b-a55b"})
+        self.assertEqual(out["after"], {"fb": False, "req": None, "model": "nvidia/nemotron-3-ultra-550b-a55b"})
+        self.assertEqual(out["name"], "Kimi role")
 
     def test_engine_tile_names_the_recorded_backend_and_effort(self):
         out = run_node(["js/pipeline-chart.js", "js/metrics.js"], """{

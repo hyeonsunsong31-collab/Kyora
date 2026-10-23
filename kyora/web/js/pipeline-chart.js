@@ -2,23 +2,24 @@
    renderPipelineChart(stages, opts) -> SVG markup string.
    stages: { intake:{status,pct,message,ms}, plan:{...}, ... }
    status: idle|running|done|failed|blocked|skipped. No DOM access; safe to unit test.
-   opts: {width, threshold (0..1, the run's recorded gate threshold), backend (engine backend of the run)};
-   the Gate and Build/Fix labels come from these, never from a fixed value. */
+   opts: {width, threshold (0..1, the run's recorded gate threshold), backend (engine backend of the run),
+   models ({kimi, nemotron}: the models that answered those roles in this run)};
+   the Gate, Build/Fix and role labels come from these, never from a fixed value. */
 (function () {
   'use strict';
   const K = (window.Kyora = window.Kyora || {});
 
   const MAIN = [
-    { id: 'intake', label: 'Intake', who: 'Kimi K3' },
-    { id: 'plan', label: 'Plan', who: 'Kimi K3' },
-    { id: 'design', label: 'Design', who: 'Nemotron' },
+    { id: 'intake', label: 'Intake', who: 'Kimi role', role: 'kimi' },
+    { id: 'plan', label: 'Plan', who: 'Kimi role', role: 'kimi' },
+    { id: 'design', label: 'Design', who: 'Nemotron role', role: 'nemotron' },
     { id: 'build', label: 'Build', who: 'code engine' },
     { id: 'test', label: 'Test', who: 'browser + node' },
     { id: 'gate', label: 'Gate', who: 'measured gate' },
     { id: 'finalize', label: 'Finalize', who: 'slide + deck' }
   ];
   const LOOP = [
-    { id: 'review', label: 'Review', who: 'Kimi K3' },
+    { id: 'review', label: 'Review', who: 'Kimi role', role: 'kimi' },
     { id: 'fix', label: 'Fix', who: 'code engine' }
   ];
 
@@ -38,13 +39,21 @@
     return String(Math.round(Math.max(0, Math.min(1, threshold)) * 1000) / 10);
   }
 
-  /* Stage definitions labelled from the run: gate threshold and code-engine backend. */
+  /* "nvidia/nemotron-3-ultra-550b-a55b" -> "nemotron-3-ultra-550b…": the model id without its vendor, short. */
+  function shortModel(model) {
+    const m = String(model || '').split('/').pop();
+    return m.length > 22 ? m.slice(0, 21) + '…' : m;
+  }
+
+  /* Stage definitions labelled from the run: gate threshold, code-engine backend, answering role models. */
   function stageDefs(opts) {
     const pct = thresholdPct(opts.threshold);
     const eng = engineLabel(opts.backend);
+    const models = opts.models || {};
     const label = (def) => {
       if (def.id === 'gate' && pct != null) return Object.assign({}, def, { who: '>= ' + pct + ' %' });
       if ((def.id === 'build' || def.id === 'fix') && eng) return Object.assign({}, def, { who: eng });
+      if (def.role && models[def.role]) return Object.assign({}, def, { who: shortModel(models[def.role]) });
       return def;
     };
     return { main: MAIN.map(label), loop: LOOP.map(label), loopLabel: pct != null ? 'below ' + pct + ' %' : 'below threshold' };

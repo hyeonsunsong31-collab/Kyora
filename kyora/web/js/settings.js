@@ -37,7 +37,7 @@
       { s: 'settings', p: 'agent_engine.timeout_s', label: 'Wall timeout (s)', type: 'int', min: 1 },
       { s: 'settings', p: 'agent_engine.context_chars', label: 'Context budget (characters)', type: 'int', min: 1, help: 'Above this, older tool output is elided from the conversation; the newest turns are kept.' },
       { s: 'settings', p: 'agent_engine.temperature', label: 'Temperature', type: 'float', min: 0, max: 2, step: 0.05 },
-      { s: 'settings', p: 'agent_engine.top_p', label: 'Top p', type: 'float', min: 0, max: 2, step: 0.05 },
+      { s: 'settings', p: 'agent_engine.top_p', label: 'Top p', type: 'float', min: 0.05, max: 1, step: 0.05, help: 'Greater than 0 and at most 1: OpenAI-compatible endpoints refuse other values.' },
       { s: 'settings', p: 'agent_engine.thinking', label: 'Thinking mode (models that support it)', type: 'bool' },
       { s: 'settings', p: 'agent_engine.self_check_tool', label: 'Let the model run Kyora\'s checks (kyora_check tool) before it stops', type: 'bool' },
       { s: 'keys', p: 'agent.base_url', label: 'Endpoint (OpenAI-compatible)', type: 'url', help: 'Empty = the NVIDIA endpoint and keys above (each key tried in turn when one is refused). Any OpenAI-compatible /v1 URL works with its own key below.' },

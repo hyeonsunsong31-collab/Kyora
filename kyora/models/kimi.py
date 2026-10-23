@@ -55,6 +55,51 @@ DEFAULT_CONSTRAINTS: dict = {"no_external_deps": True, "max_total_mb": 25, "touc
 DEFAULT_PLATFORM = "web (touch + keyboard)"
 MAX_INTAKE_IMAGES = 6
 MAX_REVIEW_SCREENSHOTS = 4
+# model ids that take image_url parts. Measured 2026-10-18: nvidia/nemotron-3-ultra-550b-a55b answers a request with
+# screenshots with an error 500 inside a 200, z-ai/glm-5.3 with HTTP 400 - both answer the same request as text.
+VISION_MODEL_HINTS: tuple[str, ...] = ("kimi", "-vl", "vl-", "vision", "omni", "gemma-3", "multimodal")
+# a request with images refused like this is sent once more without them before the chain moves on
+IMAGE_REFUSAL_STATUSES = frozenset({400, 413, 415, 422})
+
+
+def accepts_images(model: str | None) -> bool:
+    """Whether ``model`` is known to take ``image_url`` parts (by its id: Kimi, *-vl*, *vision*, *omni* ...)."""
+    m = str(model or "").lower()
+    return any(h in m for h in VISION_MODEL_HINTS)
+
+
+def count_images(messages: Sequence[Mapping]) -> int:
+    return sum(1 for msg in messages if isinstance(msg.get("content"), list)
+               for part in msg["content"] if isinstance(part, Mapping) and part.get("type") == "image_url")
+
+
+def without_images(messages: list[dict], model: str, system: str | None = None) -> list[dict]:
+    """``messages`` with every run of image parts replaced by one text line saying it was left out (and why).
+
+    ``system`` replaces the system prompt (one that does not tell the model to look at images it never gets).
+    """
+    out: list[dict] = []
+    for msg in messages:
+        msg = dict(msg)
+        if system is not None and msg.get("role") == "system":
+            msg["content"] = system
+        content = msg.get("content")
+        if isinstance(content, list) and any(isinstance(p, Mapping) and p.get("type") == "image_url" for p in content):
+            n = sum(1 for p in content if isinstance(p, Mapping) and p.get("type") == "image_url")
+            parts = [p for p in content if not (isinstance(p, Mapping) and p.get("type") == "image_url")
+                     and not (isinstance(p, Mapping) and p.get("type") == "text"
+                              and re.fullmatch(r"(Screenshot|Image) \d+:", str(p.get("text") or "")))]
+            parts.append({"type": "text", "text": f"[{n} image(s) left out: {model}, the model answering this role, "
+                                                   "takes no images; work from the text above]"})
+            msg["content"] = parts
+        out.append(msg)
+    return out
+
+
+def _image_refused(exc: BaseException) -> bool:
+    """A request with images that the endpoint refused or broke on before any output (400/422, a 5xx)."""
+    status = getattr(exc, "status", None)
+    return isinstance(exc, NIMError) and isinstance(status, int) and (status in IMAGE_REFUSAL_STATUSES or status >= 500)
 JUDGE_STRING_LIMIT = 4000
 MAX_IMAGE_DATA_URL_CHARS = 12_000_000
 EXCERPT_CHARS = 3000
@@ -792,7 +837,7 @@ class Kimi:
             raise ValueError("Kimi needs a model id")
         self.client = client
         self.chain = ModelChain(model, fallback_models)
-        self.cfg = kimi_cfg
+        self.cfg = kimi_cfg  # a KimiCfg, or a callable returning the current one (Settings apply without a restart)
         self.bus = bus
         self._lock = threading.Lock()
         self._last_metrics: dict[str, dict] = {}
@@ -809,17 +854,21 @@ class Kimi:
         self.chain = ModelChain(model, fallback_models)
 
     # ------------------------------------------------------------------ settings
+    def _cfg(self):
+        c = self.cfg
+        return c() if callable(c) else c
+
     @property
     def reasoning_effort(self) -> str:
-        return str(getattr(self.cfg, "reasoning_effort", None) or "max")
+        return str(getattr(self._cfg(), "reasoning_effort", None) or "max")
 
     @property
     def judge_reasoning_effort(self) -> str:
-        return str(getattr(self.cfg, "judge_reasoning_effort", None) or self.reasoning_effort)
+        return str(getattr(self._cfg(), "judge_reasoning_effort", None) or self.reasoning_effort)
 
     @property
     def effort_field(self) -> str:
-        return str(getattr(self.cfg, "effort_field", None) or "top_level")
+        return str(getattr(self._cfg(), "effort_field", None) or "top_level")
 
     @property
     def tool_mode(self) -> str:
@@ -871,6 +920,14 @@ class Kimi:
             return {"effort_sent": f"reasoning_effort={extra['reasoning_effort']}"}
         return {}
 
+    def _answered(self, res: ChatResult, meta: dict | None) -> str:
+        """The model that answered ``res`` (never the chain's next model); fills ``meta`` for the caller's records."""
+        model = getattr(res, "model", None) or self.model
+        if meta is not None:
+            meta.update({"model": model, "requested_model": self.chain.requested,
+                         "fallback": model != self.chain.requested, "images_sent": getattr(res, "images_sent", 0)})
+        return model
+
     def _fallback_fields(self, model: str) -> dict:
         """Event fields that say a fallback model answers for the requested one."""
         if model == self.chain.requested:
@@ -894,7 +951,7 @@ class Kimi:
               cancel: threading.Event | None = None, max_tool_rounds: int = 4,
               tool_impl: Mapping[str, Callable[[dict], str]] | None = None, purpose: str | None = None,
               max_tokens: int | None = None, timeout_s: float | None = None,
-              publish_deltas: bool = True) -> ChatResult:
+              publish_deltas: bool = True, text_only_system: str | None = None) -> ChatResult:
         """Send ``conv`` to Kimi (``temperature 1.0, top_p 1.0``) and run a bounded tool loop.
 
         Every answer's complete assistant message is appended to ``conv``. When
@@ -906,19 +963,43 @@ class Kimi:
         caller), or after ``max_tool_rounds`` executed rounds. A forced
         ``tool_choice`` applies to the first request only; later rounds use
         ``auto`` so a forced, implemented tool cannot loop by construction.
+
+        Image parts go only to a model that takes images (:func:`accepts_images`); any other model
+        gets one text line saying they were left out (and ``text_only_system`` as its system prompt,
+        when given). A request with images that fails with 400/422 or a 5xx is sent once more without
+        them before the chain moves on, so that failure never marks the model busy. The result names
+        the answering model (``model``) and the images it was sent (``images_sent``).
         """
         label = purpose or "think"
         rounds = 0
         choice = tool_choice
         while True:
             def call(model: str, choice=choice) -> ChatResult:
-                fields = {**self.effort_report(effort, model), **self._fallback_fields(model)}
-                return chat_with_events(self.client, self.bus, role=ROLE, model=model, run_id=run_id,
-                                        project_id=project_id, purpose=label, publish_deltas=publish_deltas,
-                                        event_fields=fields, messages=conv.messages(), tools=tools,
-                                        tool_choice=choice if tools else None, max_tokens=max_tokens,
-                                        extra=self.effort_extra(effort, model) or None, cancel=cancel,
-                                        timeout_s=timeout_s, temperature=1.0, top_p=1.0)
+                msgs = conv.messages()
+                images = had_images = count_images(msgs)
+                if images and not accepts_images(model):
+                    msgs, images = without_images(msgs, model, text_only_system), 0
+
+                def send(messages: list[dict], n_images: int) -> ChatResult:
+                    fields = {**self.effort_report(effort, model), **self._fallback_fields(model)}
+                    if had_images:
+                        fields["images_sent"] = n_images
+                    r = chat_with_events(self.client, self.bus, role=ROLE, model=model, run_id=run_id,
+                                         project_id=project_id, purpose=label, publish_deltas=publish_deltas,
+                                         event_fields=fields, messages=messages, tools=tools,
+                                         tool_choice=choice if tools else None, max_tokens=max_tokens,
+                                         extra=self.effort_extra(effort, model) or None, cancel=cancel,
+                                         timeout_s=timeout_s, temperature=1.0, top_p=1.0)
+                    r.model, r.images_sent = model, n_images
+                    return r
+                try:
+                    return send(msgs, images)
+                except NIMError as exc:
+                    if not images or not _image_refused(exc):
+                        raise
+                    log.warning("kimi %s: %s refused the request with %d image(s) (%s); sending it once more "
+                                "without them", label, model, images, str(exc)[:200])
+                return send(without_images(msgs, model, text_only_system), 0)
             res = call_with_model_fallback(self.chain, self.bus, call, role=ROLE, run_id=run_id,
                                            project_id=project_id, purpose=label)
             self._remember(label, res)
@@ -975,7 +1056,8 @@ class Kimi:
                     effort: str | None = None, validate: Callable[[dict], dict] | None = None,
                     max_tokens: int | None = None, run_id: str | None = None, project_id: str | None = None,
                     cancel: threading.Event | None = None, publish_deltas: bool = True,
-                    timeout_s: float | None = None, repair: bool = True) -> tuple[dict, ChatResult]:
+                    timeout_s: float | None = None, repair: bool = True,
+                    text_only_system: str | None = None) -> tuple[dict, ChatResult]:
         """Ask for ``tool``'s payload, validate it, and repair once when it is missing or invalid.
 
         The tool is forced when the gateway accepts it; otherwise the request
@@ -990,7 +1072,8 @@ class Kimi:
         conv = KimiConversation(system)
         conv.add_user(user_content)
         kw = dict(effort=effort, run_id=run_id, project_id=project_id, cancel=cancel, purpose=purpose,
-                  max_tokens=max_tokens, timeout_s=timeout_s, publish_deltas=publish_deltas)
+                  max_tokens=max_tokens, timeout_s=timeout_s, publish_deltas=publish_deltas,
+                  text_only_system=text_only_system)
         attempts = 2 if repair else 1
         error = ""
         res: ChatResult | None = None
@@ -1023,28 +1106,31 @@ class Kimi:
     # ------------------------------------------------------------------ intake
     def intake(self, prompt: str, attachments: list[dict] | None, run_id: str | None = None,
                project_id: str | None = None, cancel: threading.Event | None = None, *,
-               import_attachment_id: str | None = None) -> dict:
+               import_attachment_id: str | None = None, meta: dict | None = None) -> dict:
         """Prompt + attachments -> ``intake.json`` content.
 
         Returns ``{goal, genre, platform, must_haves[], references[], risks[], imported_base, notes}``.
         Reference images are sent to Kimi as ``image_url`` parts (at most
         :data:`MAX_INTAKE_IMAGES`); documents/code contribute ``text_excerpt``,
         ZIPs ``zip_listing`` (or ``listing``). Raises ``NIMError`` on API failure
-        and ``ValueError`` when no valid intake comes back after one repair.
+        and ``ValueError`` when no valid intake comes back after one repair. ``meta`` (optional) receives
+        the answering model (see :meth:`_answered`).
         """
         parts, summary, hint, has_import = build_intake_content(prompt, attachments,
                                                                 import_attachment_id=import_attachment_id)
         system = render_prompt("kimi_intake.md", attachment_summary=summary, imported_base_hint=hint)
         parts = parts + [{"type": "text", "text": "Analyse this request now and call emit_intake with the intake record."}]
-        obj, _ = self._structured(INTAKE_TOOL, system=system, user_content=parts, purpose="intake",
-                                  validate=lambda o: normalize_intake(o, has_import=has_import),
-                                  max_tokens=self.MAX_TOKENS["intake"], run_id=run_id, project_id=project_id,
-                                  cancel=cancel)
+        obj, res = self._structured(INTAKE_TOOL, system=system, user_content=parts, purpose="intake",
+                                    validate=lambda o: normalize_intake(o, has_import=has_import),
+                                    max_tokens=self.MAX_TOKENS["intake"], run_id=run_id, project_id=project_id,
+                                    cancel=cancel)
+        self._answered(res, meta)
         return obj
 
     # ------------------------------------------------------------------ plan
     def plan(self, intake: dict, run_id: str | None = None, project_id: str | None = None,
-             cancel: threading.Event | None = None, min_tests: int = 6, node_available: bool | None = None) -> dict:
+             cancel: threading.Event | None = None, min_tests: int = 6, node_available: bool | None = None,
+             meta: dict | None = None) -> dict:
         """Intake -> validated ``plan.json`` content (see :func:`normalize_plan`).
 
         ``node_available`` is what Kyora measured on the device that runs TEST
@@ -1067,9 +1153,10 @@ class Kimi:
                 raise ValueError(f"Node.js is not available where the tests run, so kind 'node' acceptance tests "
                                  f"can never run: change {', '.join(node_ids)} to kind 'browser'")
             return out
-        obj, _ = self._structured(PLAN_TOOL, system=system, user_content=user, purpose="plan", validate=validate,
-                                  max_tokens=self.MAX_TOKENS["plan"], run_id=run_id, project_id=project_id,
-                                  cancel=cancel)
+        obj, res = self._structured(PLAN_TOOL, system=system, user_content=user, purpose="plan", validate=validate,
+                                    max_tokens=self.MAX_TOKENS["plan"], run_id=run_id, project_id=project_id,
+                                    cancel=cancel)
+        self._answered(res, meta)
         return obj
 
     # ------------------------------------------------------------------ judge
@@ -1121,21 +1208,26 @@ class Kimi:
             payload["recent_calls"], _ = truncate_strings(recent)
         user = ("Judge this pending tool call now and call verdict exactly once.\n\n"
                 + json_for_prompt(payload, limit=48_000))
-        verdict, _ = self._structured(VERDICT_TOOL, system=system, user_content=user, purpose="judge",
-                                      effort=self.judge_reasoning_effort, validate=normalize_verdict,
-                                      max_tokens=self.MAX_TOKENS["judge"], run_id=run_id,
-                                      project_id=ctx.get("project_id"), publish_deltas=False,
-                                      timeout_s=self.TIMEOUT_S.get("judge"))
-        return {**verdict, "source": "kimi", "judge_model": self.model,
-                **({"requested_model": self.chain.requested} if self.chain.fallback_active else {}),
+        verdict, res = self._structured(VERDICT_TOOL, system=system, user_content=user, purpose="judge",
+                                        effort=self.judge_reasoning_effort, validate=normalize_verdict,
+                                        max_tokens=self.MAX_TOKENS["judge"], run_id=run_id,
+                                        project_id=ctx.get("project_id"), publish_deltas=False,
+                                        timeout_s=self.TIMEOUT_S.get("judge"))
+        # the model that answered this call - not chain.active afterwards, which another run may have moved
+        answered = self._answered(res, None)
+        return {**verdict, "source": "kimi", "judge_model": answered,
+                **({"requested_model": self.chain.requested} if answered != self.chain.requested else {}),
                 "latency_ms": int((time.monotonic() - t0) * 1000)}
 
     # ------------------------------------------------------------------ review
     def review(self, run_summary: dict, gate: dict, screenshots: list[bytes] | None, run_id: str | None = None,
-               project_id: str | None = None, cancel: threading.Event | None = None) -> dict:
+               project_id: str | None = None, cancel: threading.Event | None = None,
+               meta: dict | None = None) -> dict:
         """Decide ``complete``/``fix``/``stop`` after a gate, looking at up to 4 screenshots.
 
-        Returns ``{decision, reasons[], fix_instructions, suspected_files[], coerced}``.
+        Returns ``{decision, reasons[], fix_instructions, suspected_files[], coerced, model, images_sent}``:
+        ``model`` answered, ``images_sent`` screenshots reached it (0 for a model that takes no images,
+        which is told so and gets a system prompt that does not mention them).
         Honesty guard: when ``gate.ok`` is not ``True`` a ``complete`` answer is
         coerced to ``fix`` with the reason ``'gate not passed; complete is not allowed'``
         (``coerced: True``).
@@ -1149,19 +1241,21 @@ class Kimi:
                 urls.append(url)
             else:
                 log.info("kimi review: skipping an empty, unsupported or oversized screenshot")
-        system = render_prompt("kimi_review.md", screenshot_count=len(urls),
-                               run_summary_json=json_for_prompt(run_summary or {}),
-                               gate_json=json_for_prompt(gate or {}))
+        system, text_only = (render_prompt("kimi_review.md", screenshot_count=count,
+                                           run_summary_json=json_for_prompt(run_summary or {}),
+                                           gate_json=json_for_prompt(gate or {})) for count in (len(urls), 0))
         intro = f"Review this iteration now. {len(urls)} screenshot(s) from the browser test harness follow"
         parts: list[dict] = [{"type": "text", "text": intro + (":" if urls else ".")}]
         for i, url in enumerate(urls, 1):
             parts.append({"type": "text", "text": f"Screenshot {i}:"})
             parts.append({"type": "image_url", "image_url": {"url": url}})
         parts.append({"type": "text", "text": "Call emit_review with your decision."})
-        obj, _ = self._structured(REVIEW_TOOL, system=system, user_content=parts, purpose="review",
-                                  validate=normalize_review, max_tokens=self.MAX_TOKENS["review"], run_id=run_id,
-                                  project_id=project_id, cancel=cancel)
+        obj, res = self._structured(REVIEW_TOOL, system=system, user_content=parts, purpose="review",
+                                    validate=normalize_review, max_tokens=self.MAX_TOKENS["review"], run_id=run_id,
+                                    project_id=project_id, cancel=cancel, text_only_system=text_only)
         out = apply_gate_guard(obj, gate)
+        out["model"] = self._answered(res, meta)
+        out["screenshots"], out["images_sent"] = len(urls), getattr(res, "images_sent", 0)
         if out["coerced"]:
             log.warning("kimi review answered 'complete' although the gate did not pass; coerced to 'fix'")
         return out
@@ -1171,7 +1265,8 @@ __all__ = [
     "Kimi", "KimiConversation", "ROLE", "ENGINES", "TEST_KINDS", "DEFAULT_CONSTRAINTS", "TOOL_MODES",
     "INTAKE_SCHEMA", "PLAN_SCHEMA", "VERDICT_SCHEMA", "REVIEW_SCHEMA",
     "INTAKE_TOOL", "PLAN_TOOL", "VERDICT_TOOL", "REVIEW_TOOL",
-    "MAX_INTAKE_IMAGES", "MAX_REVIEW_SCREENSHOTS", "JUDGE_STRING_LIMIT", "GATE_NOT_PASSED_REASON",
+    "MAX_INTAKE_IMAGES", "MAX_REVIEW_SCREENSHOTS", "VISION_MODEL_HINTS", "accepts_images", "count_images",
+    "without_images", "JUDGE_STRING_LIMIT", "GATE_NOT_PASSED_REASON",
     "normalize_rel_path", "normalize_intake", "normalize_plan", "normalize_verdict", "normalize_review",
     "apply_gate_guard", "truncate_strings", "build_intake_content", "unwrap_payload",
 ]

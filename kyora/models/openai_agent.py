@@ -1314,9 +1314,10 @@ class OpenAIAgentEngine(ToolLoopEngine):
                 out["tried"].append(model)
                 t0 = time.monotonic()
                 try:
+                    # the sampling fields a run sends: an endpoint that refuses them fails here, not in BUILD
                     res = client.chat(model, msgs, stream=False, tools=[PROBE_FUNCTION], tool_choice="auto",
                                       max_tokens=PROBE_MAX_TOKENS, extra=family_extra(model, False) or None,
-                                      timeout_s=max(1.0, left))
+                                      temperature=c.temperature, top_p=c.top_p, timeout_s=max(1.0, left))
                 except BaseException as exc:
                     attempts.append((model, exc))
                     out["latency_ms"] = round((time.monotonic() - t0) * 1000.0, 1)
@@ -1348,6 +1349,7 @@ class OpenAIAgentEngine(ToolLoopEngine):
                 try:
                     res = client.chat(model, msgs, stream=False, tools=[PROBE_FUNCTION], tool_choice="auto",
                                       max_tokens=PROBE_RETRY_MAX_TOKENS, extra=family_extra(model, False) or None,
+                                      temperature=c.temperature, top_p=c.top_p,
                                       timeout_s=max(1.0, left))
                     tokens = PROBE_RETRY_MAX_TOKENS
                     out["latency_ms"] = round((time.monotonic() - t0) * 1000.0, 1)

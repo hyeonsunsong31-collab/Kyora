@@ -11,6 +11,7 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -177,11 +178,13 @@ class FailedEngineTests(RunnerHarness):
 
 
 class InvalidKimiAnswerTests(RunnerHarness):
-    """A twice-invalid Kimi answer (ValueError) blocks the run (resumable) instead of failing it."""
+    """A twice-invalid intake blocks the run (resumable); a review the model cannot give becomes a rule-based fix."""
 
     INVALID = "Kimi review: invalid emit_review payload after one repair attempt: 'decision' missing"
 
-    def test_invalid_review_blocks_and_resumes(self):
+    def test_an_invalid_review_continues_with_the_measured_failing_checks(self):
+        # the gate was measured and fix iterations remain: no block, the failing checks are the fix instructions,
+        # and nothing claims a model reviewed this iteration
         p = self.project_with_v1()
         answers = [ValueError(self.INVALID), {"decision": "stop", "reasons": ["cannot be fixed"]}]
 
@@ -193,17 +196,47 @@ class InvalidKimiAnswerTests(RunnerHarness):
         self.app.kimi = SimpleNamespace(review=review)
         failing = lambda ctx, n: ([Check("s0", "static", "s", "pass")], [], [Check("at-01", "browser", "boots", "fail")])
         with mock.patch.object(R, "test_stage", failing):
-            self.engine = ScriptedEngine([(True, None, {"index.html": "<canvas></canvas><script>v2</script>"})])
+            self.engine = ScriptedEngine([(True, None, {"index.html": "<canvas></canvas><script>v2</script>"}),
+                                          (True, None, {"index.html": "<canvas></canvas><script>v3</script>"})])
             run = self.store.create_run(p.id, "modify", "add a pause menu", parent_slide=1)
             run = self.execute(run.id)
-            self.assertEqual(run.state, "blocked")
-            self.assertEqual(run.extra.get("blocked_stage"), "review")
-            self.assertIn("no valid review", run.blocked_reason)
-            self.assertIsNone(run.error)
-            run = self.execute(run.id)  # resume: the measured gate is reused, the review is asked again
         self.assertEqual(run.state, "failed_gate")
-        self.assertEqual(run.result_slide, 2)
-        self.assertEqual(self.engine.calls, ["build"])
+        self.assertEqual(self.engine.calls, ["build", "fix"])
+        first = json.loads((self.store.run_dir(run) / "review-0.json").read_text(encoding="utf-8"))
+        self.assertEqual((first["decision"], first["source"], first["model"]), ("fix", "rules", None))
+        self.assertIn("no valid review", first["reasons"][0])
+        self.assertIn("at-01", first["fix_instructions"])
+        decisions = [e.data for e in self.app.bus.replay(0) if e.type == "review.decision"]
+        self.assertEqual([(d["decision"], d["source"]) for d in decisions], [("fix", "rules"), ("stop", "model")])
+
+    def test_a_temporary_role_failure_resumes_by_itself_and_a_refusal_waits(self):
+        from kyora.models.nim_client import BUSY_COOLDOWN_S, NIMError, NIMUnreachable
+
+        def failing(exc):
+            def fn():
+                raise exc
+            return fn
+        now = time.time()
+        for exc in (NIMUnreachable("integrate.api.nvidia.com unreachable: reset"), NIMError("x", status=503)):
+            with self.assertRaises(StageBlocked) as cm:
+                S._model_call("plan", "The Kimi role", failing(exc))
+            self.assertAlmostEqual(cm.exception.resume_at, now + BUSY_COOLDOWN_S, delta=30)
+            self.assertIn("tries again by itself", cm.exception.reason)
+        with self.assertRaises(StageBlocked) as cm:
+            S._model_call("plan", "The Kimi role", failing(NIMError("bad request", status=400)))
+        self.assertIsNone(cm.exception.resume_at)
+
+    def test_rule_review_lists_required_failures_first(self):
+        gate = {"checks": [{"id": "at-02", "name": "jumps", "status": "fail", "detail": "expected 2"},
+                           {"id": "file_exists:index.html", "name": "index", "status": "fail", "required": True},
+                           {"id": "at-03", "status": "pass"}], "missing_spec_tests": ["at-09"]}
+        out = S.rule_review(gate, "the review model was unavailable (HTTP 503)")
+        lines = out["fix_instructions"].splitlines()
+        self.assertTrue(lines[1].startswith("- file_exists:index.html (required)"), lines)
+        self.assertIn("- at-02: jumps - expected 2", lines[2])
+        self.assertIn("at-09", lines[3])
+        self.assertNotIn("at-03", out["fix_instructions"])
+        self.assertEqual((out["decision"], out["source"], out["suspected_files"]), ("fix", "rules", []))
 
     def test_invalid_intake_blocks(self):
         def intake(*a, **k):
@@ -261,14 +294,14 @@ class NodeAvailabilityTests(RunnerHarness):
             ctx = self.ctx()
             with self.assertRaises(StageBlocked) as cm:
                 S.plan_stage(ctx)
-        self.assertEqual(seen, {"node_available": False})
+        self.assertIs(seen["node_available"], False)
         self.assertEqual(cm.exception.stage, "plan")
         self.assertIn("at-02", cm.exception.reason)
         self.assertIn("Node.js is not installed", cm.exception.reason)
         with mock.patch.object(Q, "find_node", lambda: "/usr/bin/node"):
             seen = self.kimi_returning(node_plan)
             self.assertEqual(S.plan_stage(self.ctx())["acceptance_tests"][1]["kind"], "node")
-        self.assertEqual(seen, {"node_available": True})
+        self.assertIs(seen["node_available"], True)
 
     def test_test_stage_blocks_instead_of_looping_fixes(self):
         ctx = self.ctx()

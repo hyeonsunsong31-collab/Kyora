@@ -10,8 +10,9 @@
   const K = (window.Kyora = window.Kyora || {});
 
   const SYSTEMS = [
-    { key: 'nemotron', name: 'Nemotron-3-Ultra', role: 'design director', match: /nemotron/i },
-    { key: 'kimi', name: 'Kimi K3', role: 'planner + judge', match: /kimi/i },
+    // tiles name the ROLE; the model line under it shows the model that really answered (a fallback is marked)
+    { key: 'nemotron', name: 'Nemotron role', role: 'design director', match: /nemotron/i },
+    { key: 'kimi', name: 'Kimi role', role: 'planner + judge', match: /kimi/i },
     { key: 'claude', name: 'Code engine', role: 'code engine', match: /claude|anthropic|hub|openai_agent|kyora agent/i }
   ];
   /* Roles that belong to the code engine although their model may be named like another tile's
@@ -70,8 +71,13 @@
       const key = systemFor(d.role, d.model);
       if (!key) return null;
       const m = metrics[key];
-      if (d.model) m.model = d.model;
-      if (d.fallback && d.requested_model) { m.fallback_used = true; m.requested = d.requested_model; }
+      if (d.model && t !== 'model.delta') {
+        // each call says whether its model stands in for the requested one: a requested model that answers
+        // again (its busy cooldown ended) is not shown as a fallback for itself
+        m.model = d.model;
+        m.fallback_used = !!(d.fallback && d.requested_model);
+        m.requested = m.fallback_used ? d.requested_model : null;
+      } else if (d.model) m.model = d.model;
       if (t === 'model.request') { m.busy = true; m.error = null; }
       if (t === 'model.done') { m.busy = false; }
       if (t === 'model.error') { m.busy = false; m.error = d.error || ('status ' + d.status); }

@@ -253,6 +253,31 @@ class DeckTests(unittest.TestCase):
         self.assertIn("Block Catcher", html_text)
         self.assertIn("v1 (this build)", html_text)
 
+    def test_an_agent_engine_build_is_never_labelled_claude_code(self):
+        p, run, _ = self._populate()
+        run.engine = {"backend": "openai_agent", "requested_model": "z-ai/glm-5.3", "active_model": "z-ai/glm-5.3"}
+        run.extra = {"role_models": {"intake": {"model": "nvidia/nemotron-3-ultra-550b-a55b"},
+                                     "plan": {"model": "z-ai/glm-5.3"}}}
+        self.store.save_run(run)
+        arch = DeckBuilder(p, self.store).build(run=run).split('id="architecture"', 1)[1].split("</section>", 1)[0]
+        self.assertNotIn("Claude Code", arch)
+        self.assertIn("Kyora agent", arch)
+        self.assertIn("glm-5.3", arch)
+        self.assertIn("nemotron-3-ultra-550b-a55b", arch)  # the model that answered the Kimi role's intake
+        self.assertIn("intake by nvidia/nemotron-3-ultra-550b-a55b; plan by z-ai/glm-5.3", arch)
+
+    def test_engines_after_a_failover_keep_their_own_models(self):
+        p, run, _ = self._populate()
+        run.engine = {"backend": "claude_code", "active_model": "claude-fable-5-1"}
+        run.extra = {"engine_runs": [{"backend": "openai_agent", "active_model": "z-ai/glm-5.3"},
+                                     {"backend": "claude_code", "active_model": "claude-fable-5-1"}]}
+        self.store.save_run(run)
+        html_text = DeckBuilder(p, self.store).build(run=run)
+        want = "Kyora agent engine (not a Claude model) (z-ai/glm-5.3), then Claude Code (claude-fable-5-1)"
+        self.assertIn(want, html_text)
+        self.assertNotIn("Claude Code · models", html_text)
+        self.assertIn("2 code engines", html_text)
+
     def test_escaping_and_no_external_requests(self):
         p, _, _ = self._populate()
         html_text = DeckBuilder(p, self.store).build()
