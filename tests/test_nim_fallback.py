@@ -138,6 +138,15 @@ class KeyFallbackTests(_Base):
         with self.assertRaises(NIMUnreachable) as cm:  # a timeout is not doubled by a retry
             c.chat(ULTRA, [{"role": "user", "content": "hi"}], stream=False, max_tokens=1)
         self.assertEqual(cm.exception.attempts, 1)
+        refused = [ConnectionRefusedError(111, "Connection refused")]
+
+        class Closed:
+            def open(self, req, timeout=None):
+                raise urllib.error.URLError(refused[0])
+        c = NIMClient(self.api.mock.url, GOOD, backoff_s=(0.01,), opener=Closed())
+        with self.assertRaises(NIMUnreachable) as cm:  # nothing listens: not retried at once
+            c.chat(ULTRA, [{"role": "user", "content": "hi"}], stream=False, max_tokens=1)
+        self.assertEqual(cm.exception.attempts, 1)
 
     def test_every_key_refused_raises_once_each(self):
         c = self.client(BAD, alt=(("kimi key", "nvapi-also-refused"),))

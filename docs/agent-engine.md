@@ -165,7 +165,7 @@ engine now uses the nemotron key"), with labels only, never key material.
 
 HTTP 429 and 5xx answers, an error object that arrives inside a 200 stream before any output
 (NVIDIA's free tier sends "Service temporarily overloaded" that way), and a connection that fails before
-any answer (reset, refused, DNS, a dropped TLS stream; not a timeout, which would double a wait the
+any answer (reset, DNS, a dropped TLS stream; not a refused connection or a timeout, which would only double a wait the
 caller bounded) are retried by the client: up to 4 requests in total, waiting 0.5, 1 and 2 s (for an
 HTTP error with `Retry-After`: what it asks). An error after output was delivered is not retried,
 because a retry would repeat that output. When `Retry-After` asks for more than 60 s, nothing is

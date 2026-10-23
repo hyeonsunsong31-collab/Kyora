@@ -347,9 +347,13 @@ def _read_error_body(exc: urllib.error.HTTPError) -> str:
 
 
 def _retryable_network_error(exc: BaseException) -> bool:
-    """A connection failure before any answer that a second request may not meet: reset, refused, DNS, lost."""
+    """A connection failure before any answer that a second request may not meet: reset, DNS, lost."""
     reason = getattr(exc, "reason", None) if isinstance(exc, urllib.error.URLError) else exc
     if isinstance(reason, (TimeoutError, socket.timeout)) or "timed out" in str(reason).lower():
+        return False
+    if isinstance(reason, ConnectionRefusedError):
+        # nothing listens there: an immediate retry finds the same (and costs ~2 s per connect on Windows);
+        # the stage blocks and resumes by itself after the busy cooldown instead
         return False
     # reset/refused/aborted, DNS, a proxy that dropped the TLS stream, "Remote end closed connection"
     return isinstance(reason, (ConnectionError, socket.gaierror, ssl.SSLEOFError, http.client.HTTPException))
