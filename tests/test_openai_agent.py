@@ -10,22 +10,25 @@ import json
 import os
 import shutil
 import socket
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from kyora.config import AgentEngineCfg
-from kyora.models import agent_tools
+from kyora.models import agent_tools, openai_agent
 from kyora.models.agent_tools import ToolLoopEngine, find_posix_shell
 from kyora.models.base import EngineJob
-from kyora.models.nim_client import NIMClient
+from kyora.models.nim_client import NIMClient, NIMError
 from kyora.models.openai_agent import (
-    DISABLED_REASON, OpenAIAgentEngine, check_plan, elide_context, endpoint_host, family_extra, parse_arguments,
-    testspec_tests,
+    CHECK_COMMAND, DISABLED_REASON, OpenAIAgentEngine, check_plan, elide_context, endpoint_host, family_extra,
+    endpoint_wait_s, parse_arguments, retry_after_s, testspec_tests, text_tool_call,
 )
+from kyora.util import envsafe
 from tests.mock_nim import MockNIM
 
 REPO = Path(__file__).resolve().parent.parent
@@ -190,7 +193,9 @@ class _Base(unittest.TestCase):
     def engine(self, judge=None, **cfg_over) -> OpenAIAgentEngine:
         url = cfg_over.pop("base_url", None) or (self.mock.url if self.mock else "http://127.0.0.1:9/v1")
         c = acfg(url, **cfg_over)
-        return OpenAIAgentEngine(lambda: c, judge, self.home, client_factory=fast_client)
+        eng = OpenAIAgentEngine(lambda: c, judge, self.home, client_factory=fast_client)
+        eng.retry_base_s = 0.01  # transient retries without the real 5 s .. 60 s waits
+        return eng
 
     def run_engine(self, eng, job=None, cancel=None):
         sink = ListSink()
@@ -239,6 +244,13 @@ class AvailabilityTests(_Base):
 
     def test_endpoint_host_and_family_fields(self):
         self.assertEqual(endpoint_host("http://127.0.0.1:8080/v1"), "127.0.0.1:8080")
+        # never the user info or the query, also without a scheme
+        self.assertEqual(endpoint_host("https://user:s3cret@Host.Example:8443/v1?api_key=SECRET"), "host.example:8443")
+        self.assertEqual(endpoint_host("host.example/v1?api_key=SECRET"), "host.example")
+        self.assertEqual(endpoint_host("user:s3cret@host.example"), "host.example")
+        self.assertEqual(endpoint_host("localhost:8000/v1"), "localhost:8000")
+        self.assertEqual(endpoint_host("http://[::1]:9000/v1"), "[::1]:9000")
+        self.assertEqual(endpoint_host("?token=SECRET"), "")
         self.assertEqual(family_extra(ULTRA, True), {"chat_template_kwargs": {"enable_thinking": True}})
         self.assertEqual(family_extra(SUPER, False), {"chat_template_kwargs": {"enable_thinking": False}})
         self.assertEqual(family_extra(GLM, True), {})  # GLM thinks by default: nothing to send
@@ -366,7 +378,7 @@ class LoopTests(_Base):
         self.assertTrue(res.ok, res.error)
         self.assertEqual(mock_.requests[0]["chat_template_kwargs"], {"enable_thinking": False})
         turns = [d for d in sink.of("stage.progress") if d.get("turn_metrics")]
-        self.assertEqual(len(turns), 1)
+        self.assertEqual(len(turns), 2, "the answer without a tool call, and the one after the single nudge")
         tm = turns[0]["turn_metrics"]
         self.assertEqual((tm["turn"], tm["model"], tm["tool_calls"], tm["finish_reason"]), (1, GLM, 0, "stop"))
         self.assertIsInstance(tm["total_ms"], (int, float))
@@ -560,7 +572,7 @@ class FallbackTests(_Base):
         script.n = 1
         res2, _sink = self.run_engine(eng, self.job(run_id="r_two"))
         self.assertTrue(res2.ok, res2.error)
-        self.assertEqual([r["model"] for r in mock_.requests], [GLM])
+        self.assertEqual([r["model"] for r in mock_.requests], [GLM, GLM], "K3 is not asked again (+1: the nudge)")
 
     def test_403_key_falls_back_to_the_other_key(self):
         script = Script([answer(editor("create", "index.html", "k1", file_text=INDEX_HTML)), answer(content="done")])
@@ -615,7 +627,8 @@ class FallbackTests(_Base):
         eng = self.engine(FakeJudge(), model="google/gemma-4-31b-it", fallback_models=[GLM])
         res, _sink = self.run_engine(eng)
         self.assertTrue(res.ok, res.error)
-        self.assertEqual([r["model"] for r in mock_.requests], ["google/gemma-4-31b-it", GLM])
+        # the second GLM request is the single nudge after a first answer without any tool call
+        self.assertEqual([r["model"] for r in mock_.requests], ["google/gemma-4-31b-it", GLM, GLM])
         self.assertIn("refused function tools", res.raw["model_chain"]["gone"]["google/gemma-4-31b-it"])
 
 
@@ -641,13 +654,21 @@ class FailureKindTests(_Base):
         self.assertFalse(res.ok)
         self.assertEqual(res.raw["failure_kind"], "quota")
         self.assertIn("HTTP 429", res.error)
-        self.assertEqual(len(mock_.requests), 2, "the client's own retry, then the failure")
+        # the client's own retry per request; the turn itself is retried 6 times before it is classified
+        self.assertEqual(len(mock_.requests), 2 * (1 + 6))
+        self.assertEqual(res.raw["retries"], 6)
 
     def test_unavailable_when_unreachable(self):
-        res, _sink = self.run_engine(self.engine(FakeJudge(), base_url=free_port_url()))
+        res, sink = self.run_engine(self.engine(FakeJudge(), base_url=free_port_url()))
         self.assertFalse(res.ok)
         self.assertEqual(res.raw["failure_kind"], "unavailable")
         self.assertIn("cannot reach the agent endpoint", res.error)
+        # classified only after the same turn was retried 6 times, each one said
+        retries = [e for e in sink.of("engine.stderr") if e.get("kind") == "retry"]
+        self.assertEqual([e["retry"] for e in retries], [1, 2, 3, 4, 5, 6])
+        self.assertTrue(all(e["turn"] == 1 for e in retries))
+        self.assertIn("could not be reached", retries[0]["line"])
+        self.assertEqual(res.raw["retries"], 6)
 
     def test_unavailable_when_every_model_is_overloaded(self):
         self.serve(lambda req: {"status": 503, "error_body": OVERLOADED})
@@ -668,11 +689,18 @@ class FailureKindTests(_Base):
         self.assertEqual(len(eng._chain_for(eng.cfg).gone()), 0)
 
     def test_other_failures_carry_no_failure_kind(self):
-        self.serve(lambda req: {"status": 400, "error_body": {"error": {"message": "bad request: temperature"}}})
+        mock_ = self.serve(lambda req: {"status": 400, "error_body": {"error": {"message": "bad request: temperature"}}})
         res, _sink = self.run_engine(self.engine(FakeJudge()))
         self.assertFalse(res.ok)
         self.assertNotIn("failure_kind", res.raw)
         self.assertIn("HTTP 400", res.error)
+        self.assertEqual(len(mock_.requests), 1, "a 400 is not transient: not retried")
+
+    def test_a_429_without_credits_is_not_retried(self):
+        mock_ = self.serve(lambda req: {"status": 429, "error_body": {"error": {"message": "insufficient balance"}}})
+        res, _sink = self.run_engine(self.engine(FakeJudge(), fallback_models=[]))
+        self.assertEqual(res.raw["failure_kind"], "quota")
+        self.assertEqual(len(mock_.requests), 2, "only the client's own retry: waiting cannot add credits")
 
 
 # --------------------------------------------------------------------------- context budget
@@ -757,6 +785,69 @@ class CheckToolTests(_Base):
                       tool_messages(mock_.requests[1])[0]["content"])
         self.assertEqual(sink.of("engine.tool_use")[0]["name"], "KyoraCheck")
 
+    LOGIC = ("import { writeFileSync } from 'node:fs';\nimport test from 'node:test';\n"
+             "writeFileSync('ran.txt', 'ran');\ntest('at-01 adds up', () => {});\n")
+
+    def _with_logic_tests(self) -> None:
+        (self.ws / "tests").mkdir()
+        (self.ws / "tests" / "logic-tests.mjs").write_text(self.LOGIC, encoding="utf-8")
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+
+    def test_the_logic_test_run_is_judged_and_a_deny_runs_none_of_it(self):
+        self._with_logic_tests()
+        mock_ = self.serve(Script([answer(tc("kyora_check", "{}", "k1")), answer(content="done")]))
+        judge = FakeJudge(deny=("Bash",))
+        with mock.patch("kyora.pipeline.quality.find_node", lambda: "node"):  # judged before any Node runs
+            res, _sink = self.run_engine(self.engine(judge))
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(len(judge.calls), 1)
+        call = judge.calls[0][1]
+        self.assertEqual((call["tool_name"], call["tool_use_id"]), ("Bash", "k1"))
+        self.assertEqual(call["tool_input"]["command"], CHECK_COMMAND)
+        self.assertTrue(call["tool_input"]["file_path"].endswith("/tests/logic-tests.mjs"), call)
+        self.assertEqual(call["tool_input"]["content"], self.LOGIC)
+        self.assertEqual(tool_messages(mock_.requests[1])[0]["content"], "Denied by the Kyora judge: not in the plan")
+        self.assertFalse((self.ws / "ran.txt").exists())
+        self.assertEqual(res.permission_denials[0]["tool_name"], "Bash")
+
+    @unittest.skipUnless(shutil.which("node"), "no node")
+    def test_an_allowed_check_runs_the_logic_tests(self):
+        self._with_logic_tests()
+        self.serve(Script([answer(tc("kyora_check", "{}", "k1")), answer(content="done")]))
+        judge = FakeJudge()
+        res, _sink = self.run_engine(self.engine(judge))
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual([c[1]["tool_name"] for c in judge.calls], ["Bash"])
+        self.assertTrue((self.ws / "ran.txt").is_file())
+
+    def test_the_check_is_capped_by_the_run_deadline(self):
+        eng = self.engine()
+        block = {"type": "tool_use", "id": "k", "name": "kyora_check", "input": {}}
+        state = {"tool_names": ["str_replace_based_edit_tool", "kyora_check"], "denials": [],
+                 "tool_deadline": time.monotonic() - 1}
+        self.assertEqual(eng._handle_tool(self.job(), ListSink(), block, self.ws, self.home / "r", state),
+                         (agent_tools.DEADLINE_PASSED, True))
+        seen = []
+
+        def fake_check(_self, job, ws, run_dir, *, timeout_s, cancel=None):
+            seen.append(timeout_s)
+            return "all 1 checks pass"
+        state["tool_deadline"] = time.monotonic() + 30
+        with mock.patch.object(OpenAIAgentEngine, "kyora_check", fake_check):
+            self.assertEqual(eng._handle_tool(self.job(), ListSink(), block, self.ws, self.home / "r", state),
+                             ("all 1 checks pass", False))
+        self.assertTrue(0 < seen[0] <= 30, seen)
+        runner = mock.MagicMock()
+        runner.return_value.logic_tests.return_value = []
+        checker = mock.MagicMock()
+        checker.return_value.run.return_value = []
+        with mock.patch("kyora.pipeline.quality.find_node", lambda: "node"), \
+                mock.patch("kyora.pipeline.quality.NodeRunner", runner), \
+                mock.patch("kyora.pipeline.quality.StaticChecker", checker):
+            stop = threading.Event()
+            eng.kyora_check(self.job(), self.ws, self.home / "r", timeout_s=12.5, cancel=stop)
+        self.assertEqual(runner.call_args.kwargs, {"timeout_s": 12.5, "cancel": stop})  # a cancel stops node at once
+
     def test_check_disabled_in_settings(self):
         mock_ = self.serve(Script([answer(tc("kyora_check", "{}", "k1")), answer(content="done")]))
         (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
@@ -822,6 +913,38 @@ class ProbeTests(_Base):
         self.assertTrue(out["fallback_used"])
         self.assertTrue(out["tool_calls_ok"])
 
+    def test_probe_retries_an_answer_cut_off_while_thinking(self):
+        def handler(req):
+            if req["max_tokens"] <= 1024:
+                return answer(content="", reasoning="hmm " * 50, finish_reason="length")
+            return answer(tc("kyora_probe", {"ok": True}, "p1"))
+        mock_ = self.serve(handler)
+        out = self.engine().probe(timeout_s=20)
+        self.assertTrue(out["tool_calls_ok"], out)
+        self.assertEqual([r["max_tokens"] for r in mock_.requests], [1024, 4096])
+        self.assertNotIn("cut_off", out)
+
+    def test_probe_says_cut_off_while_thinking(self):
+        self.serve(lambda req: answer(content="", reasoning="hmm", finish_reason="length"))
+        out = self.engine().probe(timeout_s=20)
+        self.assertTrue(out["ok"])
+        self.assertFalse(out["tool_calls_ok"])
+        self.assertEqual(out["cut_off"], "thinking")
+        self.assertIn("cut off after 4096 tokens while thinking", out["hint"])
+
+    def test_probe_does_not_call_a_model_it_skipped_a_fallback(self):
+        mock_ = self.serve(lambda req: answer(tc("kyora_probe", {"ok": True}, "p1")))
+        eng = self.engine()  # GLM, fallback SUPER
+        eng._chain_for(eng.cfg).mark_busy(GLM, 120, "the provider is temporarily overloaded")  # an earlier run
+        out = eng.probe(timeout_s=20)
+        self.assertTrue(out["ok"] and out["tool_calls_ok"], out)
+        self.assertEqual((out["model"], out["tried"]), (SUPER, [SUPER]))
+        self.assertFalse(out["fallback_used"], "GLM was never asked, so it did not fail to answer")
+        self.assertEqual(out["skipped"], [{"model": GLM, "state": "busy",
+                                           "reason": "the provider is temporarily overloaded"}])
+        self.assertIn(f"{GLM} was not tried (busy", out["hint"])
+        self.assertEqual([r["model"] for r in mock_.requests], [SUPER])
+
     def test_probe_403_never_raises(self):
         self.serve(lambda req: {"status": 403, "error_body": FORBIDDEN})
         out = self.engine(api_key=BAD, key_label="nemotron key").probe(timeout_s=20)
@@ -840,6 +963,461 @@ class ProbeTests(_Base):
             out = OpenAIAgentEngine(lambda: c, None, self.home, client_factory=boom).probe()
         self.assertFalse(out["ok"])
         self.assertIn("factory broke", out["error"])
+
+
+# --------------------------------------------------------------------------- what is echoed to the endpoint
+class EchoTests(_Base):
+    def test_invalid_and_double_encoded_arguments_are_echoed_as_valid_json(self):
+        broken = '{"command": "create", "path": "index.html", "file_text": "<html'
+        double = json.dumps(json.dumps({"command": "view", "path": "existing.txt"}))
+        script = Script([answer(tc("str_replace_based_edit_tool", broken, "bad1"),
+                                tc("str_replace_based_edit_tool", double, "dbl1")),
+                         answer(editor("view", "existing.txt", "v2")), answer(content="done")])
+
+        def strict(req):  # like vLLM/SGLang: every historical tool-call argument must be a JSON object
+            for m in req["messages"]:
+                for call in m.get("tool_calls") or []:
+                    try:
+                        good = isinstance(json.loads(call["function"]["arguments"]), dict)
+                    except ValueError:
+                        good = False
+                    if not good:
+                        return {"status": 400, "error_body": {"error": {"message": "invalid tool call arguments"}}}
+            return script(req)
+        mock_ = self.serve(strict)
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        res, _sink = self.run_engine(self.engine(FakeJudge()))
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(len(mock_.requests), 3, "no request was refused")
+        calls = mock_.requests[1]["messages"][2]["tool_calls"]
+        self.assertEqual(json.loads(calls[0]["function"]["arguments"]), {"_invalid_arguments": broken})
+        self.assertEqual(json.loads(calls[1]["function"]["arguments"]), {"command": "view", "path": "existing.txt"})
+        results = tool_messages(mock_.requests[1])
+        self.assertTrue(results[0]["content"].startswith("Error: invalid JSON arguments:"), "the error stays in the result")
+        self.assertIn("1\thello", results[1]["content"])
+        self.assertEqual(res.raw["invalid_arguments"], 1)
+
+    def test_tool_blocks_cap_the_echo_and_the_calls_of_one_answer(self):
+        long_broken = '{"file_text": "' + "x" * 5000
+        msg = {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "b0", "type": "function", "function": {"name": "bash", "arguments": long_broken}}] + [
+            {"id": f"v{i}", "type": "function",
+             "function": {"name": "str_replace_based_edit_tool", "arguments": {"command": "view", "path": "."}}}
+            for i in range(40)]}
+        blocks = self.engine()._tool_blocks(msg, 1, False, 4096, set())
+        self.assertEqual(len(json.loads(msg["tool_calls"][0]["function"]["arguments"])["_invalid_arguments"]), 2000)
+        self.assertTrue(blocks[0]["invalid"])
+        self.assertEqual(json.loads(msg["tool_calls"][1]["function"]["arguments"]), {"command": "view", "path": "."})
+        over = [b["id"] for b in blocks if b.get("error") and not b.get("invalid")]
+        self.assertEqual(over, [f"v{i}" for i in range(31, 40)], "calls after the first 32 are not run")
+
+    def test_at_most_32_calls_of_one_answer_run_and_every_call_is_answered(self):
+        calls = [editor("view", "existing.txt", f"v{i}") for i in range(40)]
+        mock_ = self.serve(Script([answer(*calls), answer(content="done")]))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        res, _sink = self.run_engine(self.engine(FakeJudge()))
+        self.assertTrue(res.ok, res.error)
+        results = tool_messages(mock_.requests[1])
+        self.assertEqual(len(results), 40)
+        assert_pairing(self, mock_.requests[1]["messages"])
+        self.assertTrue(all("1\thello" in r["content"] for r in results[:32]))
+        self.assertTrue(all("more than 32 tool calls" in r["content"] for r in results[32:]))
+
+    def test_tool_call_ids_stay_unique_across_turns(self):
+        # an empty id: the mock (like many gateways) fills in call_1 on every turn
+        mock_ = self.serve(Script([answer(editor("view", "existing.txt", "")), answer(editor("view", "existing.txt", "")),
+                                   answer(editor("view", "existing.txt", "same")),
+                                   answer(editor("view", "existing.txt", "same")), answer(content="done")]))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        res, sink = self.run_engine(self.engine(FakeJudge()))
+        self.assertTrue(res.ok, res.error)
+        last = mock_.requests[-1]["messages"]
+        ids = [c["id"] for m in last for c in m.get("tool_calls") or []]
+        self.assertEqual(len(ids), 4)
+        self.assertEqual(len(set(ids)), 4, ids)
+        self.assertEqual(ids[:3], ["call_1_0", "call_2_0", "same"])
+        assert_pairing(self, last)
+        self.assertEqual([r["tool_use_id"] for r in sink.of("engine.tool_result")], ids)
+
+    def test_calls_of_an_answer_the_endpoint_stopped_are_not_run(self):
+        mock_ = self.serve(Script([answer(editor("create", "x.txt", "s1", file_text="x"), finish_reason="content_filter"),
+                                   answer(content="never asked")]))
+        judge = FakeJudge()
+        res, sink = self.run_engine(self.engine(judge))
+        self.assertFalse(res.ok)
+        self.assertIn("finish_reason=content_filter", res.error)
+        self.assertFalse((self.ws / "x.txt").exists())
+        self.assertEqual(judge.calls, [], "nothing was judged or run")
+        self.assertEqual(len(mock_.requests), 1)
+        result = sink.of("engine.tool_result")[0]
+        self.assertTrue(result["is_error"])
+        self.assertIn("the endpoint stopped this answer (finish_reason=content_filter); the call was not run",
+                      result["excerpt"])
+
+
+# --------------------------------------------------------------------------- transient failures
+class TransientRetryTests(_Base):
+    def retries(self, sink) -> list[dict]:
+        return [e for e in sink.of("engine.stderr") if e.get("kind") == "retry"]
+
+    def test_a_transient_failure_retries_the_same_turn(self):
+        script = Script([answer(editor("view", "existing.txt", "v1")), answer(content="done")])
+        failed = {"n": 0}
+
+        def handler(req):
+            if tool_messages(req) and failed["n"] < 2:  # turn 2: a 503 that outlasts the client's own retry
+                failed["n"] += 1
+                return {"status": 503, "error_body": OVERLOADED}
+            return script(req)
+        mock_ = self.serve(handler)
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        res, sink = self.run_engine(self.engine(FakeJudge(), fallback_models=[]))
+        self.assertTrue(res.ok, res.error)
+        notes = self.retries(sink)
+        self.assertEqual(len(notes), 1)
+        self.assertEqual((notes[0]["turn"], notes[0]["retry"], notes[0]["status"]), (2, 1, 503))
+        self.assertIn("temporarily unavailable", notes[0]["line"])
+        self.assertEqual(len(mock_.requests), 4)
+        self.assertEqual(mock_.requests[3]["messages"], mock_.requests[1]["messages"], "the same turn, nothing added")
+        self.assertEqual(res.num_turns, 2)
+        self.assertNotIn("failure_kind", res.raw)
+
+    def test_the_retry_count_starts_again_after_each_answer(self):
+        script = Script([answer(editor("view", "existing.txt", f"v{i}")) for i in range(3)] + [answer(content="done")])
+        failures: dict = {}
+
+        def handler(req):  # every turn fails once (both of the client's attempts), then answers
+            n = failures[len(req["messages"])] = failures.get(len(req["messages"]), 0) + 1
+            if n <= 2:
+                return {"status": 429, "error_body": {"error": {"message": "slow down"}}}
+            return script(req)
+        self.serve(handler)
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        eng = self.engine(FakeJudge(), fallback_models=[])
+        eng.transient_retries = 1
+        res, sink = self.run_engine(eng)
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(res.raw["retries"], 4, "one per turn: more than transient_retries in all, never in a row")
+        self.assertEqual([e["retry"] for e in self.retries(sink)], [1, 1, 1, 1])
+
+    def test_an_answer_ended_with_error_or_abort_is_retried_and_its_calls_never_run(self):
+        mock_ = self.serve(Script([answer(content="", finish_reason="error"),
+                                   answer(editor("create", "x.txt", "a1", file_text="x"), finish_reason="abort"),
+                                   answer(editor("view", "existing.txt", "v1")), answer(content="done")]))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        res, sink = self.run_engine(self.engine(FakeJudge()))
+        self.assertTrue(res.ok, res.error)
+        self.assertFalse((self.ws / "x.txt").exists())
+        self.assertEqual(res.raw["retries"], 2)
+        self.assertEqual(mock_.requests[2]["messages"], mock_.requests[0]["messages"])
+        self.assertEqual(res.num_turns, 2)
+        lines = [e["line"] for e in self.retries(sink)]
+        self.assertIn("finish_reason=error", lines[0])
+        self.assertIn("finish_reason=abort (its tool calls were not run)", lines[1])
+
+    def test_retry_after_from_the_endpoint_is_honoured(self):
+        failed = {"n": 0}
+
+        def handler(req):
+            if failed["n"] < 2:
+                failed["n"] += 1
+                return {"status": 429, "error_body": {"error": {"message": "rate limited: retry after 0.05 seconds"}}}
+            return answer(content="done") if tool_messages(req) else answer(editor("view", "existing.txt", "v1"))
+        self.serve(handler)
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        eng = self.engine(FakeJudge(), fallback_models=[])
+        eng.retry_base_s = 30  # the endpoint's 0.05 s wins over the own backoff
+        res, sink = self.run_engine(eng)
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual([e["delay_s"] for e in self.retries(sink)], [0.05])
+
+    def test_a_longer_wait_than_a_retry_may_take_fails_over_at_once(self):
+        # 429 with Retry-After: 900 and no wording in the body: the header reaches the engine through NIMError,
+        # and no retry is sent that the endpoint already said it would refuse
+        mock_ = self.serve(lambda req: {"status": 429, "retry_after": 900,
+                                        "error_body": {"error": {"message": "Too Many Requests"}}})
+        eng = self.engine(FakeJudge(), fallback_models=[])
+        eng.retry_base_s = 30
+        t = time.monotonic()
+        res, sink = self.run_engine(eng)
+        self.assertLess(time.monotonic() - t, 20)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.raw["failure_kind"], "quota")
+        self.assertEqual(self.retries(sink), [])
+        self.assertEqual(len(mock_.requests), 1, "neither the client nor the engine retried")
+
+    def test_retry_after_s(self):
+        self.assertEqual(retry_after_s(NIMError("x", status=429, body='{"error": {"retry_after": 12}}')), 12.0)
+        self.assertEqual(retry_after_s(NIMError("HTTP 429: please try again in 250ms", status=429)), 0.25)
+        self.assertEqual(retry_after_s(NIMError("x", status=429, body="Retry-After: 900")), 60.0, "capped")
+        exc = NIMError("x", status=503)
+        exc.headers = {"Retry-After": "7"}
+        self.assertEqual(retry_after_s(exc), 7.0)
+        self.assertEqual(retry_after_s(NIMError("x", status=429, retry_after=12.5)), 12.5)  # NIMClient sets it
+        self.assertEqual(endpoint_wait_s(NIMError("x", status=429, retry_after=900.0)), 900.0)
+        self.assertIsNone(retry_after_s(NIMError("x", status=503, body="Service temporarily overloaded")))
+
+    def test_no_wait_that_would_end_past_the_run_deadline(self):
+        mock_ = self.serve(lambda req: {"status": 503, "error_body": OVERLOADED})
+        eng = self.engine(FakeJudge(), fallback_models=[], timeout_s=60)
+        eng.retry_base_s = 90
+        t0 = time.monotonic()
+        res, sink = self.run_engine(eng)
+        self.assertLess(time.monotonic() - t0, 45, "classified at once instead of waiting 90 s")
+        self.assertEqual(res.raw["failure_kind"], "unavailable")
+        self.assertEqual(res.raw["retries"], 0)
+        self.assertEqual(self.retries(sink), [])
+        self.assertEqual(len(mock_.requests), 2)
+
+    def test_cancel_ends_the_wait(self):
+        self.serve(lambda req: {"status": 503, "error_body": OVERLOADED})
+        cancel = threading.Event()
+        timers: list = []
+
+        class CancelSoonAfterTheRetryNote(ListSink):
+            def on_event(self, ev):
+                super().on_event(ev)
+                if ev.type == "engine.stderr" and ev.data.get("kind") == "retry":
+                    timers.append(threading.Timer(0.3, cancel.set))
+                    timers[-1].start()
+        eng = self.engine(FakeJudge(), fallback_models=[])
+        eng.retry_base_s = 40
+        t0 = time.monotonic()
+        res = eng.run(self.job(), CancelSoonAfterTheRetryNote(), cancel)
+        for t in timers:
+            t.cancel()
+        self.assertLess(time.monotonic() - t0, 30, "the 40 s wait ended with the cancel")
+        self.assertEqual(res.error, "cancelled")
+        self.assertNotIn("failure_kind", res.raw)
+
+
+# --------------------------------------------------------------------------- final answers that are not final
+class FinalAnswerTests(_Base):
+    def test_tool_calls_written_as_text_are_not_run_and_the_model_is_told(self):
+        as_text = ('<tool_call>{"name": "str_replace_based_edit_tool", "arguments": {"command": "create", '
+                   '"path": "text.txt", "file_text": "x"}}</tool_call>')
+        mock_ = self.serve(Script([answer(content=as_text),
+                                   answer(editor("create", "index.html", "c1", file_text=INDEX_HTML)),
+                                   answer(content="Done.")]))
+        res, sink = self.run_engine(self.engine(FakeJudge()))
+        self.assertTrue(res.ok, res.error)
+        self.assertFalse((self.ws / "text.txt").exists(), "a call written as text is never run")
+        nudge = mock_.requests[1]["messages"][-1]
+        self.assertEqual(nudge["role"], "user")
+        self.assertIn("function-calling interface", nudge["content"])
+        self.assertIn("<tool_call>", nudge["content"])
+        self.assertEqual(res.raw["text_call_nudges"], 1)
+        self.assertEqual(res.raw["nudges"], 0)
+        self.assertTrue(any("tool call as text" in p["message"] for p in sink.of("stage.progress")))
+
+    def test_text_call_nudges_are_capped(self):
+        as_json = '{"name": "str_replace_based_edit_tool", "arguments": {"command": "view", "path": "."}}'
+        mock_ = self.serve(Script([answer(content=as_json)]))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        res, sink = self.run_engine(self.engine(FakeJudge()))
+        # 3 reminders per model, then the next model of the chain; with none left the run fails as a model
+        # failure (so the pipeline fails over) instead of ending as a success that changed nothing
+        self.assertFalse(res.ok)
+        self.assertEqual(res.raw["failure_kind"], "model")
+        self.assertIn("as text", res.error)
+        self.assertEqual([r["model"] for r in mock_.requests], [GLM] * 4 + [SUPER] * 4)
+        self.assertEqual([(s["from_model"], s["to_model"]) for s in res.raw["model_switches"]], [(GLM, SUPER)])
+        self.assertTrue(any(d.get("kind") == "model" and "trying " + SUPER in d["line"]
+                            for d in sink.of("engine.stderr")), sink.dump())
+
+    def test_text_calls_move_to_the_next_model_that_calls_tools(self):
+        as_json = '{"name": "str_replace_based_edit_tool", "arguments": {"command": "view", "path": "."}}'
+
+        def by_model(req):
+            if req["model"] == GLM:
+                return answer(content=as_json)
+            if any(m.get("role") == "tool" for m in req["messages"]):
+                return answer(content="Done: viewed the workspace.")
+            return answer(editor("view", ".", "c1"))
+        self.serve(Script([by_model]))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        res, _sink = self.run_engine(self.engine(FakeJudge()))
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(res.active_model, SUPER)
+        self.assertTrue(res.fallback_used)
+
+    def test_text_tool_call_detection(self):
+        names = ["bash", "str_replace_based_edit_tool", "kyora_check"]
+        self.assertIsNotNone(text_tool_call("<|tool_call_begin|>functions.bash:0<|tool_call_argument_begin|>{}", names))
+        self.assertIsNotNone(text_tool_call("<function=bash><parameter=command>ls</parameter></function>", names))
+        self.assertIsNotNone(text_tool_call('Now: {"type": "function", "function": {"name": "kyora_check", '
+                                            '"arguments": {}}}', names))
+        self.assertIsNotNone(text_tool_call('{"arguments": {"command": "ls"}, "name": "bash"}', names))
+        self.assertIsNone(text_tool_call('Done: the config is {"name": "Dodge", "arguments": 2}', names))
+        self.assertIsNone(text_tool_call("Done: index.html and src/game.js are written.", names))
+        self.assertIsNone(text_tool_call("", names))
+        t = time.monotonic()  # an unbalanced quote and many braces: decoded near each key, never scanned again
+        self.assertIsNone(text_tool_call('x"' + "{" * 50000 + ' "name" ' * 50, names))
+        self.assertLess(time.monotonic() - t, 5)
+
+    def test_a_first_answer_without_any_tool_call_is_nudged_once(self):
+        mock_ = self.serve(Script([answer(content="All done.")]))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        res, _sink = self.run_engine(self.engine(FakeJudge()))
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(len(mock_.requests), 2)
+        self.assertIn("without calling any tool", mock_.requests[1]["messages"][-1]["content"])
+        self.assertEqual(res.raw["idle_nudges"], 1)
+
+    def test_an_empty_final_answer_is_nudged(self):
+        mock_ = self.serve(Script([answer(editor("view", "existing.txt", "v1")), answer(content=""),
+                                   answer(content="Finished.")]))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        res, _sink = self.run_engine(self.engine(FakeJudge()))
+        self.assertTrue(res.ok, res.error)
+        nudge = mock_.requests[2]["messages"][-1]["content"]
+        self.assertIn("with an empty answer", nudge)
+        self.assertNotIn("without calling any tool", nudge)
+        self.assertEqual(res.result_text, "Finished.")
+
+
+# --------------------------------------------------------------------------- answers cut off while thinking
+class ThinkingCutTests(_Base):
+    CUT = answer(content="", reasoning="let me think " * 30, finish_reason="length")
+
+    def test_cut_off_while_thinking_retries_with_thinking_off_instead_of_continue(self):
+        mock_ = self.serve(Script([self.CUT, answer(editor("view", "existing.txt", "v1")), answer(content="done")]))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        res, sink = self.run_engine(self.engine(FakeJudge(), fallback_models=[]))  # GLM, thinking on
+        self.assertTrue(res.ok, res.error)
+        first, second, third = mock_.requests[:3]
+        self.assertEqual(second["messages"], first["messages"], "the cut answer is not appended, no 'continue'")
+        self.assertNotIn("chat_template_kwargs", first)
+        self.assertEqual(second["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(second["max_tokens"], 4096)
+        self.assertNotIn("chat_template_kwargs", third, "the next turn thinks again")
+        notes = [e for e in sink.of("engine.stderr") if e.get("kind") == "thinking"]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("thinking switched off", notes[0]["line"])
+        self.assertEqual(res.num_turns, 2)
+
+    def test_still_cut_off_doubles_max_tokens_then_fails_without_identical_requests(self):
+        mock_ = self.serve(Script([self.CUT]))
+        res, _sink = self.run_engine(self.engine(FakeJudge(), fallback_models=[]))
+        self.assertFalse(res.ok)
+        self.assertIn(f"while {GLM} was still thinking", res.error)
+        self.assertEqual([(r.get("chat_template_kwargs"), r["max_tokens"]) for r in mock_.requests],
+                         [(None, 4096), ({"enable_thinking": False}, 4096), ({"enable_thinking": False}, 8192)])
+
+    def test_a_refused_max_tokens_bump_names_the_cut_off_thought_not_the_context(self):
+        too_long = {"status": 400, "error_body": {"error": {"message": "This model's maximum context length is 8192 "
+                                                                       "tokens. However, you requested 8300 tokens"}}}
+        mock_ = self.serve(Script([self.CUT, self.CUT, too_long]))
+        res, _sink = self.run_engine(self.engine(FakeJudge(), fallback_models=[]))
+        self.assertFalse(res.ok)
+        self.assertIn(f"while {GLM} was still thinking", res.error)
+        self.assertIn("refused the retry with max_tokens=8192 (HTTP 400", res.error)
+        self.assertEqual((res.raw["context_retries"], res.raw["elided_messages"]), (0, 0))
+        self.assertEqual(len(mock_.requests), 3, "no elided resend of the same request")
+
+    def test_a_model_without_a_thinking_switch_gets_more_tokens(self):
+        mock_ = self.serve(Script([self.CUT]))
+        res, _sink = self.run_engine(self.engine(FakeJudge(), model="poolside/laguna-xs-2.1", fallback_models=[]))
+        self.assertFalse(res.ok)
+        self.assertEqual([r["max_tokens"] for r in mock_.requests], [4096, 8192])
+
+
+# --------------------------------------------------------------------------- context overflow
+class OverflowTests(_Base):
+    def test_overflow_with_few_tool_results_elides_old_reasoning(self):
+        calls = {"n": 0}
+
+        def handler(req):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return answer(editor("view", "existing.txt", "v1"), reasoning="r" * 60000)
+            if calls["n"] == 2:
+                return answer(editor("view", "existing.txt", "v2"))
+            if calls["n"] == 3:  # no context wording: a 413 is an overflow all the same
+                return {"status": 413, "error_body": {"error": {"message": "payload too large"}}}
+            return answer(content="done")
+        mock_ = self.serve(handler)
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        res, sink = self.run_engine(self.engine(FakeJudge()))
+        self.assertTrue(res.ok, res.error)
+        before, retried = mock_.requests[2]["messages"], mock_.requests[3]["messages"]
+        self.assertEqual(before[2]["reasoning_content"], "r" * 60000)
+        self.assertNotIn("reasoning_content", retried[2], "the old turn's reasoning was elided")
+        self.assertEqual(len(retried), len(before), "no message removed")
+        assert_pairing(self, retried)
+        notes = [e for e in sink.of("engine.stderr") if e.get("kind") == "context"]
+        self.assertTrue(notes and "HTTP 413" in notes[0]["line"], notes)
+        self.assertEqual(res.raw["context_retries"], 1)
+
+    def test_413_is_an_overflow(self):
+        self.assertTrue(OpenAIAgentEngine._context_overflow(NIMError("x", status=413, body="payload too large")))
+        self.assertFalse(OpenAIAgentEngine._context_overflow(NIMError("x", status=400, body="bad temperature")))
+        self.assertTrue(OpenAIAgentEngine._context_overflow(NIMError("x", status=400, body="maximum context length")))
+
+    def test_elide_context_deep_with_a_smaller_keep(self):
+        msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+        for i in range(3):
+            args = json.dumps({"command": "create", "path": f"f{i}.js", "file_text": "x" * 5000})
+            msgs.append({"role": "assistant", "content": "", "reasoning_content": "r" * 3000,
+                         "tool_calls": [{"id": f"c{i}", "type": "function",
+                                         "function": {"name": "str_replace_based_edit_tool", "arguments": args}}]})
+            msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": "o" * 4000})
+        n = len(msgs)
+        self.assertEqual(elide_context(msgs, 1000), {"messages": 0, "chars": 0}, "default: 3 results <= 8, untouched")
+        stats = elide_context(msgs, 1000, keep=1, deep=True)
+        self.assertGreater(stats["chars"], 0)
+        self.assertEqual(len(msgs), n)
+        assert_pairing(self, msgs)
+        self.assertTrue(msgs[3]["content"].startswith("[output elided to save context:"))
+        self.assertTrue(msgs[5]["content"].startswith("[output elided to save context:"))
+        self.assertEqual(msgs[7]["content"], "o" * 4000, "the newest result is kept")
+        self.assertNotIn("reasoning_content", msgs[2])
+        self.assertNotIn("reasoning_content", msgs[4])
+        self.assertIn("elided to save context", msgs[4]["tool_calls"][0]["function"]["arguments"])
+        self.assertEqual(msgs[6]["reasoning_content"], "r" * 3000, "the newest assistant message is never touched")
+        self.assertNotIn("elided", msgs[6]["tool_calls"][0]["function"]["arguments"])
+        # deep: also with no more than `keep` tool results, everything before the newest assistant message
+        few = [m for m in msgs[:6]]
+        few[2] = {**few[2], "reasoning_content": "r" * 3000}
+        self.assertGreater(elide_context(few, 10, keep=8, deep=True)["chars"], 0)
+        self.assertNotIn("reasoning_content", few[2])
+
+
+# --------------------------------------------------------------------------- tools under the run's deadline
+class ToolDeadlineTests(_Base):
+    def test_the_loop_gives_the_tools_the_run_deadline_and_the_users_cancel(self):
+        self.serve(Script([answer(editor("view", "existing.txt", "v1")), answer(content="done")]))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        eng = self.engine(FakeJudge(), timeout_s=300)
+        seen = []
+        real = eng._run_tools
+
+        def spy(job, sink, cancel_, blocks, *args, **kw):
+            seen.append((cancel_, kw.get("deadline")))
+            return real(job, sink, cancel_, blocks, *args, **kw)
+        eng._run_tools = spy
+        cancel = threading.Event()
+        t0 = time.monotonic()
+        res, _sink = self.run_engine(eng, cancel=cancel)
+        self.assertTrue(res.ok, res.error)
+        self.assertIs(seen[0][0], cancel, "the user's cancel: a running command is killed, the message stays true")
+        self.assertGreaterEqual(seen[0][1], t0 + 300)
+        self.assertLessEqual(seen[0][1], time.monotonic() + 300)
+
+    @unittest.skipUnless(HAS_SHELL, "no POSIX shell")
+    def test_a_command_running_into_the_deadline_is_killed_and_later_calls_do_not_run(self):
+        self.serve(Script([answer(tc("bash", {"command": "sleep 120"}, "b1"),
+                                  editor("create", "late.txt", "e1", file_text="x")),
+                           answer(content="never asked")]))
+        t0 = time.monotonic()
+        res, sink = self.run_engine(self.engine(FakeJudge(), timeout_s=8))
+        self.assertLess(time.monotonic() - t0, 90, "the 120 s sleep was killed at the run deadline")
+        self.assertFalse(res.ok)
+        self.assertEqual(sink.of("engine.result")[-1]["subtype"], "error_timeout")
+        results = sink.of("engine.tool_result")
+        self.assertIn("the run deadline was reached", results[0]["excerpt"])
+        self.assertIn("the run deadline passed; the call was not run", results[1]["excerpt"])
+        self.assertFalse((self.ws / "late.txt").exists())
 
 
 # --------------------------------------------------------------------------- devices without a shell
@@ -881,12 +1459,107 @@ class SharedMachineryTests(unittest.TestCase):
     def test_bash_env_is_scrubbed_for_the_agent_too(self):
         if not HAS_SHELL:
             self.skipTest("no POSIX shell")
-        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"NVIDIA_API_KEY": "nvapi-x", "KEEP": "1"}):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"NVIDIA_API_KEY": "nvapi-x", "KEEP": "1",
+                                                                             "NO_COLOR": "1"}):
             eng = OpenAIAgentEngine(lambda: None, None, d)
             out, is_error = eng._bash('env', d)
         self.assertFalse(is_error, out)
         self.assertNotIn("NVIDIA_API_KEY", out)
-        self.assertIn("KEEP=1", out)
+        self.assertNotIn("KEEP=1", out)  # not allowlisted
+        self.assertIn("NO_COLOR=1", out)
+
+
+
+# --------------------------------------------------------------------------- tool safety (deadline, cancel, redaction)
+class ToolSafetyTests(unittest.TestCase):
+    """The shared tool executor: the run deadline, cancel, bounded output and redaction of configured secrets."""
+
+    SECRET = "nvapi-configured-key-0123456789"
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="kyora-toolsafety-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.ws = self.tmp / "ws"
+        self.ws.mkdir()
+        self.run_dir = self.tmp / "run"
+        self.eng = OpenAIAgentEngine(lambda: None, FakeJudge(), self.tmp / "home")
+        self.job = EngineJob(run_id="r_safe", workspace=self.ws, prompt="p", system_prompt="s", max_turns=5, model=GLM,
+                             fallback_models=[], effort="default")
+        envsafe.clear_secrets()
+        self.addCleanup(envsafe.clear_secrets)
+
+    def state(self) -> dict:
+        return {"denials": [], "tool_names": ["bash", "str_replace_based_edit_tool"]}
+
+    def run_tools(self, blocks, *, cancel=None, deadline=None, sink=None):
+        return self.eng._run_tools(self.job, sink or ListSink(), cancel or threading.Event(), blocks, self.ws,
+                                   self.run_dir, self.state(), deadline=deadline)
+
+    def test_calls_after_the_deadline_are_not_run_but_answered(self):
+        blocks = [{"type": "tool_use", "id": "c1", "name": "str_replace_based_edit_tool",
+                   "input": {"command": "create", "path": "late.txt", "file_text": "x"}},
+                  {"type": "tool_use", "id": "c2", "name": "bash", "input": {"command": "echo hi > late2.txt"}}]
+        results = self.run_tools(blocks, deadline=time.monotonic() - 1)
+        self.assertEqual([(r["tool_use_id"], r["is_error"]) for r in results], [("c1", True), ("c2", True)])
+        for r in results:
+            self.assertIn("the run deadline passed; the call was not run", r["content"])
+        self.assertFalse((self.ws / "late.txt").exists())
+        self.assertFalse((self.ws / "late2.txt").exists())
+        # a deadline still ahead does not stop the call
+        res = self.run_tools(blocks[:1], deadline=time.monotonic() + 600)[0]
+        self.assertFalse(res["is_error"], res)
+        self.assertTrue((self.ws / "late.txt").is_file())
+
+    def test_tool_timeout_is_capped_by_the_deadline(self):
+        state = {"tool_deadline": time.monotonic() + 5}
+        self.assertLessEqual(ToolLoopEngine._tool_timeout(state, 120), 5)
+        self.assertEqual(ToolLoopEngine._tool_timeout({"tool_deadline": time.monotonic() - 1}, 120), 0.0)
+        self.assertEqual(ToolLoopEngine._tool_timeout({}, 120), 120.0)
+
+    def test_results_events_and_journal_are_redacted(self):
+        envsafe.register_secret("keys.agent.api_key", self.SECRET)
+        (self.ws / "notes.txt").write_text(f"key={self.SECRET}\n", encoding="utf-8")
+        sink = ListSink()
+        res = self.run_tools([{"type": "tool_use", "id": "v1", "name": "str_replace_based_edit_tool",
+                               "input": {"command": "view", "path": "notes.txt"}}], sink=sink)[0]
+        self.assertNotIn(self.SECRET, res["content"])
+        self.assertIn("[redacted keys.agent.api_key]", res["content"])
+        self.assertNotIn(self.SECRET, sink.dump())
+        journal = self.run_dir / "engine" / "agent_turns.jsonl"
+        ToolLoopEngine._journal(journal, {"content": f"the model echoed {self.SECRET}"})
+        text = journal.read_text(encoding="utf-8")
+        self.assertNotIn(self.SECRET, text)
+        self.assertEqual(json.loads(text)["content"], "the model echoed [redacted keys.agent.api_key]")
+
+    @unittest.skipUnless(HAS_SHELL, "no POSIX shell")
+    def test_bash_deadline_cancel_background_and_bounded_output(self):
+        t = time.monotonic()
+        out, is_error = self.eng._bash("sleep 60", self.ws, deadline=time.monotonic() + 1)
+        self.assertTrue(is_error)
+        self.assertIn("run deadline", out)
+        self.assertEqual(self.eng._bash("echo x", self.ws, deadline=time.monotonic() - 1),
+                         ("Error: the run deadline passed; the call was not run", True))
+        cancel = threading.Event()
+        timer = threading.Timer(0.5, cancel.set)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        out, is_error = self.eng._bash("echo before; sleep 60", self.ws, cancel=cancel)
+        self.assertTrue(is_error)
+        self.assertTrue(out.endswith("[cancelled]"), out)
+        out, is_error = self.eng._bash("sleep 60 & echo started", self.ws)  # the background job is stopped
+        self.assertEqual((out, is_error), ("started", False))
+        self.assertLess(time.monotonic() - t, 60, "a hang would take the children's 60 s")
+        out, is_error = self.eng._bash(f'"{sys.executable}" -c "print(\'y\' * 3000000)"', self.ws)
+        self.assertFalse(is_error)
+        self.assertLess(len(out), agent_tools.MAX_TOOL_OUTPUT + 200)
+        self.assertIn("characters omitted", out)
+
+    def test_bash_tool_note_for_the_description(self):
+        # what the model is told must hold on this platform: Windows does not stop background processes
+        want = agent_tools.BASH_BACKGROUND_WINDOWS if os.name == "nt" else agent_tools.BASH_BACKGROUND_POSIX
+        self.assertEqual(agent_tools.BASH_BACKGROUND_NOTE, want)
+        self.assertIn(want, openai_agent.BASH_FUNCTION["function"]["description"])
+        self.assertIn("not stopped", agent_tools.BASH_BACKGROUND_WINDOWS)
 
 
 if __name__ == "__main__":

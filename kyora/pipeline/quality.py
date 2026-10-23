@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ..util import procs
+from ..util.envsafe import redact, safe_env
 from ..util.fs import atomic_write_bytes, atomic_write_json, read_json, which
 from ..util.ids import now_iso
 
@@ -58,6 +59,9 @@ MAX_SCAN_BYTES = 5 * 1024 * 1024
 TEXT_SCAN_EXTS = frozenset({".html", ".htm", ".js", ".mjs", ".cjs", ".css"})
 HTML_EXTS = frozenset({".html", ".htm"})
 DEFERRED_DETAIL = "no syntax verification available"
+# node runs model-written code: an allowlisted environment (no keys) without colour codes in its output
+NODE_ENV_EXTRA = {"NO_COLOR": "1", "FORCE_COLOR": "0", "NODE_DISABLE_COLORS": "1"}
+MAX_NODE_OUTPUT = 200_000  # per stream; head and tail are kept, so TAP's summary at the end survives a flood
 DID_NOT_RUN_DETAIL = "did not run"
 
 _ACCEPTANCE_ID_RE = re.compile(r"^([A-Za-z]{1,8}-\d+)(?=$|[\s:.,)\]-])")
@@ -721,10 +725,16 @@ class NodeRunner:
     TAP reporter on ``tests/logic-tests.mjs``.
     """
 
-    def __init__(self, node: str | None, workspace: Path, *, timeout_s: float = 120):
+    def __init__(self, node: str | None, workspace: Path, *, timeout_s: float = 120, cancel=None):
         self.node = node
         self.workspace = Path(workspace)
         self.timeout_s = timeout_s
+        self.cancel = cancel  # a threading.Event (or anything with is_set()): stops a running node at once
+
+    def _run(self, argv: list[str], cwd, timeout: float) -> tuple[int, str, str]:
+        """``procs.run`` for model-written code: allowlisted environment, bounded output, cancellable."""
+        return procs.run(argv, cwd=cwd, env=safe_env(NODE_ENV_EXTRA), timeout=timeout,
+                         max_output_chars=MAX_NODE_OUTPUT, cancel=self.cancel)
 
     @property
     def available(self) -> bool:
@@ -767,14 +777,15 @@ class NodeRunner:
                 except OSError as exc:
                     out.append(Check(cid, group, name, "fail", True, f"unreadable: {exc}", "python"))
                     continue
-                rc, _stdout, stderr = procs.run([self.node, "--check", str(tmp)], cwd=tmpdir.name, timeout=60)
+                rc, _stdout, stderr = self._run([self.node, "--check", str(tmp)], tmpdir.name, 60)
                 runner = "node --check" + (" (module)" if is_module else "")
                 if rc == 0:
                     out.append(Check(cid, group, name, "pass", True, "ok", runner))
                 elif rc == -9:
                     out.append(Check(cid, group, name, "fail", True, "node --check timed out", runner))
                 else:
-                    out.append(Check(cid, group, name, "fail", True, self._condense_error(stderr, str(tmp), rel), runner))
+                    out.append(Check(cid, group, name, "fail", True,
+                                     redact(self._condense_error(stderr, str(tmp), rel)), runner))
         finally:
             if tmpdir is not None:
                 tmpdir.cleanup()
@@ -812,14 +823,14 @@ class NodeRunner:
         if not test_file.is_file():
             return [Check("node:logic-tests", "node", "Node logic tests", "skip", False,
                           f"{LOGIC_TESTS_PATH} not present", "node --test")]
-        env = dict(os.environ)
-        env.update({"NO_COLOR": "1", "FORCE_COLOR": "0", "NODE_DISABLE_COLORS": "1"})
+        # the tests are model-written: no API key in their environment, bounded output, and what they print is
+        # redacted before it reaches gate.json, the review model and the FIX prompt (they can still read files)
         argv = [self.node, "--test", "--test-reporter=tap", LOGIC_TESTS_PATH]
-        rc, stdout, stderr = procs.run(argv, cwd=self.workspace, env=env, timeout=self.timeout_s)
+        rc, stdout, stderr = self._run(argv, self.workspace, self.timeout_s)
         if rc not in (0, -9) and "--test-reporter" in stderr and ("bad option" in stderr or "unknown" in stderr.lower()):
             # Node 18.0-18.14: TAP is the default reporter and the flag does not exist.
-            rc, stdout, stderr = procs.run([self.node, "--test", LOGIC_TESTS_PATH], cwd=self.workspace, env=env,
-                                           timeout=self.timeout_s)
+            rc, stdout, stderr = self._run([self.node, "--test", LOGIC_TESTS_PATH], self.workspace, self.timeout_s)
+        stdout, stderr = redact(stdout), redact(stderr)
         leaves = parse_tap(stdout)
         checks: list[Check] = []
         seen: dict[str, int] = {}
@@ -839,8 +850,10 @@ class NodeRunner:
                 detail = f"{e['duration_ms']:.1f} ms" if e["duration_ms"] is not None else "ok"
             checks.append(Check(cid, "node", e["name"], e["status"], False, detail, "node --test"))
         if rc == -9:
-            checks.append(Check("node:logic-tests", "node", "Node logic tests finished", "fail", False,
-                                f"timed out after {self.timeout_s:g} s", "node --test"))
+            stopped = "cancelled" if self.cancel is not None and self.cancel.is_set() else \
+                f"timed out after {self.timeout_s:g} s"
+            checks.append(Check("node:logic-tests", "node", "Node logic tests finished", "fail", False, stopped,
+                                "node --test"))
         elif not leaves:
             tail = _short("\n".join((stderr or stdout).strip().splitlines()[-8:]), 600)
             checks.append(Check("node:logic-tests", "node", "Node logic tests", "fail", False,

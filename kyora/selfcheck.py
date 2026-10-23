@@ -463,7 +463,10 @@ class SelfCheck:
         if key_label:
             measured["key"] = key_label
         key_note = ""
-        if res.get("chat_ok") and own_key and key_label and key_label != own_key:
+        if res.get("chat_ok") and own_key and key_label and key_label != own_key and not key_present:
+            key_note = f"the {own_key} is not set; the {key_label} answered (nvidia.share_keys)"
+            measured["key_fallback"] = True
+        elif res.get("chat_ok") and own_key and key_label and key_label != own_key:
             refused = next((n for n in notes if n.get("from_key") == own_key), None)
             code = f" (HTTP {refused['status']})" if refused and refused.get("status") else ""
             key_note = (f"the {own_key} was refused{code}; the {key_label} answered "
@@ -478,9 +481,10 @@ class SelfCheck:
                 measured["hint"] = hint
             if status_code in (401, 403) and getattr(client, "alt_key_labels", None) == [] and notes:
                 detail += " (the other configured key was refused too)"
-            if not key_present:
+            any_key = key_present or bool(getattr(client, "api_key", ""))  # the shared key may serve the role
+            if not any_key:
                 detail += " (no key configured)"
-            definite = status_code in (401, 403, 404, 410) or not key_present
+            definite = status_code in (401, 403, 404, 410) or not any_key
             return ("fail" if definite else "warn"), detail, measured, res
         detail = f"{answered_by}: 1-token chat {res.get('latency_ms')} ms"
         status = "ok"

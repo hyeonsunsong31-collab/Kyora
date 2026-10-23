@@ -621,7 +621,14 @@ class ArgvAndSettingsTests(TempHomeMixin, unittest.TestCase):
         hook_path = (self.home / "bin" / "kyora_hook.py").as_posix()
         self.assertEqual(cmd, f'"{python}" "{hook_path}"')
         self.assertNotIn("\\", cmd)
-        self.assertEqual(settings["permissions"], {"deny": ["WebFetch", "WebSearch"]})
+        deny = settings["permissions"]["deny"]
+        self.assertEqual(deny[:2], ["WebFetch", "WebSearch"])
+        # Claude Code's own Read/Grep/Glob/Edit/Write never reach the judge hook: Kyora's secret folders are denied here
+        home_cfg = (self.home / "config").as_posix().rstrip("/")
+        rule = "//" + home_cfg[0].lower() + home_cfg[2:] if home_cfg[1:2] == ":" else "/" + home_cfg
+        for tool in ("Read", "Edit", "Write"):
+            self.assertIn(f"{tool}({rule}/**)", deny)
+        self.assertFalse(any(self.ws.as_posix() in r for r in deny))  # the workspace itself stays usable
 
     def test_settings_matcher_follows_judge_tools(self):
         eng = ClaudeCodeEngine(make_cfg(["claude"], judge_tools=["Bash", "Write"]), self.home, None)
@@ -906,7 +913,7 @@ class RunWithFakeCLITests(TempHomeMixin, unittest.TestCase):
         self.assertEqual((run_dir / "prompt.txt").read_text(encoding="utf-8"), "Build the game")
         self.assertEqual((run_dir / "system_prompt.md").read_text(encoding="utf-8"), "You are Kyora's engine.")
         settings = json.loads((run_dir / "claude_settings.json").read_text(encoding="utf-8"))
-        self.assertEqual(settings["permissions"]["deny"], ["WebFetch", "WebSearch"])
+        self.assertEqual(settings["permissions"]["deny"][:2], ["WebFetch", "WebSearch"])  # + the secret folders
         self.assertTrue((self.home / "bin" / "kyora_hook.py").is_file())
         stream = (run_dir / "engine" / "stream.jsonl").read_text(encoding="utf-8").splitlines()
         first = json.loads(stream[0])

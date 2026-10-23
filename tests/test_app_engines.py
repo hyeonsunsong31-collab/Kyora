@@ -19,6 +19,7 @@ from unittest import mock
 
 from kyora.config import Config
 from kyora.server import KyoraServer, Router
+from kyora.util import envsafe
 from tests.mock_nim import MockNIM, tool_response
 
 REPO = Path(__file__).resolve().parents[1]
@@ -38,6 +39,7 @@ class _AppBase(unittest.TestCase):
     def setUp(self):
         self.mock = MockNIM(probe_handler, models=["z-ai/glm-5.3", "nvidia/nemotron-3-ultra-550b-a55b"]).start()
         self.addCleanup(self.mock.stop)
+        self.addCleanup(envsafe.clear_secrets)  # an App registers its keys process-wide for redaction
         self.tmp = Path(tempfile.mkdtemp(prefix="kyora-app-engines-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         old = {k: os.environ.get(k) for k in ("KYORA_HOME", "KYORA_CONFIG_DIR", "NVIDIA_API_KEY", "ANTHROPIC_API_KEY")}
@@ -96,6 +98,12 @@ class AppWiringTests(_AppBase):
         # without Claude Code, the Messages API and a Hub the agent engine is the selected one
         self.assertIs(app.engine(), app.agent_engine)
         self.assertEqual(st["selected_engine"]["backend"], "openai_agent")
+
+    def test_configured_keys_are_registered_for_redaction(self):
+        envsafe.clear_secrets()
+        self.make_app()
+        self.assertEqual(envsafe.redact(f"a {GOOD} b {OTHER} c"),
+                         "a [redacted nvidia.kimi.api_key] b [redacted nvidia.nemotron.api_key] c")
 
     def test_settings_apply_without_a_restart(self):
         app = self.make_app()
@@ -245,6 +253,14 @@ class SettingsRoundTripTests(_AppBase):
         status, pub = self.call("GET", "/api/settings?reveal=1")
         self.assertEqual(pub["keys"]["agent"]["api_key"], "sk-agent-secret-0123456789")
 
+    def test_a_key_saved_in_settings_is_redacted_from_then_on(self):
+        new_key = "sk-agent-brand-new-key-0123456789"
+        self.assertEqual(envsafe.redact(new_key), new_key)
+        status, res = self.call("PUT", "/api/settings", {"keys": {"agent.api_key": new_key, "hub.token": "hub-tok-0123456789"}})
+        self.assertEqual(status, 200, res)
+        self.assertEqual(envsafe.redact(f"{new_key} hub-tok-0123456789"),
+                         "[redacted agent.api_key] [redacted hub.token]")
+
     def test_invalid_values_are_refused_naming_the_field(self):
         bad = [
             ({"settings": {"agent_engine.max_turns": 0}}, "agent_engine.max_turns"),
@@ -273,6 +289,32 @@ class SettingsRoundTripTests(_AppBase):
         self.assertEqual(c.base_url, self.mock.url.rstrip("/"))
         self.assertEqual((c.api_key, c.key_label), (GOOD, "kimi key"))
         self.assertEqual(c.alt_keys, [("nemotron key", OTHER)])
+
+
+class AgentKeyScopeTests(unittest.TestCase):
+    """A role key goes to the agent endpoint only when the role uses that same endpoint."""
+
+    def cfg(self, keys: dict) -> "Config":
+        return Config(Path(tempfile.gettempdir()), keys, {}).agent_engine
+
+    def test_a_kimi_key_for_moonshot_never_goes_to_nvidia(self):
+        c = self.cfg({"nvidia": {"kimi": {"api_key": "sk-moonshot-SECRET-0123456789",
+                                          "base_url": "https://api.moonshot.ai/v1"},
+                                 "nemotron": {"api_key": OTHER}}})
+        self.assertEqual((c.base_url, c.api_key, c.key_label, c.alt_keys),
+                         ("https://integrate.api.nvidia.com/v1", OTHER, "nemotron key", []))
+        self.assertNotIn("sk-moonshot", json.dumps([c.api_key, c.alt_keys]))
+
+    def test_both_role_keys_on_the_agent_endpoint_and_an_own_key_alone(self):
+        c = self.cfg({"nvidia": {"kimi": {"api_key": GOOD}, "nemotron": {"api_key": OTHER}}})
+        self.assertEqual((c.api_key, c.key_label, c.alt_keys), (GOOD, "kimi key", [("nemotron key", OTHER)]))
+        c = self.cfg({"nvidia": {"kimi": {"api_key": GOOD}, "nemotron": {"api_key": GOOD}}})
+        self.assertEqual(c.alt_keys, [], "one key is not tried twice")
+        c = self.cfg({"agent": {"base_url": "https://llm.example.test/v1"},
+                      "nvidia": {"kimi": {"api_key": GOOD}, "nemotron": {"api_key": OTHER}}})
+        self.assertEqual((c.base_url, c.api_key, c.alt_keys), ("https://llm.example.test/v1", "", []))
+        c = self.cfg({"agent": {"api_key": "sk-own-0123456789"}, "nvidia": {"kimi": {"api_key": GOOD}}})
+        self.assertEqual((c.api_key, c.key_label, c.alt_keys), ("sk-own-0123456789", "agent key", []))
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")

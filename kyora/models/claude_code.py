@@ -30,6 +30,7 @@ import time
 from collections import deque
 from importlib import resources
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from ..config import ClaudeCodeCfg
@@ -256,6 +257,15 @@ class _Attempt:
 
 
 # --------------------------------------------------------------------------- engine
+def _rule_path(path: str) -> str:
+    """``/abs/dir`` -> ``//abs/dir``; ``C:/Users/x`` -> ``//c/Users/x`` (Claude Code permission-rule spelling)."""
+    p = str(path or "").replace("\\", "/").rstrip("/")
+    m = re.match(r"^([A-Za-z]):(/.*)?$", p)
+    if m:
+        return "//" + m.group(1).lower() + (m.group(2) or "")
+    return "/" + p if p.startswith("/") else ""
+
+
 class ClaudeCodeEngine(CodeEngine):
     """Code engine backed by the Claude Code CLI (``claude -p ... --output-format stream-json``)."""
 
@@ -418,8 +428,22 @@ class ClaudeCodeEngine(CodeEngine):
                     "hooks": [{"type": "command", "command": f'"{python}" "{hook}"', "timeout": HOOK_TIMEOUT_S}],
                 }]
             },
-            "permissions": {"deny": list(DENIED_PERMISSIONS)},
+            "permissions": {"deny": list(DENIED_PERMISSIONS) + self.secret_deny_rules()},
         }
+
+    def secret_deny_rules(self) -> list[str]:
+        """Permission rules keeping Claude Code's own tools (Read, Grep, Glob, Edit, Write) out of Kyora's config and
+        data directories: those tools are not sent through the judge hook, so the judge's secret rule cannot see them.
+        Absolute paths are written ``//path``; on Windows Claude Code matches ``C:\\x`` as ``/c/x`` (``//c/x``)."""
+        from ..pipeline.judge import secret_places
+        config = getattr(getattr(self.app, "config", None), "config_dir", None)
+        places = secret_places(SimpleNamespace(config_dir=config) if config else None, self.home)
+        rules: list[str] = []
+        for d in list(places["dirs"]) + list(places.get("real_dirs") or []):
+            pat = _rule_path(d)
+            if pat:
+                rules += [f"Read({pat}/**)", f"Edit({pat}/**)", f"Write({pat}/**)"]
+        return list(dict.fromkeys(rules))
 
     def prompt_via_stdin(self, job: EngineJob, exe: str | None = None) -> bool:
         """Long prompts, and every prompt for a .cmd/.bat shim ``exe``, go through stdin instead of argv."""
@@ -630,9 +654,13 @@ class ClaudeCodeEngine(CodeEngine):
         if kind == "rate_limit_event":
             info = obj.get("rate_limit_info") if isinstance(obj.get("rate_limit_info"), dict) else {}
             limits = state.setdefault("rate_limits", [])
-            if len(limits) < 20:
-                limits.append({k: info.get(k) for k in ("status", "resetsAt", "errorCode", "overageDisabledReason",
-                                                        "rateLimitType") if k in info})
+            limits.append({k: info.get(k) for k in ("status", "resetsAt", "errorCode", "overageDisabledReason",
+                                                    "rateLimitType") if k in info})
+            # one event per API call: keep the 20 most recent, and a 'rejected' one over any other (it names
+            # the reset of the limit that refused; an early weekly warning must not stand in for it)
+            while len(limits) > 20:
+                drop = next((i for i, e in enumerate(limits) if str(e.get("status") or "").lower() != "rejected"), 0)
+                del limits[drop]
             return []
         if kind == "result":
             state["result"] = obj

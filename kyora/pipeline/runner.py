@@ -12,6 +12,7 @@ once. ``Runner.execute`` drives one run::
     engine usage limit, no other engine, known reset -> blocked + auto resume at the reset time (+60 s)
     exception -> failed ; cancel -> cancelled (work tree rolled back)
     Kyora stopping (RunManager.stop) -> blocked 'interrupted: Kyora stopped ...' (work kept, resumable)
+    (an interrupted BUILD/FIX is committed, also after a hard kill, and its Claude Code session is continued)
 
 Each stage persists ``run.json`` and publishes ``run.state``, ``stage.started``
 and ``stage.finished``; per-stage model metrics are collected from the
@@ -36,9 +37,9 @@ from ..util.fs import atomic_write_text
 from ..util.ids import now_iso
 from . import events as ev
 from .stages import (
-    RunCancelled, StageBlocked, StageContext, build_stage, design_stage, finalize_stage, fix_stage, gate_stage,
-    gate_threshold, intake_stage, load_gate, narrate, plan_stage, review_stage, select_engine, show_view, test_stage,
-    utc_iso,
+    RunCancelled, StageBlocked, StageContext, build_stage, design_stage, failure_reason, finalize_stage, fix_stage,
+    gate_stage, gate_threshold, intake_stage, load_gate, narrate, plan_stage, review_stage, select_engine, show_view,
+    test_stage, tree_fingerprint, utc_iso,
 )
 
 log = logging.getLogger("kyora.runner")
@@ -80,6 +81,8 @@ class RunManager:
         self._running: dict[str, threading.Event] = {}
         self._approvals: dict[str, threading.Event] = {}
         self._project_locks: dict[str, threading.Lock] = {}
+        # run id -> lock ordering the automatic resume, Resume and Cancel: each reads and writes the same run.json
+        self._run_locks: dict[str, threading.RLock] = {}
         self._threads: list[threading.Thread] = []
         self._stopping = threading.Event()
         self._resume_timers: dict[str, tuple[threading.Timer, float, object]] = {}  # run id -> (timer, at, token)
@@ -120,8 +123,19 @@ class RunManager:
         except Exception as exc:  # noqa: BLE001
             log.warning("cannot scan runs for recovery: %s", exc)
             return
-        for run in runs:
-            if run.state in ACTIVE_STATES or run.state == "created":
+        for listed in runs:
+            if not (listed.state in ACTIVE_STATES or listed.state == "created"):
+                continue
+            with self._run_lock(listed.id):  # a Cancel from the web UI meanwhile must not be overwritten
+                try:
+                    run = store.get_run(listed.id)
+                except Exception as exc:  # noqa: BLE001 - deleted with its project meanwhile
+                    log.info("recovery of run %s skipped: %s", listed.id, exc)
+                    continue
+                if not (run.state in ACTIVE_STATES or run.state == "created"):
+                    continue
+                if run.state in ("build", "fix"):
+                    self._keep_interrupted_work(store, run)
                 reason = INTERRUPTED_REASON
                 try:
                     store.set_state(run, "blocked", blocked_reason=reason)
@@ -129,6 +143,30 @@ class RunManager:
                                          run_id=run.id, project_id=run.project_id)
                 except Exception as exc:  # noqa: BLE001
                     log.warning("cannot mark run %s blocked: %s", run.id, exc)
+
+    @staticmethod
+    def _keep_interrupted_work(store, run) -> None:
+        """Commit what the engine of a BUILD/FIX cut off by a hard kill (iOS ending iSH, Termux, out of memory)
+        wrote: a resume restores the run's last commit, so the work would be lost (saved before the run blocks)."""
+        branch = (run.options or {}).get("branch")
+        attempt = run.extra.pop("engine_attempt", None)  # what the engine started from (stages._engine_attempt)
+        if not branch:
+            return
+        try:
+            sm = store.slide_manager(run.project_id)
+            if sm.backend.current_branch() != branch:
+                return  # the work tree is not on this run's branch: nothing in it is this run's work
+            engine = None
+            if isinstance(attempt, dict) and attempt.get("kind") == run.state \
+                    and attempt.get("iteration") == run.iteration:
+                if tree_fingerprint(sm.work_tree()) == attempt.get("base"):
+                    return  # the stopped engine changed nothing: no commit, no partial-work claim
+                engine = attempt.get("engine")
+            sm.commit_iteration(run, run.iteration, None)
+            run.extra["partial_work_kept"] = {"kind": run.state, "iteration": run.iteration, "at": now_iso(),
+                                              "engine": engine, "reason": failure_reason("interrupted", None)}
+        except Exception as exc:  # noqa: BLE001 - the run must still become resumable
+            log.warning("run %s: could not keep the work of its interrupted %s: %s", run.id, run.state, exc)
 
     # ------------------------------------------------------------------ automatic resume after a usage limit
     def _rearm_auto_resumes(self) -> None:
@@ -150,24 +188,35 @@ class RunManager:
         at = auto_resume_epoch(run)
         if at is None or run.state != "blocked" or self._stopping.is_set():
             return False
-        done = len((run.extra or {}).get("auto_resumes") or [])
-        if done >= AUTO_RESUME_MAX:
-            log.warning("run %s: not resuming it automatically again after %d automatic resumes; press Resume",
-                        run.id, done)
-            run.extra.pop("auto_resume_at", None)  # the reason must not promise a resume that will not happen
+        if (run.options or {}).get("bench"):
+            return False  # Kyora Bench recorded the blocked task and moved on: it must not resume later by itself
+        with self._run_lock(run.id):  # a Cancel or Resume meanwhile is never overwritten or re-armed by a stale copy
             try:
-                self.app.store.set_state(run, "blocked", blocked_reason=(
-                    f"{run.blocked_reason or 'usage limit'} [automatic resume stopped after {done} automatic "
-                    "resumes: press Resume]"))
-            except Exception as exc:  # noqa: BLE001
-                log.warning("cannot record the end of automatic resumes for %s: %s", run.id, exc)
-            return False
-        due = at + AUTO_RESUME_GRACE_S
-        delay = max(0.0, due - time.time())
-        self._schedule_resume(run.id, at, delay)
-        self._publish_for(run, ev.RUN_AUTO_RESUME, {"at": utc_iso(max(due, time.time())), "in_s": int(round(delay)),
-                                                    "reset_at": utc_iso(at),
-                                                    "reason": str(run.blocked_reason or "usage limit")[:300]})
+                run = self.app.store.get_run(run.id)
+            except Exception as exc:  # noqa: BLE001 - deleted with its project, or unreadable
+                log.info("automatic resume of %s not armed: %s", run.id, exc)
+                return False
+            if run.state != "blocked" or auto_resume_epoch(run) != at:
+                return False  # cancelled, resumed or blocked again meanwhile
+            done = len((run.extra or {}).get("auto_resumes") or [])
+            if done >= AUTO_RESUME_MAX:
+                log.warning("run %s: not resuming it automatically again after %d automatic resumes; press Resume",
+                            run.id, done)
+                run.extra.pop("auto_resume_at", None)  # the reason must not promise a resume that will not happen
+                try:
+                    self.app.store.set_state(run, "blocked", blocked_reason=(
+                        f"{run.blocked_reason or 'usage limit'} [automatic resume stopped after {done} automatic "
+                        "resumes: press Resume]"))
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("cannot record the end of automatic resumes for %s: %s", run.id, exc)
+                return False
+            due = at + AUTO_RESUME_GRACE_S
+            delay = max(0.0, due - time.time())
+            self._schedule_resume(run.id, at, delay)
+            # announced under the lock too: no Cancel can come between arming and the "resumes at" event
+            self._publish_for(run, ev.RUN_AUTO_RESUME, {"at": utc_iso(max(due, time.time())),
+                                                        "in_s": int(round(delay)), "reset_at": utc_iso(at),
+                                                        "reason": str(run.blocked_reason or "usage limit")[:300]})
         log.info("run %s resumes by itself in %d s (limit reset %s)", run.id, int(delay), utc_iso(at))
         return True
 
@@ -199,20 +248,20 @@ class RunManager:
         if remaining > 0.5:
             self._schedule_resume(run_id, at, remaining)
             return
-        try:
-            run = self.app.store.get_run(run_id)
-        except Exception as exc:  # noqa: BLE001 - deleted with its project, or unreadable
-            log.info("automatic resume of %s skipped: %s", run_id, exc)
-            return
-        if run.state != "blocked" or auto_resume_epoch(run) != at:
-            return  # resumed by hand, cancelled, or blocked again for another reason
-        run.extra.setdefault("auto_resumes", []).append(now_iso())
-        try:
-            self.app.store.save_run(run)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("cannot record the automatic resume of %s: %s", run_id, exc)
-        log.info("run %s: usage limit reset at %s; resuming it", run_id, utc_iso(at))
-        self.resume(run_id)
+        with self._run_lock(run_id):  # a Cancel or Resume meanwhile must not be overwritten by a stale copy
+            try:
+                run = self.app.store.get_run(run_id)
+            except Exception as exc:  # noqa: BLE001 - deleted with its project, or unreadable
+                log.info("automatic resume of %s skipped: %s", run_id, exc)
+                return
+            if run.state != "blocked" or auto_resume_epoch(run) != at:
+                return  # resumed by hand, cancelled, or blocked again for another reason
+            run.extra.setdefault("auto_resumes", []).append(now_iso())
+            log.info("run %s: usage limit reset at %s; resuming it", run_id, utc_iso(at))
+            try:
+                self._requeue(run)
+            except Exception as exc:  # noqa: BLE001 - a timer thread has nobody to report to
+                log.warning("cannot resume %s automatically: %s", run_id, exc)
 
     def cancel_auto_resume(self, run_id: str) -> bool:
         """Drop the automatic resume of ``run_id`` (True when one was armed)."""
@@ -230,6 +279,10 @@ class RunManager:
             log.warning("publish %s failed: %s", type_, exc)
 
     # ------------------------------------------------------------------ public API
+    def _run_lock(self, run_id: str) -> threading.RLock:
+        with self._lock:
+            return self._run_locks.setdefault(run_id, threading.RLock())
+
     def submit(self, run_id: str) -> bool:
         with self._lock:
             if run_id in self._pending or run_id in self._running:
@@ -241,37 +294,38 @@ class RunManager:
 
     def cancel(self, run_id: str) -> bool:
         store = self.app.store
-        self.cancel_auto_resume(run_id)
-        with self._lock:
-            if run_id in self._running:
-                self._running[run_id].set()
-                return True
-            pending = run_id in self._pending
-            if pending:
-                self._pending.remove(run_id)
-        try:
-            run = store.get_run(run_id)
-        except FileNotFoundError:
-            return False
-        if pending or run.state in ("blocked", "awaiting_approval", "created"):
-            # All runs of a project share one work tree. While another run of the project holds the
-            # project lock (it is executing), the rollback may only move this run's branch ref.
-            plock = self._project_lock(run.project_id)
-            idle = plock.acquire(blocking=False)
+        with self._run_lock(run_id):  # an automatic resume due right now waits, then sees the cancelled state
+            self.cancel_auto_resume(run_id)  # inside the lock: a worker arming the timer meanwhile cannot slip in
+            with self._lock:
+                if run_id in self._running:
+                    self._running[run_id].set()
+                    return True
+                pending = run_id in self._pending
+                if pending:
+                    self._pending.remove(run_id)
             try:
-                if not store.slide_manager(run.project_id).rollback_working_tree(run, touch_tree=idle):
-                    log.warning("cancelled run %s: its commits were left in place", run_id)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("rollback for cancelled run %s failed: %s", run_id, exc)
-            finally:
-                if idle:
-                    plock.release()
-            store.set_state(run, "cancelled")
-            self.app.bus.publish(ev.RUN_CANCELLED, {}, run_id=run.id, project_id=run.project_id)
-            self.app.bus.publish(ev.RUN_STATE, {"state": "cancelled", "iteration": run.iteration},
-                                 run_id=run.id, project_id=run.project_id)
-            return True
-        return False
+                run = store.get_run(run_id)
+            except FileNotFoundError:
+                return False
+            if pending or run.state in ("blocked", "awaiting_approval", "created"):
+                # All runs of a project share one work tree. While another run of the project holds the
+                # project lock (it is executing), the rollback may only move this run's branch ref.
+                plock = self._project_lock(run.project_id)
+                idle = plock.acquire(blocking=False)
+                try:
+                    if not store.slide_manager(run.project_id).rollback_working_tree(run, touch_tree=idle):
+                        log.warning("cancelled run %s: its commits were left in place", run_id)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("rollback for cancelled run %s failed: %s", run_id, exc)
+                finally:
+                    if idle:
+                        plock.release()
+                store.set_state(run, "cancelled")
+                self.app.bus.publish(ev.RUN_CANCELLED, {}, run_id=run.id, project_id=run.project_id)
+                self.app.bus.publish(ev.RUN_STATE, {"state": "cancelled", "iteration": run.iteration},
+                                     run_id=run.id, project_id=run.project_id)
+                return True
+            return False
 
     def approve(self, run_id: str) -> bool:
         with self._lock:
@@ -283,16 +337,21 @@ class RunManager:
         return True
 
     def resume(self, run_id: str) -> bool:
-        try:
-            run = self.app.store.get_run(run_id)
-        except FileNotFoundError:
-            return False
-        if run.state != "blocked":
-            return False
-        self.cancel_auto_resume(run_id)
+        with self._run_lock(run_id):
+            try:
+                run = self.app.store.get_run(run_id)
+            except FileNotFoundError:
+                return False
+            if run.state != "blocked":
+                return False
+            return self._requeue(run)
+
+    def _requeue(self, run) -> bool:
+        """A blocked ``run`` becomes 'created' and is queued (the caller holds the run's lock)."""
+        self.cancel_auto_resume(run.id)
         run.extra.pop("auto_resume_at", None)  # a new block sets it again when a limit is hit again
         self.app.store.set_state(run, "created", blocked_reason=None)
-        return self.submit(run_id)
+        return self.submit(run.id)
 
     def is_active(self, run_id: str) -> bool:
         with self._lock:
@@ -362,6 +421,7 @@ class Runner:
         self.store = app.store
         self.bus = app.bus
         self.cfg = app.config
+        self._ctx: StageContext | None = None
 
     # ------------------------------------------------------------------ helpers
     def _publish(self, type_: str, data: dict | None = None) -> None:
@@ -457,7 +517,8 @@ class Runner:
             project = self.store.get(run.project_id)
             slides = self.store.slide_manager(project)
             ctx = StageContext(app=self.app, run=run, project=project, run_dir=self.store.run_dir(run),
-                               workspace=slides.work_tree(), cancel=self.cancel, slides=slides, approval=self.approval)
+                               workspace=slides.work_tree(), cancel=self.cancel, slides=slides, approval=self.approval,
+                               shutdown=self.shutdown)
             self._ctx = ctx
             try:  # before intake: a fresh generation clears the tree; a resume restores the run's last commit
                 slides.prepare_run(run)
@@ -524,6 +585,7 @@ class Runner:
                     self._stage("fix", lambda: fix_stage(ctx, n, prev_gate, review), rerun=True)
                 rec["commit"] = ctx.slides.commit_iteration(run, n, None)
                 rec["built"] = True
+                run.extra.pop("partial_work_kept", None)  # the iteration is committed: no partial work any more
                 rec["engine"] = {k: (run.engine or {}).get(k) for k in ("backend", "active_model", "ok", "num_turns")}
                 self.store.save_run(run)
             gate = load_gate(ctx, n) if rec.get("gate") else None
@@ -608,7 +670,8 @@ class Runner:
         self._publish(ev.RUN_CANCELLED, {})
 
     def _on_shutdown(self) -> None:
-        """Kyora is stopping: keep the run's work (no rollback) and leave it resumable."""
+        """Kyora is stopping: keep the run's work (no rollback; what the engines of an interrupted BUILD/FIX wrote was
+        committed by ``run_engine``) and leave it resumable."""
         stage = self.run.state
         self.run.extra.pop("auto_resume_at", None)  # an interrupted run waits for the user's Resume
         try:

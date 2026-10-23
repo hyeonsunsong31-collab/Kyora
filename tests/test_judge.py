@@ -14,9 +14,12 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from kyora.pipeline.events import EventBus
-from kyora.pipeline.judge import JudgeService, input_hash, resolve_in_workspace, rule_verdict, tool_summary
+from kyora.pipeline.judge import (JudgeService, input_hash, resolve_in_workspace, rule_verdict, secret_places,
+                                  strip_heredoc_bodies,
+                                  tool_summary)
 
 
 class ScriptedKimi:
@@ -191,7 +194,7 @@ class RuleTests(unittest.TestCase):
                     "node -c src/a.js", "git status", "git diff HEAD", "git log --oneline -5", "git branch",
                     "git tag -l 'slide/*'", "git remote -v", "find . -name '*.js'", "wc -l src/*.js",
                     "python3 -m py_compile tool.py", "ls 2>&1", "grep -rn TODO src 2>/dev/null", "cd src && ls",
-                    "head -n 20 src/game.js; tail -n 5 src/game.js", "env", "printenv PATH", "sort -u list.txt",
+                    "head -n 20 src/game.js; tail -n 5 src/game.js", "sort -u list.txt",
                     "uniq -c data.txt", "tree -L 2", "rg -n pat src", "rg --no-search-zip pat", "rg -i zed"):
             self.assertEqual(self.v(bash(cmd, cwd=str(self.ws))), ("allow", "read_only_command"), cmd)
 
@@ -200,7 +203,8 @@ class RuleTests(unittest.TestCase):
                     "sort --output=x a", "uniq in.txt out.txt", "xxd -r hex.txt out.bin", "tree -o listing.txt",
                     "cat <(node x.js)", "echo $(node x.js)", "echo `id`", "cat a > b", "cat <<EOF", "find . -delete",
                     "find . -exec rm {} ;", "git branch new-feature", "git tag v9", "git remote remove origin",
-                    "git diff --output=patch.txt", "node build.js", "npm test", "cd /tmp && ls"):
+                    "git diff --output=patch.txt", "node build.js", "npm test", "cd /tmp && ls",
+                    "env", "printenv PATH"):  # they print the environment
             self.assertIsNone(self.v(bash(cmd, cwd=str(self.ws))), cmd)
 
     def test_env_assignment_segments_are_not_read_only(self):
@@ -234,6 +238,90 @@ class RuleTests(unittest.TestCase):
             "sed 'e id' src/a.js", "tar --to-command=sh -xf a.tar", "tar --use-compress-program=sh -cf a.tar .",
         ):
             self.assertIsNone(self.v(bash(cmd, cwd=str(self.ws))), cmd)
+
+    def test_read_only_only_with_paths_inside_the_workspace(self):
+        # Regression: cat/grep/find/head on any path was allowed without asking Kimi
+        for cmd in ("cat ../../../etc/passwd", "cat /etc/passwd", "grep -r api_key ~", "cat ~/notes.txt",
+                    "head -c 100 /proc/self/maps", "ls ..", "git diff --no-index /etc/hosts index.html",
+                    "grep -n x $HOME/a", "cat src/a.js ../x", "find .. -name '*.json'", "grep -r --file=../p x src",
+                    "grep -R x .", "rg --follow x", "rg -L x", "find -L . -name x", "tree -l", "ls -RL",
+                    # an input redirection or a short flag's attached value is a path too
+                    "cat <../../../etc/passwd", "wc -l 0<../x", "grep x <~/notes", "grep -f/etc/passwd x src",
+                    "grep -f../patterns x src", "grep -f~/p x"):
+            self.assertIsNone(self.v(bash(cmd, cwd=str(self.ws))), cmd)
+        for cmd in ("cat src/a.js", "grep -rn TODO src", "git diff HEAD~1", "find src -name '*.js'", "ls -la src",
+                    "tree -L 2", "rg -n x", "git log --format=%h -3", "date +%s", "wc -l <src/a.js",
+                    "grep -n '<div' index.html", "grep -C2 -e-x src", "cut -d: -f1 list.txt", "tail -n +2 list.txt"):
+            self.assertEqual(self.v(bash(cmd, cwd=str(self.ws))), ("allow", "read_only_command"), cmd)
+
+    def test_read_only_follows_symlinks_out_of_the_workspace(self):
+        (self.ws / "src" / "a.js").write_text("x", encoding="utf-8")
+        try:
+            os.symlink(os.path.dirname(os.path.abspath(self._tmp.name)), str(self.ws / "src" / "out"),
+                       target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks unavailable: {exc}")
+        for cmd in ("cat src/out/x", "ls src/out", "cat src/*", "wc -l src/*"):
+            self.assertIsNone(self.v(bash(cmd, cwd=str(self.ws))), cmd)
+        self.assertEqual(self.v(bash("cat src/a.js", cwd=str(self.ws))), ("allow", "read_only_command"))
+
+    def test_kyora_secrets_are_denied_without_kimi(self):
+        root = Path(self._tmp.name)
+        home, cfg = root / "kyhome", root / "cfg"
+        (home / "config").mkdir(parents=True)
+        cfg.mkdir()
+        places = secret_places(SimpleNamespace(config_dir=cfg), home)
+
+        def v(call):
+            out = rule_verdict(self.ctx, call, places)
+            return (out["decision"], out.get("rule")) if out else None
+
+        other = root / "other-kyora"  # another install's keys: the name counts when the file exists
+        other.mkdir()
+        (other / "hub.token").write_text("t", encoding="utf-8")
+        for cmd in ("cat ../cfg/keys.json", "cat $KYORA_CONFIG_DIR/keys.json",
+                    "cat ${KYORA_HOME}/x", "echo $KYORA_HOOK_TOKEN", "grep -r api_key ~/.kyora", f"grep -r api_key {home}",
+                    f"ls {cfg}", "ls ../cfg", f"cat {home}/config/settings.json", "cat $SOMEDIR/keys.json",
+                    "cd .. && cat cfg/x", "cat /proc/self/environ", "tr '\\0' '\\n' < /proc/1/environ",
+                    f"grep hub.token {other}/hub.token", "cp ../cfg/settings.json src/",
+                    "grep -f../cfg/keys.json x src", "grep --file=../cfg/x y", "wc -c <../cfg/keys.json",
+                    "cat > ../cfg/keys.json <<'EOF'\n{}\nEOF"):
+            self.assertEqual(v(bash(cmd, cwd=str(self.ws))), ("deny", "kyora_secrets"), cmd)
+        # here-document bodies are data, and a name that points at nothing is no secret
+        for cmd in ("cat > src/a.js << 'EOF'\nimport keys from '../keys.json';\nEOF",
+                    "cat <<'EOF' > src/a.js\nconst r = await fetch('/settings.json');\nEOF",
+                    "cat <<-END > src/b.js\n\tconst s = '../../config/settings.json';\n\tEND",
+                    'grep -rn "/settings.json" src', "cat /no/such/dir/keys.json"):
+            self.assertNotEqual(v(bash(cmd, cwd=str(self.ws))), ("deny", "kyora_secrets"), cmd)
+        self.assertEqual(strip_heredoc_bodies("cat > a <<'EOF'\nx ../keys.json\nEOF\nls"), "cat > a <<'EOF'\nls")
+        # a search started above the config directory would read it
+        self.assertEqual(v({"tool_name": "Grep", "tool_input": {"pattern": "nvapi-", "path": str(root)}}),
+                         ("deny", "kyora_secrets"))
+        self.assertNotEqual(v({"tool_name": "Read", "tool_input": {"file_path": str(root)}}), ("deny", "kyora_secrets"))
+        for tool in ("Write", "Edit", "Read"):
+            self.assertEqual(v({"tool_name": tool, "tool_input": {"file_path": str(cfg / "keys.json")}}),
+                             ("deny", "kyora_secrets"), tool)
+        self.assertEqual(v({"tool_name": "Grep", "tool_input": {"pattern": "key", "path": str(home)}}),
+                         ("deny", "kyora_secrets"))
+        # a game's own files with these names stay usable
+        self.assertEqual(v(bash("cat src/settings.json", cwd=str(self.ws))), ("allow", "read_only_command"))
+        self.assertEqual(v(write(self.p("src/keys.json"))), ("allow", "standard_path"))
+        self.assertEqual(v({"tool_name": "Read", "tool_input": {"file_path": "/etc/hosts"}}), ("allow", "read_only_tool"))
+        # a symlink in the workspace that leads into the config directory
+        try:
+            os.symlink(str(cfg), str(self.ws / "src" / "cfglink"), target_is_directory=True)
+        except (OSError, NotImplementedError):
+            return  # no symlinks here (Windows without the privilege)
+        (cfg / "notes.txt").write_text("x", encoding="utf-8")
+        for cmd in ("ls src/cfglink", "cd src && ls cfglink", "cat src/cfglink/notes.txt"):
+            self.assertEqual(v(bash(cmd, cwd=str(self.ws))), ("deny", "kyora_secrets"), cmd)
+
+    def test_secret_rule_stays_cheap_on_a_long_heredoc(self):
+        # every word is looked at; most must cost only string work (iSH runs this ~50x slower)
+        body = " ".join(f"word{i} lib/part{i}.js" for i in range(3000))
+        started = time.monotonic()
+        self.assertIsNone(self.v(bash(f"cat > src/big.js <<'EOF'\n{body}\nEOF", cwd=str(self.ws))))
+        self.assertLess(time.monotonic() - started, 30)
 
     def test_empty_bash_denied(self):
         self.assertEqual(self.v(bash("   ")), ("deny", "empty_command"))
@@ -292,6 +380,17 @@ class ServiceTests(unittest.TestCase):
         return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
 
     # ------------------------------------------------------------------ decisions
+    def test_secrets_of_this_kyora_are_denied_by_rule(self):
+        kimi = ScriptedKimi()
+        cfg_dir = Path(self._tmp.name) / "cfg"
+        svc = JudgeService(kimi, self.bus, SimpleNamespace(config_dir=cfg_dir), self.home)
+        self.register(svc)
+        for i, cmd in enumerate((f"cat {cfg_dir}/settings.json", f"grep -r token {self.home}/config", "cat ../cfg/x")):
+            v = svc.decide("r_1", {"tool_name": "Bash", "tool_use_id": f"s{i}", "cwd": str(self.ws),
+                                   "tool_input": {"command": cmd}})
+            self.assertEqual((v["decision"], v["source"], v["rule"]), ("deny", "rule", "kyora_secrets"), cmd)
+        self.assertEqual(kimi.calls, [])
+
     def test_rule_verdict_does_not_call_kimi(self):
         kimi = ScriptedKimi()
         svc = self.service(kimi)

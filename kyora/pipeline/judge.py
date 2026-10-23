@@ -7,10 +7,14 @@ calls :meth:`JudgeService.decide` directly.
 
 Decision order (documented in ``docs/architecture.md``):
 
-1. deterministic local rules (cheap, no model): allow read-only tools and
+1. deterministic local rules (cheap, no model): allow read-only tools,
+   read-only shell commands whose every path stays in the workspace and
    workspace-internal writes to plan/standard paths, deny path escapes, writes
    to ``.git/``/``.claude/``, destructive or privilege-escalating shell
-   commands, network installs when the plan forbids external dependencies;
+   commands, network installs when the plan forbids external dependencies,
+   and any reach for Kyora's own secrets (its config directory, ``keys.json``,
+   ``settings.json``, ``hub.token`` outside the workspace, ``KYORA_HOME``,
+   ``/proc/*/environ``);
 2. a per-run verdict cache keyed by ``(tool_name, normalized-input hash)`` for
    verdicts that came from Kimi;
 3. Kimi-K3 (``kimi.judge(ctx, call, run_id)``) when configured.
@@ -29,6 +33,7 @@ a whole ``plan`` dict containing ``files``/``constraints``.
 """
 from __future__ import annotations
 
+import glob
 import hashlib
 import hmac
 import json
@@ -36,6 +41,7 @@ import logging
 import os
 import re
 import secrets
+import shlex
 import threading
 import time
 from collections import OrderedDict
@@ -57,6 +63,9 @@ DEFAULT_WRITE_PREFIXES = ("src/", "assets/", "tests/", ".kyora/")
 DEFAULT_WRITE_FILES = ("index.html",)
 DEFAULT_WRITE_FILE_PREFIXES = ("README",)
 PROTECTED_PREFIXES = (".git/", ".claude/")
+SECRET_FILE_NAMES = ("keys.json", "settings.json", "hub.token")  # Kyora's own; denied outside the workspace
+SEARCH_TOOLS = frozenset({"Grep", "Glob", "LS"})  # start a recursive search at their path
+MAX_GLOB_CHECK = 500
 CACHE_MAX = 512
 STATS_KEEP = 256
 SUMMARY_LEN = 200
@@ -113,13 +122,14 @@ _GIT = r"^git\s+(?:-C\s+\S+\s+)?"
 #     match (only an optional ``-C DIR`` prefix is allowed), so a pager/fsmonitor/diff override is deferred;
 #   - ``find`` without ``-exec``/``-execdir``/``-ok``/``-okdir``/``-delete``/``-fprint*``/``-fls``;
 #   - ``date`` without ``-s``/``--set`` (setting the clock); pagers (``less``/``more``/``man``) are not here at
-#     all because they can spawn an editor or shell (``!cmd``, ``v``); ``env CMD`` / ``xargs`` / ``awk`` /
-#     ``sed`` / ``tar`` are likewise absent and always deferred.
+#     all because they can spawn an editor or shell (``!cmd``, ``v``); ``env``/``printenv`` (they print the
+#     environment), ``xargs`` / ``awk`` / ``sed`` / ``tar`` are likewise absent and always deferred;
+#   - and every argument must name a path inside the workspace (:func:`_args_stay_inside`): ``$``, ``~``,
+#     ``/proc`` or an absolute path elsewhere defers, and so do the flags that follow symlinks while recursing.
 _READ_ONLY_CMD_RES: tuple[re.Pattern, ...] = (
     # commands that only print; none of these has an option that runs a program or writes a file
     re.compile(r"^(?:ls|dir|cat|head|tail|wc|pwd|printf|echo|stat|file|du|df|which|type|whoami|uname|true|false|:|nl|cut|tr|od|hexdump|md5sum|sha1sum|sha256sum|basename|dirname|realpath|readlink|comm)(?:\s|$)"),
     re.compile(r"^date(?!.*(?:\s-s(?:\s|$)|--set))(?:\s|$)"),  # date -s / --set changes the clock
-    re.compile(r"^env\s*$|^printenv(?:\s+[A-Za-z_][A-Za-z0-9_]*)*\s*$"),  # "env CMD" runs CMD
     re.compile(r"^sort(?!.*\s-(?:-output|-compress-program|[A-Za-z]*o))(?:\s|$)"),  # -o/--output write; --compress-program spawns
     re.compile(r"^(?:uniq|xxd)(?:\s+-\S+)*(?:\s+[^\s-]\S*)?(?:\s+-\S+)*\s*$"),  # a 2nd operand is an output file
     re.compile(r"^tree(?!.*\s-o(?:\s|$))(?:\s|$)"),  # tree -o FILE writes
@@ -143,6 +153,14 @@ _READ_ONLY_CMD_RES: tuple[re.Pattern, ...] = (
 # GIT_CONFIG_*, GIT_EXTERNAL_DIFF, GIT_PAGER, LD_PRELOAD, PATH, IFS, BASH_ENV, ENV, PYTHON*, NODE_OPTIONS,
 # PERL5*, RUBYOPT, ... and make an otherwise read-only tool run an arbitrary program.
 _ASSIGN_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
+# recursive reads that follow symlinks can leave the workspace through a link inside it
+_FOLLOW_LINKS_RE = re.compile(r"^(?:e|f)?grep\b.*\s(?:-[A-Za-z]*R|--dereference-recursive)|^rg\b.*\s(?:-[A-Za-z]*L|--follow)"
+                              r"|^find\s+-[HL](?:\s|$)|^find\b.*\s-follow(?:\s|$)|^tree\b.*\s-[A-Za-z]*l"
+                              r"|^(?:du|ls)\b.*\s-[A-Za-z]*L")
+_SECRET_VAR_RE = re.compile(r"\$\{?(?:KYORA_CONFIG_DIR|KYORA_HOME|KYORA_HOOK_TOKEN)\b")
+_PROC_ENVIRON_RE = re.compile(r"/proc/[^\s/]+/(?:task/[^\s/]+/)?environ")
+_WORD_SPLIT_RE = re.compile(r"[\s'\"`=;&|()<>]+")
+_SHORT_FLAGS_RE = re.compile(r"^-[A-Za-z0-9]*")  # "-n", "-C2", "-f" of "-f/etc/passwd"
 
 
 # --------------------------------------------------------------------------- helpers
@@ -278,6 +296,158 @@ def resolve_in_workspace(raw: str, workspace: str, cwd: str | None = None) -> st
     return real_rel
 
 
+def secret_places(config: Any = None, home: Path | str | None = None) -> dict:
+    """Kyora's secret locations: ``{"dirs": [config dirs], "homes": [KYORA_HOME dirs]}`` (normalised posix).
+
+    The config directory of ``config`` (a :class:`kyora.config.Config`), ``$KYORA_CONFIG_DIR`` and
+    ``<KYORA_HOME>/config``; KYORA_HOME is ``home``, ``$KYORA_HOME`` and ``~/.kyora``. ``real_dirs`` /
+    ``real_homes`` are those that exist here with their symlinks resolved (computed once per decision).
+    """
+    dirs: list[str] = []
+    homes: list[str] = []
+    for h in (home, os.environ.get("KYORA_HOME"), os.path.join(os.path.expanduser("~"), ".kyora")):
+        if h:
+            homes.append(_norm_abs(os.path.abspath(os.path.expanduser(str(h)))))
+    for d in (getattr(config, "config_dir", None), os.environ.get("KYORA_CONFIG_DIR")):
+        if d:
+            dirs.append(_norm_abs(os.path.abspath(os.path.expanduser(str(d)))))
+    dirs += [h.rstrip("/") + "/config" for h in homes]
+    places = {"dirs": list(dict.fromkeys(dirs)), "homes": list(dict.fromkeys(homes))}
+    for key in ("dirs", "homes"):
+        real: list[str] = []
+        for d in places[key]:
+            try:
+                if os.path.isabs(d) and os.path.lexists(d):
+                    real.append(_real_posix(d))
+            except (OSError, ValueError):
+                pass
+        places["real_" + key] = list(dict.fromkeys(real))
+    return places
+
+
+def _secret_path_reason(word: str, workspace: str, base: str | None, places: dict, search: bool = False) -> str | None:
+    """Why ``word`` (a path as the model wrote it) reaches Kyora's secrets, or ``None``.
+
+    ``base`` is the absolute directory relative paths start from (``None``: unknown, outside); ``search``:
+    the path is where a recursive search (Grep/Glob/LS) starts, so an ancestor of a secret directory counts. Only
+    string work for most words: the file system is asked about a word only when it names a secret file
+    or exists (symlinks), so a long heredoc stays cheap on a slow device.
+    """
+    word = _strip_quotes(word.strip())
+    if word.startswith("-"):  # a flag; "-f../cfg/keys.json" names a file ("--opt=x" arrives split at "=")
+        word = "" if word.startswith("--") else _SHORT_FLAGS_RE.sub("", word)
+    if not word:
+        return None
+    if _PROC_ENVIRON_RE.search(word):
+        return f"reading a process environment is not allowed: {word}"
+    path = word
+    home = os.path.expanduser("~")
+    if path == "~" or path.startswith(("~/", "~\\")):
+        path = home + path[1:]
+    for var in ("$HOME", "${HOME}"):
+        if path.startswith(var):
+            path = home + path[len(var):]
+    cand: str | None = None
+    if "$" not in path and "%" not in path:
+        if _is_abs(path):
+            cand = _norm_abs(path)
+        elif base is not None:
+            cand = _norm_abs(base.rstrip("/\\") + "/" + _posix(path))
+    if _posix(path).rstrip("/").rsplit("/", 1)[-1].casefold() in SECRET_FILE_NAMES:
+        inside = bool(workspace) and base is not None and "$" not in word and \
+            resolve_in_workspace(word, workspace, base) is not None
+        # a game's own settings.json stays usable, and so does a name that points at nothing ("/settings.json" as
+        # a URL in a grep); where a variable or an unknown directory hides the target, it counts as Kyora's
+        if not inside and (cand is None or _lexists(cand)):
+            return f"Kyora's secrets are off limits: {word}"
+    if cand is None:
+        return None
+    dir_reason = f"Kyora's config directory (keys and settings) is off limits: {word}"
+    home_reason = f"Kyora's data directory (KYORA_HOME, with its keys) is off limits: {word}"
+    if any(_relative_to(cand, d) is not None for d in places.get("dirs") or ()):
+        return dir_reason
+    if any(_relative_to(cand, h) == "" for h in places.get("homes") or ()):
+        return home_reason
+    if search and any(_relative_to(d, cand) is not None for d in places.get("dirs") or ()):
+        return f"a search there would reach Kyora's config directory (keys and settings): {word}"
+    real_dirs, real_homes = places.get("real_dirs") or (), places.get("real_homes") or ()
+    if not (real_dirs or real_homes):
+        return None
+    try:
+        if not (os.path.isabs(cand) and os.path.lexists(cand)):
+            return None
+        real = _real_posix(cand)  # a symlink (or a /var vs /private/var spelling) that leads there
+    except (OSError, ValueError):
+        return None
+    if any(_relative_to(real, d) is not None for d in real_dirs):
+        return dir_reason
+    if any(_relative_to(real, h) == "" for h in real_homes):
+        return home_reason
+    return None
+
+
+def _lexists(path: str) -> bool:
+    try:
+        return os.path.lexists(path)
+    except (OSError, ValueError):
+        return True  # cannot tell: treat it as there
+
+
+_HEREDOC_RE = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def strip_heredoc_bodies(cmd: str) -> str:
+    """``cmd`` without the bodies of its here-documents: they are data written to a file or a pipe, not paths
+    the shell opens (a game's source may well mention "../keys.json"). The header lines stay."""
+    out: list[str] = []
+    lines = cmd.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        for m in _HEREDOC_RE.finditer(line):
+            tag, dash = m.group(2), line[m.start():m.start() + 3] == "<<-"
+            while i < len(lines):  # skip to the closing tag (an unterminated body runs to the end)
+                body = lines[i].lstrip("\t") if dash else lines[i]
+                i += 1
+                if body.strip() == tag:
+                    break
+    return "\n".join(out)
+
+
+def _secret_command_reason(cmd: str, workspace: str, cwd: str | None, places: dict) -> str | None:
+    """Why the shell command ``cmd`` reaches Kyora's secrets, or ``None``."""
+    m = _SECRET_VAR_RE.search(cmd)
+    if m:
+        return f"Kyora's config/home variables are off limits: {m.group(0)}"
+    cmd = strip_heredoc_bodies(cmd)
+    # the directory relative words start from, followed through "cd" also outside the workspace (None: unknown)
+    base: str | None = _norm_abs(cwd) if (cwd and _is_abs(cwd)) else (_norm_abs(workspace) if workspace else None)
+    home = _norm_abs(os.path.abspath(os.path.expanduser("~")))
+    seen: set[tuple[str, str | None]] = set()  # a heredoc repeats its words; each is looked at once per base
+    for seg in _segments(cmd):
+        for word in _WORD_SPLIT_RE.split(seg):
+            if not word or (word, base) in seen:
+                continue
+            seen.add((word, base))
+            reason = _secret_path_reason(word, workspace, base, places)
+            if reason:
+                return reason
+        m = re.match(r"^cd(?:\s+(?P<target>\S+))?\s*$", seg)
+        if m:
+            target = _strip_quotes(m.group("target") or "~")
+            if target == "~" or target.startswith("~/"):
+                base = _norm_abs(home + target[1:])
+            elif "$" in target or "%" in target or target == "-":
+                base = None
+            elif _is_abs(target):
+                base = _norm_abs(target)
+            elif base is not None:
+                base = _norm_abs(base + "/" + _posix(target))
+    return None
+
+
 def _normalized_input(tool_name: str, tool_input: Any, workspace: str, cwd: str | None) -> Any:
     """Input shape used for the cache key: relative paths, trimmed commands, content hashes."""
     if not isinstance(tool_input, dict):
@@ -353,12 +523,23 @@ def make_verdict(decision: str, reason: str, source: str, *, risk: str = "low", 
 
 
 # --------------------------------------------------------------------------- rules
-def rule_verdict(ctx: dict, call: dict) -> dict | None:
-    """Deterministic local rules. Returns a verdict dict or ``None`` to defer to cache/Kimi."""
+def rule_verdict(ctx: dict, call: dict, places: dict | None = None) -> dict | None:
+    """Deterministic local rules. Returns a verdict dict or ``None`` to defer to cache/Kimi.
+
+    ``places`` (:func:`secret_places`; default: from the environment) are Kyora's secret locations.
+    """
     tool_name = str(call.get("tool_name") or "")
     tool_input = call.get("tool_input") if isinstance(call.get("tool_input"), dict) else {}
     workspace = str(ctx.get("workspace") or "")
     cwd = call.get("cwd") if isinstance(call.get("cwd"), str) else None
+    places = secret_places() if places is None else places
+
+    raw_path = tool_input.get("file_path") or tool_input.get("notebook_path") or tool_input.get("path")
+    if tool_name in READ_ONLY_TOOLS | FILE_TOOLS and isinstance(raw_path, str) and raw_path.strip():
+        base = cwd if (cwd and _is_abs(cwd)) else (workspace or None)
+        reason = _secret_path_reason(raw_path, workspace, base, places, search=tool_name in SEARCH_TOOLS)
+        if reason:
+            return make_verdict("deny", reason, "rule", risk="high", rule="kyora_secrets")
 
     if tool_name in READ_ONLY_TOOLS:
         return make_verdict("allow", f"{tool_name} is read-only", "rule", rule="read_only_tool")
@@ -367,7 +548,6 @@ def rule_verdict(ctx: dict, call: dict) -> dict | None:
                             "rule", risk="medium", rule="network_tool")
 
     if tool_name in FILE_TOOLS:
-        raw_path = tool_input.get("file_path") or tool_input.get("notebook_path") or tool_input.get("path")
         if not isinstance(raw_path, str) or not raw_path.strip():
             return make_verdict("deny", f"{tool_name} without a file path", "rule", risk="medium", rule="missing_path")
         if not workspace:
@@ -394,11 +574,11 @@ def rule_verdict(ctx: dict, call: dict) -> dict | None:
         command = tool_input.get("command")
         if not isinstance(command, str) or not command.strip():
             return make_verdict("deny", "empty Bash command", "rule", risk="low", rule="empty_command")
-        return _bash_rule(ctx, command, workspace, cwd)
+        return _bash_rule(ctx, command, workspace, cwd, places)
     return None
 
 
-def _bash_rule(ctx: dict, command: str, workspace: str, cwd: str | None) -> dict | None:
+def _bash_rule(ctx: dict, command: str, workspace: str, cwd: str | None, places: dict) -> dict | None:
     cmd = command.strip()
     for pattern, why in _DENY_PATTERNS:
         if pattern.search(cmd):
@@ -411,6 +591,9 @@ def _bash_rule(ctx: dict, command: str, workspace: str, cwd: str | None) -> dict
     rm_reason = _rm_outside_workspace(cmd, workspace, cwd)
     if rm_reason:
         return make_verdict("deny", rm_reason, "rule", risk="high", rule="rm_outside_workspace")
+    secret_reason = _secret_command_reason(cmd, workspace, cwd, places)
+    if secret_reason:
+        return make_verdict("deny", secret_reason, "rule", risk="high", rule="kyora_secrets")
     if _is_read_only_command(cmd, workspace, cwd):
         return make_verdict("allow", "read-only shell command", "rule", rule="read_only_command")
     return None
@@ -480,11 +663,58 @@ def _rm_outside_workspace(cmd: str, workspace: str, cwd: str | None) -> str | No
     return None
 
 
+def _args_stay_inside(clean: str, workspace: str, vcwd: str | None) -> bool:
+    """True when every argument of the simple command ``clean`` names a path inside the workspace.
+
+    Each word after the command name counts as a path, and so do the value of ``--opt=value``, what
+    follows a short flag (``grep -f/etc/passwd``) and the target of an input redirection (``<file``);
+    a pattern such as ``TODO`` or ``*.js`` resolves inside and passes. ``$``, a backtick, ``~``
+    expansion or ``/proc`` fail; a glob is expanded when the workspace is on this machine.
+    """
+    try:
+        words = shlex.split(clean, posix=True)
+    except ValueError:
+        return False
+    if vcwd is None:
+        return False
+    base = workspace.rstrip("/\\") + ("/" + vcwd if vcwd else "") if workspace else None
+    for word in words[1:]:
+        if "$" in word or "`" in word or word.startswith("~") or "=~" in word or ":~" in word or "/proc" in word:
+            return False
+        if word.startswith("--"):
+            word = word.split("=", 1)[1] if "=" in word else ""  # --flag, or --opt=VALUE
+        elif word.startswith("-"):
+            word = word.split("=", 1)[1] if "=" in word else _SHORT_FLAGS_RE.sub("", word)  # -fVALUE
+        # quotes are gone, so "<div" and <file look alike: every part around a "<" must stay inside
+        for part in word.split("<"):
+            if part.strip() and not _word_stays_inside(part, workspace, base):
+                return False
+    return True
+
+
+def _word_stays_inside(word: str, workspace: str, base: str | None) -> bool:
+    """One path-like word of a read-only command (see :func:`_args_stay_inside`)."""
+    if word.startswith("~"):
+        return False
+    if not workspace:
+        return not _is_abs(word)
+    # "%" expands nothing in a POSIX shell (git log --format=%h, date +%s); only cmd.exe would
+    if resolve_in_workspace(word.replace("%", "_"), workspace, base) is None:
+        return False
+    if any(c in word for c in "*?[") and os.path.isdir(workspace):
+        matches = glob.glob(os.path.join(base or workspace, word))
+        if len(matches) > MAX_GLOB_CHECK:
+            return False
+        if any(resolve_in_workspace(m, workspace) is None for m in matches):
+            return False  # e.g. a symlink inside the workspace that points out of it
+    return True
+
+
 def _is_read_only_command(cmd: str, workspace: str, cwd: str | None) -> bool:
     segs = _virtual_cwds(cmd, workspace, cwd)
     if not segs:
         return False
-    for seg, _vcwd in segs:
+    for seg, vcwd in segs:
         clean = _REDIRECT_NOISE_RE.sub(" ", " " + seg).strip()
         if ">" in clean or "<<" in clean or "<(" in clean:
             return False
@@ -498,6 +728,8 @@ def _is_read_only_command(cmd: str, workspace: str, cwd: str | None) -> bool:
         if _ASSIGN_PREFIX_RE.match(clean):
             return False  # "FOO=bar ..." (or a bare assignment): an env var could steer a later tool
         if not any(r.match(clean) for r in _READ_ONLY_CMD_RES):
+            return False
+        if _FOLLOW_LINKS_RE.match(clean) or not _args_stay_inside(clean, workspace, vcwd):
             return False
     return True
 
@@ -647,7 +879,7 @@ class JudgeService:
 
         verdict: dict | None = None
         try:
-            verdict = rule_verdict(ctx, call)
+            verdict = rule_verdict(ctx, call, secret_places(self.config, self.home))
         except Exception as exc:  # noqa: BLE001 - a rule bug must not block the engine silently
             log.exception("judge rule error for %s: %s", tool_name, exc)
             verdict = None

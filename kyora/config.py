@@ -402,14 +402,18 @@ class Config:
         nv = self.nvidia
         own_url = str(k.get("base_url") or "").rstrip("/")
         own_key = str(k.get("api_key") or "")
-        if own_url or own_key:  # an endpoint of the user's choosing: only its own key is ever sent to it
-            base, key, label, alts = own_url or nv.base_url, own_key, "agent key", []
-            if not own_key and (own_url or nv.base_url) == nv.base_url:  # same NVIDIA endpoint, no own key
-                key, label, alts = nv.kimi.api_key, "kimi key", [("nemotron key", nv.nemotron.api_key)]
-        else:  # the NVIDIA endpoint with the NVIDIA keys, each tried in turn when one is refused
-            base, key, label = nv.base_url, nv.kimi.api_key or nv.nemotron.api_key, "kimi key" if nv.kimi.api_key else "nemotron key"
-            alts = [("nemotron key", nv.nemotron.api_key)] if nv.kimi.api_key and nv.nemotron.api_key else []
-        alts = [(lab, kk) for lab, kk in alts if kk and kk != key]
+        base = own_url or nv.base_url
+        if own_key:  # the user's own agent key: the only key ever sent to the agent endpoint
+            key, label, alts = own_key, "agent key", []
+        else:
+            # the role keys, each tried in turn when one is refused - but only a role's key whose endpoint IS the
+            # agent endpoint: with the Kimi role moved to Moonshot, its sk- key is never sent to NVIDIA
+            cands: list[tuple[str, str]] = []
+            for name in ("kimi", "nemotron"):
+                r = getattr(nv, name)
+                if r.api_key and r.base_url == base and r.api_key not in (kk for _, kk in cands):
+                    cands.append((f"{name} key", r.api_key))
+            (label, key), alts = (cands[0], cands[1:]) if cands else (("kimi key", ""), [])
 
         def num(name, cast):
             try:

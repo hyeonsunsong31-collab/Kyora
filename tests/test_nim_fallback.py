@@ -11,14 +11,16 @@ from __future__ import annotations
 
 import json
 import shutil
+import socket
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 
 from kyora.config import Config, KimiCfg, NemotronCfg
 from kyora.models.kimi import Kimi, KimiConversation
 from kyora.models.nemotron import Nemotron
-from kyora.models.nim_client import ModelChain, NIMClient, NIMError, explain_http_failure
+from kyora.models.nim_client import ModelChain, NIMClient, NIMError, NIMUnreachable, explain_http_failure
 from kyora.pipeline.events import EventBus
 from tests.mock_nim import MockNIM
 
@@ -91,6 +93,51 @@ class KeyFallbackTests(_Base):
         self.assertEqual(c.pop_key_notes(), [])
         c.chat(ULTRA, [{"role": "user", "content": "again"}], stream=False, max_tokens=1)
         self.assertEqual(self.api.keys_sent(), [BAD, GOOD, GOOD])  # sticky: the refused key is not retried
+
+    def test_an_unset_key_uses_the_shared_one_at_once(self):
+        # the nemotron slot emptied because its key was refused for every model: the kimi key serves the role
+        c = self.client("")
+        res = c.chat(ULTRA, [{"role": "user", "content": "hi"}], stream=False, max_tokens=1)
+        self.assertEqual(res.content, "ok")
+        self.assertEqual(self.api.keys_sent(), [GOOD], "no keyless request first")
+        self.assertEqual((c.key_label, c.alt_key_labels), ("kimi key", []))
+
+    def test_an_endpoint_change_during_a_retry_is_not_sent_the_new_key(self):
+        c = NIMClient(self.api.mock.url, BAD, key_label="kimi key", backoff_s=(0.01,), max_attempts=3)
+        moved = []
+
+        def move_during_backoff(seconds, cancel):  # the user saves a Moonshot endpoint while the retry waits
+            moved.append(seconds)
+            c.set_endpoint("https://api.moonshot.ai/v1", "sk-moonshot-SECRET-0123456789", "kimi key")
+        c._sleep = move_during_backoff
+        self.api.mock.handler = lambda req: {"status": 503, "error_body": {"error": {"message": "overloaded"}}}
+        with self.assertRaises(NIMError) as cm:
+            c.chat(ULTRA, [{"role": "user", "content": "hi"}], stream=False, max_tokens=1)
+        self.assertIn("endpoint changed in Settings", str(cm.exception))
+        self.assertEqual(self.api.keys_sent(), [BAD], "nothing more went to the old endpoint")
+        self.assertEqual((c.base_url, c.api_key), ("https://api.moonshot.ai/v1", "sk-moonshot-SECRET-0123456789"))
+
+    def test_a_reset_connection_before_any_answer_is_retried(self):
+        real = NIMClient(self.api.mock.url, GOOD, key_label="kimi key", backoff_s=(0.01,))
+        failures = [ConnectionResetError(104, "Connection reset by peer"),
+                    urllib.error.URLError(socket.gaierror(-3, "Temporary failure in name resolution"))]
+
+        class Flaky:
+            def open(self, req, timeout=None):
+                if failures:
+                    raise failures.pop(0)
+                return real._opener.open(req, timeout=timeout)
+        c = NIMClient(self.api.mock.url, GOOD, key_label="kimi key", backoff_s=(0.01,), opener=Flaky())
+        self.assertEqual(c.chat(ULTRA, [{"role": "user", "content": "hi"}], stream=False, max_tokens=1).content, "ok")
+        timeouts = [TimeoutError("timed out")]
+
+        class Slow:
+            def open(self, req, timeout=None):
+                raise timeouts[0]
+        c = NIMClient(self.api.mock.url, GOOD, backoff_s=(0.01,), opener=Slow())
+        with self.assertRaises(NIMUnreachable) as cm:  # a timeout is not doubled by a retry
+            c.chat(ULTRA, [{"role": "user", "content": "hi"}], stream=False, max_tokens=1)
+        self.assertEqual(cm.exception.attempts, 1)
 
     def test_every_key_refused_raises_once_each(self):
         c = self.client(BAD, alt=(("kimi key", "nvapi-also-refused"),))

@@ -23,7 +23,10 @@ import email.utils
 import http.client
 import json
 import logging
+import math
 import re
+import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -54,14 +57,17 @@ class NIMError(Exception):
 
     ``attempts`` is how many requests :meth:`NIMClient.chat` sent for a retryable failure before
     raising it (``None`` when not counted), so a message only says "retried" when it did.
+    ``retry_after`` is the wait in seconds the endpoint's ``Retry-After`` header asked for (uncapped;
+    ``None`` without one).
     """
 
     def __init__(self, message: str, *, status: int | None = None, body: str | None = None,
-                 attempts: int | None = None):
+                 attempts: int | None = None, retry_after: float | None = None):
         super().__init__(message)
         self.status = status
         self.body = body
         self.attempts = attempts
+        self.retry_after = retry_after
 
 
 class NIMUnreachable(NIMError):
@@ -338,7 +344,17 @@ def _read_error_body(exc: urllib.error.HTTPError) -> str:
     return raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw or "")
 
 
-def _retry_after_s(headers: Any) -> float | None:
+def _retryable_network_error(exc: BaseException) -> bool:
+    """A connection failure before any answer that a second request may not meet: reset, refused, DNS, lost."""
+    reason = getattr(exc, "reason", None) if isinstance(exc, urllib.error.URLError) else exc
+    if isinstance(reason, (TimeoutError, socket.timeout)) or "timed out" in str(reason).lower():
+        return False
+    # reset/refused/aborted, DNS, a proxy that dropped the TLS stream, "Remote end closed connection"
+    return isinstance(reason, (ConnectionError, socket.gaierror, ssl.SSLEOFError, http.client.HTTPException))
+
+
+def _retry_after_raw(headers: Any) -> float | None:
+    """The ``Retry-After`` header in seconds (delta or HTTP date), uncapped; ``None`` when absent or unreadable."""
     try:
         value = headers.get("Retry-After") if headers is not None else None
     except Exception:  # noqa: BLE001
@@ -347,16 +363,49 @@ def _retry_after_s(headers: Any) -> float | None:
         return None
     value = str(value).strip()
     try:
-        return max(0.0, min(float(value), MAX_RETRY_AFTER_S))
+        seconds = float(value)
+        return max(0.0, seconds) if math.isfinite(seconds) else None
     except ValueError:
         pass
     try:
         when = email.utils.parsedate_to_datetime(value)
         if when.tzinfo is None:
             when = when.replace(tzinfo=timezone.utc)
-        return max(0.0, min((when - datetime.now(timezone.utc)).total_seconds(), MAX_RETRY_AFTER_S))
+        return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
     except Exception:  # noqa: BLE001
         return None
+
+
+def _retry_after_s(headers: Any) -> float | None:
+    """:func:`_retry_after_raw` capped at :data:`MAX_RETRY_AFTER_S`."""
+    value = _retry_after_raw(headers)
+    return None if value is None else min(value, MAX_RETRY_AFTER_S)
+
+
+_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+def url_host(url: str | None) -> str:
+    """The host (and port) of an endpoint URL, for messages and the UI.
+
+    Built from the host name and port only: never the user info (``user:secret@``), path or query,
+    which may carry keys. Text without a scheme is read as ``https://`` + text; ``""`` when no host.
+    """
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    try:
+        parts = urllib.parse.urlsplit(text if _SCHEME_RE.match(text) else "https://" + text)
+    except ValueError:  # e.g. an unclosed IPv6 bracket: nothing safe to show
+        return ""
+    host = parts.hostname or ""
+    if ":" in host:  # an IPv6 literal keeps its brackets
+        host = f"[{host}]"
+    try:
+        port = parts.port
+    except ValueError:  # a port that is not a number is left out
+        port = None
+    return f"{host}:{port}" if host and port is not None else host
 
 
 def _emit(on_delta: Callable[[Delta], None] | None, delta: Delta) -> None:
@@ -399,15 +448,40 @@ class NIMClient:
         only tried after a refusal, the switch is sticky and reported by :meth:`pop_key_notes`.
         """
         with self._key_lock:
-            self.api_key = api_key or ""
-            self.key_label = key_label or "own key"
-            self._alt_keys = [(str(label), str(key)) for label, key in alt_keys if key and key != self.api_key]
-            self._refused: set[str] = set()
-            self._key_notes: list[dict] = []
+            self._set_keys_locked(api_key, key_label, alt_keys)
 
-    def _switch_key(self, failed_key: str, status: int | None, model: str) -> bool:
-        """After ``failed_key`` was refused: move to the next unrefused key. False when none is left."""
+    def set_endpoint(self, base_url: str, api_key: str, key_label: str = "own key",
+                     alt_keys: Sequence[tuple[str, str]] = ()) -> None:
+        """Change the endpoint and its keys in one step (Settings): no request pairs one with the other's key."""
+        base = (base_url or "").strip().rstrip("/")
+        if not base:
+            raise ValueError("NIMClient: base_url is required")
         with self._key_lock:
+            self.base_url = base
+            self._set_keys_locked(api_key, key_label, alt_keys)
+
+    def _set_keys_locked(self, api_key: str, key_label: str, alt_keys: Sequence[tuple[str, str]]) -> None:
+        key, label = api_key or "", key_label or "own key"
+        alts = [(str(lab), str(k)) for lab, k in alt_keys if k and k != key]
+        if not key and alts:  # the role's own key is not set: the shared key serves it (nvidia.share_keys)
+            (label, key), alts = alts[0], alts[1:]
+        self.api_key, self.key_label, self._alt_keys = key, label, alts
+        self._refused: set[str] = set()
+        self._key_notes = []
+
+    def _endpoint(self) -> tuple[str, str]:
+        """``(base_url, key)`` read together: what one request is built from."""
+        with self._key_lock:
+            return self.base_url, self.api_key
+
+    def _switch_key(self, failed_key: str, status: int | None, model: str, base: str | None = None) -> bool:
+        """After ``failed_key`` was refused: move to the next unrefused key. False when none is left.
+
+        ``base`` is the endpoint that refused it: after an endpoint change in Settings nothing is switched.
+        """
+        with self._key_lock:
+            if base is not None and base != self.base_url:
+                return False
             self._refused.add(failed_key)
             if self.api_key != failed_key:  # another request switched already
                 return self.api_key not in self._refused
@@ -445,14 +519,15 @@ class NIMClient:
         return "*" * len(k) if len(k) <= 12 else f"{k[:7]}…{k[-3:]}"
 
     def _host(self) -> str:
-        return urllib.parse.urlsplit(self.base_url).netloc or self.base_url
+        return url_host(self.base_url) or "the endpoint"
 
-    def _headers(self, *, stream: bool, json_body: bool) -> dict[str, str]:
+    def _headers(self, *, stream: bool, json_body: bool, key: str | None = None) -> dict[str, str]:
         h = {"User-Agent": self.user_agent, "Accept": "text/event-stream" if stream else "application/json"}
         if json_body:
             h["Content-Type"] = "application/json"
-        if self.api_key:
-            h["Authorization"] = f"Bearer {self.api_key}"
+        key = self.api_key if key is None else key
+        if key:
+            h["Authorization"] = f"Bearer {key}"
         return h
 
     def build_body(self, model: str, messages: list[dict], *, stream: bool = True, tools: list[dict] | None = None,
@@ -526,24 +601,31 @@ class NIMClient:
         body = self.build_body(model, messages, stream=stream, tools=tools, tool_choice=tool_choice,
                                temperature=temperature, top_p=top_p, max_tokens=max_tokens, extra=extra)
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        url = self.base_url + "/chat/completions"
+        start_base = self.base_url
         timeout = float(timeout_s) if timeout_s else self.timeout_s
         attempt = 0
         while True:
             self._check_cancel(cancel)
-            sent_key = self.api_key
-            req = urllib.request.Request(url, data=payload, method="POST", headers=self._headers(stream=stream, json_body=True))
+            base, sent_key = self._endpoint()
+            if base != start_base:  # Settings moved the role meanwhile: never send a key to the other endpoint
+                raise NIMError(f"the endpoint changed in Settings while a request to {url_host(start_base)} was "
+                               "being retried; it was not resent")
+            req = urllib.request.Request(base + "/chat/completions", data=payload, method="POST",
+                                         headers=self._headers(stream=stream, json_body=True, key=sent_key))
             t0 = time.monotonic()
             try:
                 resp = self._open(req, timeout)
             except urllib.error.HTTPError as exc:
                 status = int(exc.code)
                 err_body = _read_error_body(exc)
-                if status in (401, 403) and sent_key and self._switch_key(sent_key, status, model):
+                if status in (401, 403) and sent_key and self._switch_key(sent_key, status, model, base):
                     log.warning("NIM %s: HTTP %s for a refused key; retrying with the %s", model, status, self.key_label)
                     continue
-                if (status == 429 or status >= 500) and attempt + 1 < self.max_attempts:
-                    retry_after = _retry_after_s(exc.headers)
+                retry_after = _retry_after_raw(exc.headers) if status == 429 or status >= 500 else None
+                # a longer wait than MAX_RETRY_AFTER_S is not shortened into a retry that is bound to be refused:
+                # the caller sees the status (and the wait) at once and moves to another model, key or engine
+                if (status == 429 or status >= 500) and attempt + 1 < self.max_attempts and \
+                        (retry_after is None or retry_after <= MAX_RETRY_AFTER_S):
                     delay = retry_after if retry_after is not None else self.backoff_s[min(attempt, len(self.backoff_s) - 1)]
                     log.warning("NIM %s: HTTP %s on attempt %d/%d, retrying in %.1fs (%s)", model, status,
                                 attempt + 1, self.max_attempts, delay, _excerpt(err_body, 160))
@@ -551,10 +633,22 @@ class NIMClient:
                     self._sleep(delay, cancel)
                     continue
                 raise NIMError(f"HTTP {status} from {self._host()} for {model}: {_excerpt(err_body)}",
-                               status=status, body=err_body, attempts=attempt + 1) from None
+                               status=status, body=err_body, attempts=attempt + 1, retry_after=retry_after) from None
             except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
                 reason = getattr(exc, "reason", None) or exc
-                raise NIMUnreachable(f"{self._host()} unreachable: {reason}") from None
+                if _retryable_network_error(exc) and attempt + 1 < self.max_attempts:
+                    # a reset connection or a DNS hiccup (phone Wi-Fi) before any answer: nothing was received,
+                    # so the same request is sent again after the backoff; a timeout is not retried (it would
+                    # double a wait the caller bounded)
+                    delay = self.backoff_s[min(attempt, len(self.backoff_s) - 1)]
+                    log.warning("NIM %s: %s on attempt %d/%d, retrying in %.1fs", model, _excerpt(str(reason), 160),
+                                attempt + 1, self.max_attempts, delay)
+                    attempt += 1
+                    self._sleep(delay, cancel)
+                    continue
+                unreachable = NIMUnreachable(f"{self._host()} unreachable: {reason}")
+                unreachable.attempts = attempt + 1
+                raise unreachable from None
             delay = 0.0
             try:
                 ctype = str(resp.headers.get("Content-Type", "") or "").lower()
@@ -690,8 +784,8 @@ class NIMClient:
                           message=build_assistant_message(content, reasoning, tool_calls))
 
     # ------------------------------------------------------------------ discovery
-    def _get_json(self, url: str, timeout: float) -> Any:
-        req = urllib.request.Request(url, method="GET", headers=self._headers(stream=False, json_body=False))
+    def _get_json(self, url: str, timeout: float, key: str | None = None) -> Any:
+        req = urllib.request.Request(url, method="GET", headers=self._headers(stream=False, json_body=False, key=key))
         try:
             resp = self._open(req, timeout)
         except urllib.error.HTTPError as exc:
@@ -718,7 +812,8 @@ class NIMClient:
 
     def list_models(self, timeout_s: float = 20.0) -> list[str]:
         """``GET /models`` -> list of model ids."""
-        data = self._get_json(self.base_url + "/models", timeout_s)
+        base, key = self._endpoint()
+        data = self._get_json(base + "/models", timeout_s, key=key)
         items = data.get("data") if isinstance(data, dict) else data
         if not isinstance(items, list):
             return []
@@ -1199,7 +1294,7 @@ __all__ = [
     "ModelChain", "call_with_model_fallback", "explain_http_failure", "MODEL_GONE_STATUSES",
     "BUSY_COOLDOWN_S", "TEMPORARY_STATUSES", "is_temporary_failure",
     "NIMError", "NIMUnreachable", "NIMCancelled", "NIMBodyError", "Delta", "ChatResult", "NIMClient",
-    "build_assistant_message", "tool_call_arguments", "function_tool", "force_tool",
+    "build_assistant_message", "tool_call_arguments", "function_tool", "force_tool", "url_host",
     "strip_think", "extract_json_object", "extract_structured", "is_tool_rejection",
     "load_prompt", "render_prompt", "json_for_prompt", "chat_with_events",
     "DELTA_CONTENT", "DELTA_REASONING", "DELTA_TOOL_CALL",

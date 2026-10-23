@@ -7,8 +7,11 @@ Both give the model the same two client tools and both are subclasses of
 :class:`ToolLoopEngine`:
 
 * ``bash``: every command runs in a fresh POSIX shell in the workspace root
-  (Git Bash on Windows, never System32's WSL launcher), with API keys, tokens
-  and other secrets scrubbed from its environment and a time limit;
+  (Git Bash on Windows, never System32's WSL launcher), with an allowlisted,
+  secret-free environment (:func:`kyora.util.envsafe.safe_env`), a time limit
+  and bounded output; what it leaves running in the background is stopped when
+  it returns (POSIX; on Windows only a timeout or cancel ends it, and the tool
+  description says so);
 * ``str_replace_based_edit_tool``: view / create / str_replace / insert,
   confined to the workspace (symlink escapes, ``~`` and URL-encoded traversal
   rejected, writes under ``.git/`` refused); the previous content of every
@@ -17,22 +20,23 @@ Both give the model the same two client tools and both are subclasses of
 Every Write/Edit/Bash call is judged by Kyora's
 :class:`~kyora.pipeline.judge.JudgeService` before it runs (reads are not); a
 judge error fails open, is reported as ``judge.unavailable`` and counted on the
-run. Nothing here talks to a model.
+run. Tool results and journal lines pass :func:`kyora.util.envsafe.redact`, so a
+configured key never reaches the model. Nothing here talks to a model.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
-import re
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from ..pipeline.events import ENGINE_TOOL_RESULT, JUDGE_UNAVAILABLE
+from ..util.envsafe import SECRET_ENV_RE, redact, safe_env
 from ..util.fs import atomic_write_text, which
-from ..util.procs import run as run_cmd
+from ..util.procs import CANCELLED_NOTE, run as run_cmd
 from .base import CodeEngine, EngineEvent, EngineJob, EngineSink
 
 log = logging.getLogger("kyora.agent_tools")
@@ -41,16 +45,22 @@ BASH_TOOL = "bash"
 EDITOR_TOOL = "str_replace_based_edit_tool"
 BASH_TIMEOUT_S = 120
 MAX_TOOL_OUTPUT = 30000
+MAX_BASH_CAPTURE = 2 * MAX_TOOL_OUTPUT  # per stream, before the result is cut to MAX_TOOL_OUTPUT
 MAX_VIEW_BYTES = 4 * 1024 * 1024
 LISTING_LIMIT = 1000
 EDITOR_JUDGE_NAMES: dict[str, str] = {"create": "Write", "str_replace": "Edit", "insert": "Edit", "view": "Read"}
 DEFAULT_JUDGE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit", "Bash")
-SECRET_ENV_RE = re.compile(r"API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY|ACCESS_KEY", re.IGNORECASE)
-STRIP_ENV = ("CLAUDECODE",)
+STRIP_ENV = ("CLAUDECODE",)  # never passed: safe_env is an allowlist
 GIT_BASH_ENV = "CLAUDE_CODE_GIT_BASH_PATH"  # the variable Claude Code itself reads on Windows
 NO_SHELL = "Error: no POSIX shell (bash or sh) found on this device"
 NO_SHELL_WINDOWS = ("Error: no POSIX shell found on this Windows device: install Git for Windows (Git Bash) or set "
                     f"{GIT_BASH_ENV} to its bash.exe (WSL's bash.exe in System32 is never used)")
+DEADLINE_PASSED = "Error: the run deadline passed; the call was not run"
+# for the bash tool description. POSIX: the shell's session is killed when the call returns, so background jobs
+# do not outlive it. Windows: only a timeout or cancel ends the tree (taskkill /T), so the model must not leave any.
+BASH_BACKGROUND_POSIX = "background processes are stopped when the command returns"
+BASH_BACKGROUND_WINDOWS = "do not leave background processes running: they are not stopped on this device"
+BASH_BACKGROUND_NOTE = BASH_BACKGROUND_WINDOWS if os.name == "nt" else BASH_BACKGROUND_POSIX
 
 
 def _is_wsl_launcher(path: str | Path, environ: Mapping[str, str]) -> bool:
@@ -147,15 +157,8 @@ def _plain(obj: Any) -> Any:
 
 
 def scrubbed_env(extra: Mapping | None = None) -> dict[str, str]:
-    """``os.environ`` (+ ``extra``) without API keys, tokens, secrets, passwords and credentials."""
-    env = {k: v for k, v in os.environ.items() if not SECRET_ENV_RE.search(k) and k not in STRIP_ENV}
-    for k, v in (extra or {}).items():
-        k = str(k)
-        if v is None:
-            env.pop(k, None)
-        elif not SECRET_ENV_RE.search(k):
-            env[k] = str(v)
-    return env
+    """The allowlisted, secret-free part of ``os.environ`` plus ``extra`` (:func:`kyora.util.envsafe.safe_env`)."""
+    return safe_env(extra)
 
 
 def confine(workspace: Path | str, raw: Any) -> Path:
@@ -268,7 +271,7 @@ class ToolLoopEngine(CodeEngine):
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+                fh.write(redact(json.dumps(entry, ensure_ascii=False, default=str)) + "\n")
         except OSError as exc:
             log.warning("cannot append %s: %s", path, exc)
 
@@ -279,19 +282,34 @@ class ToolLoopEngine(CodeEngine):
         return [shell, "-c", command] if shell else None
 
     def _bash(self, command: str, workspace: Path | str, extra_env: Mapping | None = None,
-              timeout_s: float = BASH_TIMEOUT_S) -> tuple[str, bool]:
-        """Run ``command`` in ``workspace`` with a scrubbed environment; returns ``(output, is_error)``."""
+              timeout_s: float = BASH_TIMEOUT_S, *, cancel: threading.Event | None = None,
+              deadline: float | None = None) -> tuple[str, bool]:
+        """Run ``command`` in ``workspace`` with a scrubbed environment; returns ``(output, is_error)``.
+
+        ``deadline`` (``time.monotonic()``) caps the time limit; ``cancel`` kills the command when set.
+        """
         argv = self._shell_argv(command)
         if argv is None:
             return (NO_SHELL_WINDOWS if os.name == "nt" else NO_SHELL), True
+        capped = deadline is not None and deadline - time.monotonic() < timeout_s
+        if capped:
+            timeout_s = deadline - time.monotonic()
+            if timeout_s <= 0:
+                return DEADLINE_PASSED, True
         try:
-            rc, out, err = run_cmd(argv, cwd=Path(workspace), env=scrubbed_env(extra_env), timeout=timeout_s)
+            rc, out, err = run_cmd(argv, cwd=Path(workspace), env=scrubbed_env(extra_env), timeout=timeout_s,
+                                   max_output_chars=MAX_BASH_CAPTURE, cancel=cancel)
         except OSError as exc:
             return f"Error: cannot start {argv[0]}: {exc}", True
         text = out
         if err:
             text = (text + ("\n" if text and not text.endswith("\n") else "") + err) if text else err
         text = _truncate(text.rstrip("\n"))
+        if rc == -9 and capped and time.monotonic() >= deadline:  # also when a cancel event tracks the deadline
+            return (text + "\n" if text else "") + (f"[command killed after {timeout_s:.1f} s: the run deadline "
+                                                     "was reached]"), True
+        if rc == -9 and cancel is not None and cancel.is_set():
+            return text or CANCELLED_NOTE, True  # procs.run already ended stderr with "[cancelled]"
         if rc == -9:
             return (text + "\n" if text else "") + f"[command timed out after {int(timeout_s)} s and was killed]", True
         if rc != 0:
@@ -514,7 +532,8 @@ class ToolLoopEngine(CodeEngine):
             return f"Denied by the Kyora judge: {reason}", True
 
         if name == BASH_TOOL:
-            return self._bash(str(inp.get("command")), workspace, job.env)
+            return self._bash(str(inp.get("command")), workspace, job.env, cancel=state.get("tool_cancel"),
+                              deadline=state.get("tool_deadline"))
         try:
             out = self._editor(workspace, str(inp.get("command")), str(inp.get("path")),
                                file_text=inp.get("file_text"), old_str=inp.get("old_str"), new_str=inp.get("new_str"),
@@ -524,22 +543,40 @@ class ToolLoopEngine(CodeEngine):
         except EditorError as exc:
             return f"Error: {exc}", True
 
+    @staticmethod
+    def _tool_timeout(state: dict, default_s: float) -> float:
+        """``default_s`` capped by the run deadline :meth:`_run_tools` was given (``0.0`` once it passed)."""
+        deadline = state.get("tool_deadline")
+        if deadline is None:
+            return float(default_s)
+        return max(0.0, min(float(default_s), deadline - time.monotonic()))
+
     def _run_tools(self, job: EngineJob, sink: EngineSink, cancel: threading.Event, tool_uses: list, workspace: Path,
-                   run_dir: Path, state: dict) -> list[dict]:
-        """Execute every ``tool_use`` block in order; returns one ``tool_result`` dict per block, in the same order."""
+                   run_dir: Path, state: dict, *, deadline: float | None = None) -> list[dict]:
+        """Execute every ``tool_use`` block in order; returns one ``tool_result`` dict per block, in the same order.
+
+        ``deadline`` (``time.monotonic()``): a call reached after it is not run (it gets an error result, so
+        every call keeps its result); it also caps the bash time limit (:meth:`_tool_timeout`). ``cancel`` and
+        ``deadline`` are kept in ``state`` (``tool_cancel``, ``tool_deadline``) for :meth:`_handle_tool`.
+        Every result is redacted (:func:`kyora.util.envsafe.redact`) before it is stored, shown or returned.
+        """
+        state["tool_cancel"] = cancel
+        state["tool_deadline"] = deadline
         results: list[dict] = []
         for block in tool_uses:
             tid = str(_get(block, "id") or "")
             kyora_name, _summary = self._describe(str(_get(block, "name") or ""), _get(block, "input"))
             if cancel.is_set():
                 content, is_error = "Cancelled by the user before this tool ran", True
+            elif deadline is not None and time.monotonic() >= deadline:
+                content, is_error = DEADLINE_PASSED, True
             else:
                 try:
                     content, is_error = self._handle_tool(job, sink, block, workspace, run_dir, state)
                 except Exception as exc:  # noqa: BLE001 - report to the model and the UI, keep the loop alive
                     log.exception("tool %s failed", kyora_name)
                     content, is_error = f"Error: {type(exc).__name__}: {exc}", True
-            content = content or "(no output)"
+            content = redact(content or "(no output)")
             results.append({"type": "tool_result", "tool_use_id": tid, "content": content, "is_error": bool(is_error)})
             excerpt = content if len(content) <= 400 else content[:400] + "..."
             self._emit(sink, ENGINE_TOOL_RESULT, {"tool_use_id": tid, "name": kyora_name, "is_error": bool(is_error),
@@ -549,7 +586,8 @@ class ToolLoopEngine(CodeEngine):
 
 __all__ = [
     "ToolLoopEngine", "EditorError", "find_posix_shell", "scrubbed_env", "confine",
-    "BASH_TOOL", "EDITOR_TOOL", "BASH_TIMEOUT_S", "MAX_TOOL_OUTPUT", "MAX_VIEW_BYTES", "LISTING_LIMIT",
-    "EDITOR_JUDGE_NAMES", "DEFAULT_JUDGE_TOOLS", "SECRET_ENV_RE", "STRIP_ENV", "GIT_BASH_ENV", "NO_SHELL",
-    "NO_SHELL_WINDOWS",
+    "BASH_TOOL", "EDITOR_TOOL", "BASH_TIMEOUT_S", "MAX_TOOL_OUTPUT", "MAX_BASH_CAPTURE", "MAX_VIEW_BYTES",
+    "LISTING_LIMIT", "EDITOR_JUDGE_NAMES", "DEFAULT_JUDGE_TOOLS", "SECRET_ENV_RE", "STRIP_ENV", "GIT_BASH_ENV",
+    "NO_SHELL", "NO_SHELL_WINDOWS", "DEADLINE_PASSED", "BASH_BACKGROUND_NOTE", "BASH_BACKGROUND_POSIX",
+    "BASH_BACKGROUND_WINDOWS",
 ]

@@ -8,6 +8,7 @@ the resumed Claude Code session continues where the usage limit cut it off.
 """
 from __future__ import annotations
 
+import json
 import tempfile
 import threading
 import time
@@ -43,7 +44,7 @@ def utc(epoch: float) -> str:
 
 
 class ScriptedEngine(CodeEngine):
-    """Each call pops one step: ``{ok, error, files, session, raw, model}``; every job is kept."""
+    """Each call pops one step: ``{ok, error, files, session, raw, model, backend}``; every job is kept."""
 
     def __init__(self, name: str, steps=(), available: bool = True):
         self.name = name
@@ -62,7 +63,7 @@ class ScriptedEngine(CodeEngine):
             p = Path(job.workspace) / rel
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(text, encoding="utf-8")
-        return EngineResult(ok=bool(step.get("ok")), backend=self.name, requested_model=job.model,
+        return EngineResult(ok=bool(step.get("ok")), backend=step.get("backend", self.name), requested_model=job.model,
                             active_model=step.get("model", "model-" + self.name), session_id=step.get("session"),
                             error=step.get("error"), raw=raw)
 
@@ -171,13 +172,54 @@ class ResetTimeTests(unittest.TestCase):
 
     def test_unknown_zone_is_treated_as_utc_and_logged(self):
         with self.assertLogs("kyora.engines", "WARNING") as logs:
-            self.assertEqual(self.at("resets 1pm (Mars/Olympus_Mons)"), "2026-10-18T13:00:00Z")
+            self.assertEqual(self.at("resets 1pm (Olympus Mons Time)"), "2026-10-18T13:00:00Z")
         self.assertIn("treating it as UTC", logs.output[0])
+
+    def test_an_iana_zone_missing_from_the_tz_database_is_this_devices_local_time(self):
+        # Windows without the tzdata package, iSH/Alpine without tzdata: the CLI printed this device's own zone
+        local = parse_reset_text("usage limit · resets 3pm", NOW)
+        from zoneinfo import ZoneInfoNotFoundError
+        with mock.patch("zoneinfo.ZoneInfo", side_effect=ZoneInfoNotFoundError("no tz database")), \
+                self.assertLogs("kyora.engines", "WARNING") as logs:
+            self.assertEqual(parse_reset_text("You've hit your session limit · resets 3pm (America/Los_Angeles)", NOW),
+                             local)
+        self.assertIn("treating it as this device's local time", logs.output[0])
+        with self.assertLogs("kyora.engines", "WARNING"):  # in no tz database at all
+            self.assertEqual(parse_reset_text("resets 3pm (Mars/Olympus_Mons)", NOW), local)
 
     def test_no_zone_means_this_devices_local_time(self):
         local = datetime.fromtimestamp(NOW).replace(hour=13, minute=20, second=0, microsecond=0)
-        want = local.timestamp() if local.timestamp() > NOW else (local + timedelta(days=1)).timestamp()
+        want = local.timestamp() if local.timestamp() > NOW - 3600 else (local + timedelta(days=1)).timestamp()
         self.assertEqual(parse_reset_text("usage limit · resets 1:20pm", NOW), want)
+
+    def test_a_time_of_day_that_just_passed_is_that_reset_not_tomorrows(self):
+        # refused again right after the reset (this clock ahead, the limit lifted late): resume soon, not in a day
+        self.assertEqual(self.at("You've hit your session limit · resets 9:30am (UTC)"), "2026-10-18T09:30:00Z")
+        self.assertEqual(self.at("resets 9:01am (UTC)"), "2026-10-18T09:01:00Z")
+        self.assertEqual(self.at("resets 8:59am (UTC)"), "2026-10-19T08:59:00Z")  # over an hour ago: tomorrow's
+        rejected = [{"status": "rejected", "resetsAt": int(NOW) - 600, "rateLimitType": "five_hour"},
+                    {"status": "allowed_warning", "resetsAt": int(NOW) + 6 * 86400, "rateLimitType": "seven_day"}]
+        self.assertEqual(reset_time(failed(SESSION_LIMIT, rate_limits=rejected), NOW), NOW - 600)
+        stale = [{"status": "rejected", "resetsAt": int(NOW) - 7200}, {"status": "allowed", "resetsAt": int(NOW) + 50}]
+        self.assertEqual(reset_time(failed("x", rate_limits=stale), NOW), NOW + 50)
+
+    def test_a_reset_that_just_passed_before_midnight_is_yesterdays(self):
+        # refused again at 00:20 right after an 11:50pm reset: 30 minutes ago, not tonight (almost a day late)
+        now = datetime(2026, 10, 19, 0, 20, tzinfo=timezone.utc).timestamp()
+        self.assertEqual(utc(parse_reset_text("You've hit your session limit · resets 11:50pm (UTC)", now)),
+                         "2026-10-18T23:50:00Z")
+        self.assertEqual(utc(parse_reset_text("resets 11pm (UTC)", now)), "2026-10-19T23:00:00Z")  # over an hour ago
+        near_midnight = datetime(2026, 10, 18, 23, 20, tzinfo=timezone.utc).timestamp()  # 00:20 the next day at UTC+1
+        self.assertEqual(utc(parse_reset_text("resets 11:50pm (UTC+1)", near_midnight)), "2026-10-18T22:50:00Z")
+        local = datetime(2026, 10, 19, 0, 20).timestamp()  # this device's local time, its own DST rules
+        self.assertEqual(parse_reset_text("usage limit · resets 11:50pm", local),
+                         datetime(2026, 10, 18, 23, 50).timestamp())
+
+    def test_the_message_beats_windows_that_did_not_refuse(self):
+        # many calls: an early weekly warning resets in 6 days, the session limit that refused in 3 h 20 min
+        warn = [{"status": "allowed_warning", "resetsAt": int(NOW) + 6 * 86400, "rateLimitType": "seven_day"}]
+        self.assertEqual(utc(reset_time(failed(SESSION_LIMIT, rate_limits=warn), NOW)), "2026-10-18T13:20:00Z")
+        self.assertEqual(reset_time(failed("usage limit reached", rate_limits=warn), NOW), NOW + 6 * 86400)
 
     def test_structured_sources_come_first(self):
         self.assertEqual(reset_time(failed(SESSION_LIMIT, resets_at=NOW + 60), NOW), NOW + 60)
@@ -292,6 +334,31 @@ class ClaudeCodeFailureFieldsTests(unittest.TestCase):
         r = self.result({"type": "result", "subtype": "success", "is_error": True, "result": "Claude AI usage limit reached"},
                         limits=[{"status": "rejected", "resetsAt": at, "rateLimitType": "five_hour"}])
         self.assertEqual((r.raw["failure_kind"], r.raw["resets_at"]), ("quota", float(at)))
+
+    def test_a_late_rejected_event_survives_many_earlier_ones(self):
+        now = time.time()
+        state = ClaudeCodeEngine.new_parse_state("claude-opus-5-5", 60)
+        line = lambda info: json.dumps({"type": "rate_limit_event", "rate_limit_info": info})  # noqa: E731
+        for i in range(40):  # one event per API call of a long BUILD near the weekly cap
+            ClaudeCodeEngine.parse_stream_line(line({"status": "allowed_warning", "resetsAt": int(now) + 6 * 86400 + i,
+                                                     "rateLimitType": "seven_day"}), state)
+        ClaudeCodeEngine.parse_stream_line(line({"status": "rejected", "resetsAt": int(now) + 7200,
+                                                 "rateLimitType": "five_hour"}), state)
+        limits = state["rate_limits"]
+        self.assertEqual(len(limits), 20)
+        self.assertEqual(limits[-1]["status"], "rejected")
+        self.assertEqual(limits[0]["resetsAt"], int(now) + 6 * 86400 + 21)  # the most recent ones are kept
+        for _ in range(5):  # a rejected event outlives the later warnings
+            ClaudeCodeEngine.parse_stream_line(line({"status": "allowed", "resetsAt": int(now) + 60}), state)
+        self.assertEqual(len(limits), 20)
+        self.assertEqual([e["status"] for e in limits].count("rejected"), 1)
+        clock = datetime.fromtimestamp(now + 7200, timezone.utc).strftime("%H:%M")
+        r = self.result({"type": "result", "subtype": "success", "is_error": True, "api_error_status": 429,
+                         "result": f"You've hit your session limit · resets {clock} (UTC)"}, limits=limits)
+        self.assertEqual((r.raw["failure_kind"], r.raw["resets_at"]), ("quota", float(int(now) + 7200)))
+        for _ in range(30):  # only rejected events: still bounded, the latest kept
+            ClaudeCodeEngine.parse_stream_line(line({"status": "rejected", "resetsAt": int(now) + 100}), state)
+        self.assertEqual(len(limits), 20)
 
     def test_login_and_task_failures(self):
         r = self.result({"type": "result", "subtype": "success", "is_error": True, "api_error_status": 401,
@@ -450,6 +517,101 @@ class FailoverTests(_Harness):
         self.assertEqual(self.events(ctx, ENGINE_FAILOVER), [])
 
 
+class AfterFailoverTests(_Harness):
+    QUOTA = FailoverTests.QUOTA
+
+    def test_the_next_fix_goes_back_to_the_engine_whose_limit_reset(self):
+        clock = [NOW]  # the reset is ahead when Claude refuses and has passed by the FIX
+        self.claude.steps = [{**self.QUOTA, "raw": {"failure_kind": "quota", "resets_at": NOW + 60}},
+                             {"ok": True, "files": {"index.html": "<canvas>fixed</canvas>"}}]
+        ctx = self.ctx(options={"engine_pref": "claude_code"})
+        with mock.patch.object(S, "time", SimpleNamespace(time=lambda: clock[0])):
+            self.assertTrue(S.run_engine(ctx, "build", "BUILD").ok)
+            self.assertIs(ctx.engine, self.agent)
+            clock[0], ctx.run.iteration = NOW + 120, 1
+            self.assertTrue(S.run_engine(ctx, "fix", "FIX").ok)
+        self.assertEqual((len(self.claude.jobs), len(self.agent.jobs)), (2, 1))
+        self.assertIs(ctx.engine, self.claude)
+        self.assertEqual(self.claude.jobs[1].prompt, "FIX")
+
+    def test_an_engine_whose_recorded_reset_is_ahead_is_skipped(self):
+        at = time.time() + 3600
+        self.claude.steps = [{**self.QUOTA, "raw": {"failure_kind": "quota", "resets_at": at}}]
+        ctx = self.ctx()
+        S.run_engine(ctx, "build", "BUILD")
+        self.assertEqual(ctx.run.extra["engine_runs"][0]["resets_at"], at)
+        ctx.run.iteration = 1
+        self.assertTrue(S.run_engine(ctx, "fix", "FIX").ok)
+        self.assertEqual((len(self.claude.jobs), len(self.agent.jobs)), (1, 2))  # not refused again on every FIX
+        self.assertEqual(len(self.events(ctx, ENGINE_FAILOVER)), 1)
+
+    def test_an_engine_whose_failure_cannot_have_cleared_is_not_retried(self):
+        # a refused login, a retired model, credits gone with no known reset: every later FIX stays on the fallback
+        # and continues its session (claude_code.resume_for_fixes), as before the run went back to its preferred engine
+        for kind, error in (("auth", "Invalid API key · Please run /login"), ("model", "model not found (HTTP 404)"),
+                            ("quota", "You're out of usage credits.")):
+            with self.subTest(kind=kind):
+                self.claude.jobs, self.agent.jobs = [], []
+                self.claude.steps = [{"ok": False, "error": error, "raw": {"failure_kind": kind}}] * 3
+                self.agent.steps = [{"ok": True, "session": "agent-1", "files": {"index.html": f"<b>{n}</b>"}}
+                                    for n in range(3)]
+                ctx = self.ctx()
+                S.run_engine(ctx, "build", "BUILD")
+                for n in (1, 2):
+                    ctx.run.iteration = n
+                    self.assertTrue(S.run_engine(ctx, "fix", f"FIX{n}").ok)
+                self.assertEqual(len(self.claude.jobs), 1)
+                self.assertEqual([(j.prompt, j.resume_session_id) for j in self.agent.jobs],
+                                 [("BUILD", None), ("FIX1", "agent-1"), ("FIX2", "agent-1")])
+                self.assertEqual(len(self.events(ctx, ENGINE_FAILOVER)), 1)
+
+    def test_a_reset_already_past_at_the_refusal_waits_a_back_off(self):
+        # a stale or skewed reset ("usage limit reached|<epoch in the past>"): not retried on every FIX, but after
+        # the same back-off the automatic resume uses
+        clock = [NOW]
+        self.claude.steps = [{**self.QUOTA, "raw": {"failure_kind": "quota", "resets_at": NOW - 30}},
+                             {"ok": True, "files": {"index.html": "<canvas>fixed</canvas>"}}]
+        ctx = self.ctx()
+        with mock.patch.object(S, "time", SimpleNamespace(time=lambda: clock[0])):
+            S.run_engine(ctx, "build", "BUILD")
+            for n, at in ((1, NOW + 60), (2, NOW + S.PAST_RESET_RETRY_S[1] + 1)):
+                clock[0], ctx.run.iteration = at, n
+                self.assertTrue(S.run_engine(ctx, "fix", f"FIX{n}").ok)
+        self.assertEqual([j.prompt for j in self.claude.jobs], ["BUILD", "FIX2"])
+        self.assertEqual([j.prompt for j in self.agent.jobs], ["BUILD", "FIX1"])
+
+    def test_a_higher_ranked_engine_whose_limit_reset_is_taken_again(self):
+        # three engines: Claude limited until 11:00, the API engine refused for good, the agent runs; at 12:00 the
+        # FIX goes back to Claude (ranked above the agent), not to the fallback that ran last
+        api = ScriptedEngine("anthropic_api")
+        self.app.anthropic_engine = api
+        clock = [NOW]
+        self.claude.steps = [{**self.QUOTA, "raw": {"failure_kind": "quota", "resets_at": NOW + 3600}}]
+        api.steps = [{"ok": False, "error": "Credit balance is too low", "raw": {"failure_kind": "quota"}}]
+        ctx = self.ctx()
+        with mock.patch.object(S, "time", SimpleNamespace(time=lambda: clock[0])):
+            S.run_engine(ctx, "build", "BUILD")
+            self.assertIs(ctx.engine, self.agent)
+            clock[0], ctx.run.iteration = NOW + 7200, 1
+            self.assertTrue(S.run_engine(ctx, "fix", "FIX1").ok)
+        self.assertEqual([j.prompt for j in self.claude.jobs], ["BUILD", "FIX1"])
+        self.assertEqual([j.prompt for j in api.jobs], ["BUILD"])
+
+    def test_every_later_fix_checks_again_until_the_preferred_engine_is_back(self):
+        # BUILD at 10:00 hits a limit that resets at 11:00: FIX1 at 10:30 runs on the agent, FIX2 at 12:00 on Claude
+        clock = [NOW]
+        self.claude.steps = [{**self.QUOTA, "raw": {"failure_kind": "quota", "resets_at": NOW + 3600}}]
+        ctx = self.ctx()
+        with mock.patch.object(S, "time", SimpleNamespace(time=lambda: clock[0])):
+            S.run_engine(ctx, "build", "BUILD")
+            for n, at in ((1, NOW + 1800), (2, NOW + 7200), (3, NOW + 7300)):
+                clock[0], ctx.run.iteration = at, n
+                self.assertTrue(S.run_engine(ctx, "fix", f"FIX{n}").ok)
+        self.assertEqual([j.prompt for j in self.claude.jobs], ["BUILD", "FIX2", "FIX3"])
+        self.assertEqual([j.prompt for j in self.agent.jobs], ["BUILD", "FIX1"])
+        self.assertFalse(ctx.failed_over)  # back on the preferred engine: no more checks
+
+
 class LimitBlockTests(_Harness):
     def quota(self, at, **extra):
         return {"ok": False, "error": "api_error (HTTP 429): " + SESSION_LIMIT, "session": "sess-limited",
@@ -503,6 +665,79 @@ class LimitBlockTests(_Harness):
         self.assertIsNone(cm.exception.resume_at)
         self.assertNotIn("auto_resume_at", self.store.get_run(ctx.run_id).extra)
 
+    def test_a_past_reset_backs_off_by_the_automatic_resumes_so_far(self):
+        self.agent.available = False
+        ctx = self.ctx()
+        ctx.run.extra["auto_resumes"] = ["first", "second"]  # refused again right after two resumes
+        self.claude.steps = [self.quota(time.time() - 10)]
+        before = time.time()
+        with self.assertRaises(StageBlocked) as cm:
+            S.run_engine(ctx, "build", "B")
+        self.assertGreaterEqual(cm.exception.resume_at, before + S.PAST_RESET_RETRY_S[2])
+        self.assertLessEqual(cm.exception.resume_at, time.time() + S.PAST_RESET_RETRY_S[2])
+        ctx.run.extra["auto_resumes"] = ["x"] * 9
+        self.claude.steps = [self.quota(time.time() - 10)]
+        with self.assertRaises(StageBlocked) as cm:
+            S.run_engine(ctx, "build", "B")
+        self.assertGreaterEqual(cm.exception.resume_at, before + S.PAST_RESET_RETRY_S[-1])
+
+    def test_a_bench_run_blocks_without_resuming_by_itself(self):
+        self.agent.available = False
+        self.claude.steps = [self.quota(time.time() + 3600, files={"src/half.js": "// partial"})]
+        ctx = self.ctx(options={"bench": {"task_id": "b01-demo", "tests_file": "/bench/tests.js"}})
+        with self.assertRaises(StageBlocked) as cm:
+            S.run_engine(ctx, "build", "B")
+        self.assertIsNone(cm.exception.resume_at)
+        self.assertIn("a Kyora Bench run does not resume by itself; the partial work is kept", cm.exception.reason)
+        run = self.store.get_run(ctx.run_id)
+        self.assertNotIn("auto_resume_at", run.extra)
+        self.assertIn("src/half.js", ctx.slides.backend.ls(run.options["tip"]))
+        rm = R.RunManager(self.app, workers=1)  # a bench run blocked before this rule is not re-armed either
+        self.addCleanup(rm.stop, 0.5)
+        self.store.set_state(run, "blocked", blocked_reason="usage limit", auto_resume_at=time.time() + 600)
+        self.assertFalse(rm._arm_auto_resume(run))
+        self.assertEqual(rm.status()["auto_resume"], {})
+
+    def _resumed(self, ctx) -> StageContext:
+        """The run comes back (new process state): prepare_run restores its last commit."""
+        run = self.store.get_run(ctx.run_id)
+        ctx.slides.prepare_run(run)
+        return StageContext(app=self.app, run=run, project=ctx.project, run_dir=ctx.run_dir, workspace=ctx.workspace,
+                            cancel=threading.Event(), slides=ctx.slides)
+
+    def test_the_next_engine_after_a_resume_is_told_about_the_kept_work(self):
+        self.agent.available = False
+        self.claude.steps = [self.quota(time.time() + 600, files={"src/half.js": "// partial"}),
+                             self.quota(time.time() + 7 * 86400)]  # the resumed session is refused again
+        ctx = self.ctx()
+        with self.assertRaises(StageBlocked):
+            S.run_engine(ctx, "build", "BUILD")
+        kept = self.store.get_run(ctx.run_id).extra["partial_work_kept"]
+        self.assertEqual((kept["kind"], kept["iteration"], kept["engine"]), ("build", 0, "claude_code"))
+        self.assertTrue(kept["reason"].startswith("usage limit, credits or subscription: api_error (HTTP 429)"))
+        ctx2 = self._resumed(ctx)
+        self.assertTrue((ctx2.workspace / "src" / "half.js").is_file())
+        self.agent.available = True
+        self.assertTrue(S.run_engine(ctx2, "build", "BUILD").ok)
+        self.assertEqual(self.claude.jobs[1].prompt, CONTINUE_PREFIX + "BUILD")  # its own work: nothing to add
+        prompt = self.agent.jobs[0].prompt
+        self.assertTrue(prompt.startswith("A previous code engine (claude_code) stopped part-way (usage limit"), prompt)
+        self.assertTrue(prompt.endswith("without starting over.\n\nBUILD"), prompt)
+
+    def test_a_continued_session_is_told_another_engine_changed_files(self):
+        self.claude.steps = [self.quota(time.time() + 600),
+                             {"ok": True, "session": "sess-limited", "files": {"index.html": "<canvas>v2</canvas>"}}]
+        self.agent.steps = [{"ok": False, "error": "rate limited (HTTP 429)", "files": {"src/agent.js": "// agent"},
+                             "raw": {"failure_kind": "quota", "resets_at": time.time() + 7200}}]
+        ctx = self.ctx()
+        with self.assertRaises(StageBlocked):
+            S.run_engine(ctx, "build", "BUILD")
+        self.assertEqual(self.store.get_run(ctx.run_id).extra["partial_work_kept"]["engine"], "openai_agent")
+        self.assertTrue(S.run_engine(self._resumed(ctx), "build", "BUILD").ok)
+        job = self.claude.jobs[1]
+        self.assertEqual(job.resume_session_id, "sess-limited")
+        self.assertEqual(job.prompt, CONTINUE_PREFIX + S.CHANGED_SINCE_TEXT.format(name="openai_agent") + "BUILD")
+
 
 class SessionContinuationTests(_Harness):
     def test_claude_code_continues_its_limited_session(self):
@@ -554,6 +789,110 @@ class SessionContinuationTests(_Harness):
         self.assertTrue(retry.prompt.startswith("A previous code engine (claude_code) stopped part-way (usage limit"),
                         retry.prompt)
         self.assertTrue(retry.prompt.endswith("\n\nBUILD"))
+
+
+class HubEngineTests(_Harness):
+    def hub(self, backend: str, model: str = "") -> ScriptedEngine:
+        hub = ScriptedEngine("hub")
+        av = Availability(True, "hub", "", {"remote_backend": backend, "remote_engine": {"details": {"model": model}}})
+        hub.availability = lambda: av
+        self.app.hub_client = hub
+        self.app.config.hub.url = "http://hub.local:8765"
+        self.claude.available = self.agent.available = False
+        return hub
+
+    def test_the_hubs_limited_claude_code_session_is_continued(self):
+        hub = self.hub("claude_code")
+        hub.steps = [{"ok": False, "error": SESSION_LIMIT, "session": "sess-hub", "backend": "hub:claude_code",
+                      "raw": {"failure_kind": "quota", "resets_at": time.time() + 600}},
+                     {"ok": True, "session": "sess-hub", "backend": "hub:claude_code",
+                      "files": {"index.html": "<canvas>v2</canvas>"}}]
+        ctx = self.ctx()
+        with self.assertRaises(StageBlocked):
+            S.run_engine(ctx, "build", "BUILD")
+        ctx.engine = None  # a resumed run selects again
+        self.assertTrue(S.run_engine(ctx, "build", "BUILD").ok)
+        self.assertEqual((hub.jobs[1].resume_session_id, hub.jobs[1].prompt), ("sess-hub", CONTINUE_PREFIX + "BUILD"))
+
+    def test_a_continued_hub_session_is_told_of_the_kept_work(self):
+        # after a weekly limit the Hub has expired the job (a day) and starts a new session with the prompt as sent:
+        # that session must still learn that the work tree holds the stopped session's partial work
+        hub = self.hub("claude_code")
+        hub.steps = [{"ok": False, "error": SESSION_LIMIT, "session": "sess-hub", "backend": "hub:claude_code",
+                      "files": {"src/half.js": "// partial"},
+                      "raw": {"failure_kind": "quota", "resets_at": time.time() + 7 * 86400}},
+                     {"ok": True, "session": "sess-new", "backend": "hub:claude_code",
+                      "files": {"index.html": "<canvas>v2</canvas>"}}]
+        ctx = self.ctx()
+        with self.assertRaises(StageBlocked):
+            S.run_engine(ctx, "build", "BUILD")
+        self.assertEqual(self.store.get_run(ctx.run_id).extra["partial_work_kept"]["engine"], "hub")
+        ctx.engine = None  # a resumed run selects again
+        self.assertTrue(S.run_engine(ctx, "build", "BUILD").ok)
+        self.assertEqual((hub.jobs[1].resume_session_id, hub.jobs[1].prompt),
+                         ("sess-hub", CONTINUE_PREFIX + S.KEPT_WORK_TEXT + "BUILD"))
+
+    def test_an_interrupted_hub_session_is_not_continued(self):
+        # Kyora stopped while the Hub job ran: the job was cancelled, its work never reached this tree, and the Hub
+        # replaces that job's workspace with the next upload - continuing the session would continue on lost edits
+        hub = self.hub("claude_code")
+        ctx = self.ctx()
+        ctx.run.extra["engine_runs"] = [{"kind": "build", "iteration": 0, "engine": "hub", "backend": "hub:claude_code",
+                                         "failure_kind": "interrupted", "session_id": "sess-hub"}]
+        self.assertIsNone(S._quota_session(ctx, "build", hub))
+        ctx.run.extra["engine_runs"][0]["failure_kind"] = "quota"
+        self.assertEqual(S._quota_session(ctx, "build", hub)["session_id"], "sess-hub")
+
+    def test_no_session_is_continued_when_the_hub_ran_another_engine(self):
+        hub = self.hub("openai_agent", "z-ai/glm-5.3")
+        hub.steps = [{"ok": False, "error": "rate limited (HTTP 429)", "session": "agent-1",
+                      "backend": "hub:openai_agent", "raw": {"failure_kind": "quota", "resets_at": time.time() + 600}},
+                     {"ok": True}]
+        ctx = self.ctx()
+        with self.assertRaises(StageBlocked):
+            S.run_engine(ctx, "build", "BUILD")
+        S.run_engine(ctx, "build", "BUILD")
+        self.assertEqual((hub.jobs[1].resume_session_id, hub.jobs[1].prompt), (None, "BUILD"))
+
+    def test_the_start_line_names_what_the_hub_runs(self):
+        ctx = self.ctx()
+        cases = [(self.hub("openai_agent", "z-ai/glm-5.3"), ("z-ai/glm-5.3 on the Kyora Hub", None)),
+                 (self.hub("openai_agent"), ("its configured model on the Kyora Hub", None)),
+                 (self.hub("claude_code"), ("claude-opus-5-5, effort max on the Kyora Hub", "max")),
+                 (self.hub("anthropic_api"), ("claude-opus-5-5, effort max on the Kyora Hub", "max")),
+                 (self.hub(""), ("the Kyora Hub engine", None))]
+        for eng, want in cases:
+            self.assertEqual(S._engine_start_text(ctx, eng), want)
+        broken = SimpleNamespace(name="hub", availability=mock.Mock(side_effect=OSError("hub unreachable")))
+        self.assertEqual(S._engine_start_text(ctx, broken), ("the Kyora Hub engine", None))
+        hub = self.hub("openai_agent", "z-ai/glm-5.3")
+        S.run_engine(ctx, "build", "BUILD")
+        starts = [e for e in self.events(ctx, "stage.progress") if "starting" in e.get("message", "")]
+        self.assertEqual([(e["message"], e["effort"]) for e in starts],
+                         [("hub: starting (z-ai/glm-5.3 on the Kyora Hub)", None)])
+        self.assertIsNone(self.store.get_run(ctx.run_id).engine["effort"])
+        self.assertEqual(len(hub.jobs), 1)
+
+
+class ServedEnginesTests(_Harness):
+    def test_finalize_records_every_backend_and_model_that_served(self):
+        ctx = self.ctx()
+        ctx.run.extra["engine_runs"] = [
+            {"kind": "build", "engine": "claude_code", "backend": "claude_code", "active_model": "claude-opus-5-5"},
+            {"kind": "build", "engine": "claude_code", "backend": "claude_code", "active_model": None},  # refused
+            {"kind": "build", "engine": "openai_agent", "backend": "openai_agent", "active_model": "z-ai/glm-5.3"},
+            {"kind": "fix", "engine": "claude_code", "backend": "claude_code", "active_model": "claude-opus-5-5"},
+            {"kind": "fix", "engine": "hub", "backend": "hub:claude_code", "active_model": "claude-opus-5-5"}]
+        ctx.run.engine = {"backend": "hub:claude_code", "active_model": "claude-opus-5-5", "ok": True}
+        S.finalize_stage(ctx, {"iteration": 0, "pass_rate": 1.0, "passed": 1, "total": 1, "ok": True}, True)
+        want = [{"backend": "claude_code", "model": "claude-opus-5-5"},
+                {"backend": "openai_agent", "model": "z-ai/glm-5.3"},
+                {"backend": "hub:claude_code", "model": "claude-opus-5-5"}]
+        engine = self.store.get_run(ctx.run_id).engine
+        self.assertEqual(engine["served"], want)
+        self.assertEqual(engine["active_model"], "claude-opus-5-5")  # still the last call's model
+        ctx.run.extra["engine_runs"] = []
+        self.assertEqual(S.served_engines(ctx.run), [{"backend": "hub:claude_code", "model": "claude-opus-5-5"}])
 
 
 # ============================================================================= RunManager auto resume
@@ -650,6 +989,44 @@ class AutoResumeTests(_Harness):
         rm._auto_resume_due(gone.id, gone.extra["auto_resume_at"], token)  # no exception, nothing queued
         self.assertFalse(rm.is_active(gone.id))
 
+    def test_a_cancel_while_the_automatic_resume_is_due_stays_cancelled(self):
+        rm = self.manager()
+        run = self.blocked_run(time.time() - 120)
+        at, token = run.extra["auto_resume_at"], object()
+        rm._resume_timers[run.id] = (threading.Timer(999, lambda: None), at, token)
+        real_get, cancels, results = self.store.get_run, [], []
+
+        def get_run(rid):  # the user presses Cancel while the timer holds its copy of the run
+            got = real_get(rid)
+            if not cancels:
+                cancels.append(threading.Thread(target=lambda: results.append(rm.cancel(rid))))
+                cancels[0].start()
+                cancels[0].join(0.5)
+            return got
+
+        with mock.patch.object(self.store, "get_run", get_run):
+            rm._auto_resume_due(run.id, at, token)
+            cancels[0].join(30)
+        self.assertEqual(results, [True])
+        self.assertEqual(real_get(run.id).state, "cancelled")
+        self.assertFalse(rm.is_active(run.id))  # not queued to run again from its base
+
+    def test_a_stale_copy_never_overwrites_or_rearms_a_cancel(self):
+        # the worker arms the run it just finished (its in-memory copy) after the user pressed Cancel
+        rm = self.manager()
+        capped, fresh = self.blocked_run(time.time() + 600), self.blocked_run(time.time() + 600)
+        capped.extra["auto_resumes"] = ["x"] * R.AUTO_RESUME_MAX
+        self.store.save_run(capped)
+        for run in (capped, fresh):
+            stale = self.store.get_run(run.id)
+            self.assertTrue(rm.cancel(run.id))
+            self.assertFalse(rm._arm_auto_resume(stale))
+            after = self.store.get_run(run.id)
+            self.assertEqual(after.state, "cancelled")  # not 'blocked' again with the tip from before the rollback
+            self.assertNotIn("automatic resume stopped", after.blocked_reason or "")
+        self.assertEqual(rm.status()["auto_resume"], {})
+        self.assertEqual([e for e in self.bus.replay(0) if e.type == RUN_AUTO_RESUME], [])
+
     def test_automatic_resumes_are_capped(self):
         rm = self.manager()
         run = self.blocked_run(time.time() + 600)
@@ -663,8 +1040,8 @@ class AutoResumeTests(_Harness):
         self.assertIn(f"automatic resume stopped after {R.AUTO_RESUME_MAX} automatic resumes", after.blocked_reason)
 
 
-class AutoResumeEndToEndTests(_Harness):
-    """A real Runner and RunManager: usage limit -> blocked -> resumed by itself -> the session continues -> gate."""
+class _EndToEndHarness(_Harness):
+    """A real Runner, RunManager and run_engine; intake/plan/design/test are stubbed (every check passes)."""
 
     def setUp(self):
         super().setUp()
@@ -681,6 +1058,16 @@ class AutoResumeEndToEndTests(_Harness):
         p = mock.patch.object(R, "AUTO_RESUME_GRACE_S", 0.0)
         p.start()
         self.addCleanup(p.stop)
+
+    def wait_state(self, run_id, states, timeout=30.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and self.store.get_run(run_id).state not in states:
+            time.sleep(0.05)
+        return self.store.get_run(run_id)
+
+
+class AutoResumeEndToEndTests(_EndToEndHarness):
+    """Usage limit -> blocked -> resumed by itself -> the session continues -> gate."""
 
     def test_limited_run_resumes_and_completes(self):
         self.agent.available = False
@@ -724,6 +1111,146 @@ class AutoResumeEndToEndTests(_Harness):
         self.assertEqual(after.state, "blocked")
         self.assertNotIn("auto_resume_at", after.extra)
         self.assertEqual(self.agent.jobs, [])  # a task failure is not failed over
+
+
+class InterruptibleEngine(ScriptedEngine):
+    """The first call writes part of the game (unless ``partial`` is False), then runs until it is cancelled
+    (Kyora stopping)."""
+
+    def __init__(self, name: str, partial: bool = True):
+        super().__init__(name)
+        self.partial = partial
+        self.started = threading.Event()
+        self.saw_partial: list[bool] = []
+
+    def run(self, job, sink, cancel) -> EngineResult:
+        self.saw_partial.append((Path(job.workspace) / "src" / "menu.js").is_file())
+        if self.jobs:
+            return super().run(job, sink, cancel)
+        self.jobs.append(job)
+        if self.partial:
+            (Path(job.workspace) / "src").mkdir(parents=True, exist_ok=True)
+            (Path(job.workspace) / "src" / "menu.js").write_text("// 79 minutes of a pause menu", encoding="utf-8")
+        self.started.set()
+        cancel.wait(60)
+        return EngineResult(ok=False, backend=self.name, requested_model=job.model, session_id="sess-long",
+                            error="cancelled")
+
+
+class InterruptedBuildTests(_EndToEndHarness):
+    """Kyora stopping (or killed) during BUILD keeps the engine's work and continues its session on Resume."""
+
+    def test_stop_keeps_the_partial_build_and_resume_continues_the_session(self):
+        self.agent.available = False
+        claude = self.app.claude_engine = InterruptibleEngine("claude_code")
+        claude.steps = [{"ok": True, "session": "sess-long",
+                         "files": {"index.html": "<canvas></canvas><script>whole</script>"}}]
+        rm = R.RunManager(self.app, workers=1)
+        self.addCleanup(rm.stop, 2.0)
+        rm.start()
+        p = self.store.create("interrupted")
+        run = self.store.create_run(p.id, "generate", "a game with a pause menu")
+        rm.submit(run.id)
+        self.assertTrue(claude.started.wait(30), "the engine did not start")
+        rm.stop(30.0)
+        after = self.store.get_run(run.id)
+        self.assertEqual(after.state, "blocked")
+        self.assertEqual(after.blocked_reason, R.INTERRUPTED_REASON)
+        kept = after.extra["partial_work_kept"]
+        self.assertEqual((kept["kind"], kept["iteration"], kept["engine"]), ("build", 0, "claude_code"))
+        self.assertIn("src/menu.js", self.store.slide_manager(p.id).backend.ls(after.options["tip"]))
+        last = after.extra["engine_runs"][-1]
+        self.assertEqual((last["failure_kind"], last["session_id"]), ("interrupted", "sess-long"))
+        rm2 = R.RunManager(self.app, workers=1)
+        self.addCleanup(rm2.stop, 2.0)
+        rm2.start()
+        self.assertTrue(rm2.resume(run.id))
+        done = self.wait_state(run.id, ("complete", "failed", "failed_gate", "cancelled"))
+        self.assertEqual(done.state, "complete", done.blocked_reason or done.error)
+        self.assertEqual(claude.saw_partial, [False, True])  # the resumed BUILD starts from the kept work
+        self.assertEqual(claude.jobs[1].resume_session_id, "sess-long")
+        self.assertEqual(claude.jobs[1].prompt, CONTINUE_PREFIX + claude.jobs[0].prompt)
+        self.assertNotIn("partial_work_kept", done.extra)  # cleared once the iteration committed
+
+    def test_a_stop_before_the_engine_wrote_anything_keeps_and_announces_nothing(self):
+        self.agent.available = False
+        claude = self.app.claude_engine = InterruptibleEngine("claude_code", partial=False)
+        claude.steps = [{"ok": True, "session": "sess-long",
+                         "files": {"index.html": "<canvas></canvas><script>whole</script>"}}]
+        rm = R.RunManager(self.app, workers=1)
+        self.addCleanup(rm.stop, 2.0)
+        rm.start()
+        p = self.store.create("stopped early")
+        run = self.store.create_run(p.id, "generate", "a game with a pause menu")
+        rm.submit(run.id)
+        self.assertTrue(claude.started.wait(30), "the engine did not start")
+        tip = self.store.get_run(run.id).options.get("tip")
+        rm.stop(30.0)
+        after = self.store.get_run(run.id)
+        self.assertEqual((after.state, after.blocked_reason), ("blocked", R.INTERRUPTED_REASON))
+        self.assertNotIn("partial_work_kept", after.extra)
+        self.assertEqual(after.options.get("tip"), tip)  # no empty 'iteration 0' commit
+        rm2 = R.RunManager(self.app, workers=1)
+        self.addCleanup(rm2.stop, 2.0)
+        rm2.start()
+        self.assertTrue(rm2.resume(run.id))
+        done = self.wait_state(run.id, ("complete", "failed", "failed_gate", "cancelled"))
+        self.assertEqual(done.state, "complete", done.blocked_reason or done.error)
+        self.assertEqual(claude.jobs[1].prompt, CONTINUE_PREFIX + claude.jobs[0].prompt)  # no partial work claimed
+
+    def test_a_hard_kill_keeps_and_announces_only_what_the_attempt_changed(self):
+        # the attempt's base was recorded before the engine ran: an unchanged tree gets no commit and no claim,
+        # a changed one is kept under the engine that was running
+        ctx = self.ctx()
+        self.store.set_state(ctx.run, "build")
+        run = self.store.get_run(ctx.run_id)
+        run.extra["engine_attempt"] = {"kind": "build", "iteration": 0, "engine": "openai_agent",
+                                       "base": S.tree_fingerprint(ctx.workspace)}
+        self.store.save_run(run)
+        tip = run.options["tip"]
+        R.RunManager(self.app, workers=1)._recover_interrupted()
+        after = self.store.get_run(ctx.run_id)
+        self.assertEqual(after.state, "blocked")
+        self.assertNotIn("partial_work_kept", after.extra)
+        self.assertNotIn("engine_attempt", after.extra)
+        self.assertEqual(after.options["tip"], tip)  # no empty "iteration" commit
+
+        ctx2 = self.ctx()
+        self.store.set_state(ctx2.run, "build")
+        run2 = self.store.get_run(ctx2.run_id)
+        run2.extra["engine_attempt"] = {"kind": "build", "iteration": 0, "engine": "openai_agent",
+                                        "base": S.tree_fingerprint(ctx2.workspace)}
+        self.store.save_run(run2)
+        (ctx2.workspace / "src").mkdir(exist_ok=True)
+        (ctx2.workspace / "src" / "half.js").write_text("// written before the kill", encoding="utf-8")
+        R.RunManager(self.app, workers=1)._recover_interrupted()
+        kept = self.store.get_run(ctx2.run_id).extra["partial_work_kept"]
+        self.assertEqual((kept["kind"], kept["engine"]), ("build", "openai_agent"))
+
+    def test_a_hard_kill_during_build_keeps_the_work_tree(self):
+        ctx = self.ctx()
+        (ctx.workspace / "src").mkdir(exist_ok=True)
+        (ctx.workspace / "src" / "menu.js").write_text("// written before the kill", encoding="utf-8")
+        self.store.set_state(ctx.run, "build")
+        other = self.ctx()  # another project's run in BUILD whose branch is not checked out: left alone
+        self.store.set_state(other.run, "build")
+        other.slides.backend.checkout_orphan("elsewhere")
+        tip = other.run.options["tip"]
+        R.RunManager(self.app, workers=1)._recover_interrupted()
+        after = self.store.get_run(ctx.run_id)
+        self.assertEqual(after.state, "blocked")
+        self.assertEqual(after.extra["partial_work_kept"]["kind"], "build")
+        self.assertIn("src/menu.js", ctx.slides.backend.ls(after.options["tip"]))
+        self.assertEqual(self.store.get_run(other.run_id).options["tip"], tip)
+        self.assertNotIn("partial_work_kept", self.store.get_run(other.run_id).extra)
+        ctx.slides.prepare_run(after)  # Resume restores the run's last commit: the work is still there
+        self.assertTrue((ctx.workspace / "src" / "menu.js").is_file())
+        ctx2 = StageContext(app=self.app, run=after, project=ctx.project, run_dir=ctx.run_dir, workspace=ctx.workspace,
+                            cancel=threading.Event(), slides=ctx.slides)
+        S.run_engine(ctx2, "build", "BUILD")
+        self.assertTrue(self.claude.jobs[0].prompt.startswith(
+            "A previous code engine (name not recorded) stopped part-way (Kyora stopped while it was running)"),
+            self.claude.jobs[0].prompt)
 
 
 class AgentNarrationTests(_Harness):

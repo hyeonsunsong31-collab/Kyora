@@ -308,6 +308,7 @@ _RESET_CLOCK_RE = re.compile(
     r"(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)?(?![\w:])"
     r"(?:\s*\(([^)]{1,64})\)|\s+(UTC|GMT|Z)\b)?", re.IGNORECASE)
 _OFFSET_RE = re.compile(r"^(?:UTC|GMT)?\s*([+-])(\d{1,2})(?::?(\d{2}))?$", re.IGNORECASE)
+JUST_RESET_S = 3600.0  # a named reset up to an hour in the past just passed (not tomorrow's, not unknown)
 
 
 def _epoch(value: Any) -> float | None:
@@ -362,7 +363,9 @@ def _zone(name: str | None):
     """tzinfo for a zone named in a reset message: UTC/GMT, a fixed offset, an IANA name (zoneinfo), else UTC.
 
     No name gives None: naive local time (the CLI prints the reset in this device's local time, and naive
-    datetimes follow the local daylight-saving rules of the reset's own date).
+    datetimes follow the local daylight-saving rules of the reset's own date). An IANA name this device's
+    tz database lacks (Windows without the tzdata package, iSH/Alpine without tzdata) also gives None: the
+    CLI that printed it runs on this device and names this device's own zone.
     """
     if not name:
         return None
@@ -377,12 +380,20 @@ def _zone(name: str | None):
         from zoneinfo import ZoneInfo  # noqa: PLC0415 - stdlib since 3.9; its tz database may be missing
         return ZoneInfo(label)
     except Exception:  # noqa: BLE001 - ZoneInfoNotFoundError, ValueError, no tzdata on Windows/iSH
+        if "/" in label:  # "America/Los_Angeles": this device's own zone, so naive local time is right
+            log.warning("reset time zone %r is unknown on this device (no tz database entry); treating it as this "
+                        "device's local time", label)
+            return None
         log.warning("reset time zone %r is unknown on this device (no tz database entry); treating it as UTC", label)
         return timezone.utc
 
 
 def _clock_epoch(m: re.Match, now: float) -> float | None:
-    """The next future occurrence of a "resets 1:20pm (UTC)" / "resets Oct 9, 10am (Europe/Paris)" time."""
+    """The next occurrence of a "resets 1:20pm (UTC)" / "resets Oct 9, 10am (Europe/Paris)" time.
+
+    A time of day up to :data:`JUST_RESET_S` in the past is returned as it is (that reset just passed), also when
+    it was before midnight ("resets 11:50pm" at 00:20 is 30 minutes ago, not tonight).
+    """
     month, day, hour, minute, ampm, zone_paren, zone_word = m.groups()
     if not ampm and minute is None:
         return None  # "resets 5" is not a time of day
@@ -403,8 +414,12 @@ def _clock_epoch(m: re.Match, now: float) -> float | None:
                 cand = cand.replace(year=cand.year + 1)
         else:
             cand = now_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if cand.timestamp() <= now:
+            # a time up to an hour past has just passed (refused again right after the reset, or this clock runs
+            # ahead): it is that reset, not tomorrow's; the pipeline resumes soon instead of a day later
+            if cand.timestamp() <= now - JUST_RESET_S:
                 cand = cand + timedelta(days=1)  # wall-clock arithmetic: the same local time tomorrow
+            elif (cand - timedelta(days=1)).timestamp() > now - JUST_RESET_S:
+                cand = cand - timedelta(days=1)  # yesterday's, just passed (across midnight): not tonight's
     except ValueError:
         return None
     return cand.timestamp()
@@ -415,7 +430,8 @@ def parse_reset_text(text: str, now: float | None = None) -> float | None:
 
     Understands ``... limit reached|1760000000``, ``resets at 2026-10-18T13:20:00Z``,
     ``resets 1:20pm (UTC)`` / ``resets 13:20 (UTC)`` / ``resets 1pm (Europe/Paris)`` /
-    ``resets Oct 9, 10am (Europe/Berlin)`` (the next future occurrence), ``try again in 3h 20m``,
+    ``resets Oct 9, 10am (Europe/Berlin)`` (the next occurrence; a time of day up to an hour past is
+    that reset, just passed), ``try again in 3h 20m``,
     ``in 45 minutes`` and ``Retry-After: 120``.
     """
     now = time.time() if now is None else float(now)
@@ -448,8 +464,13 @@ def _parse_reset(text: str, now: float) -> float | None:
     return None
 
 
-def _rate_limit_reset(limits: Any, now: float) -> float | None:
-    """The reset of Claude Code's ``rate_limit_event`` infos: the latest rejected window, else the latest one."""
+def _rate_limit_reset(limits: Any, now: float, rejected_only: bool = False) -> float | None:
+    """The reset of Claude Code's ``rate_limit_event`` infos: the latest rejected window, else (unless
+    ``rejected_only``) the latest future one.
+
+    A rejected window that reset up to :data:`JUST_RESET_S` ago still counts (that limit just ended);
+    the pipeline resumes soon instead of reading another, later window as the reset.
+    """
     if not isinstance(limits, list):
         return None
     rejected, other = [], []
@@ -461,19 +482,25 @@ def _rate_limit_reset(limits: Any, now: float) -> float | None:
             at = _epoch(e.get(key))
             if at is not None:
                 break
-        if at is None or at <= now:
+        if at is None:
             continue
-        (rejected if str(e.get("status") or "").lower() == "rejected" else other).append(at)
-    pick = rejected or other
-    return max(pick) if pick else None
+        if str(e.get("status") or "").lower() == "rejected":
+            if at > now - JUST_RESET_S:
+                rejected.append(at)
+        elif at > now:
+            other.append(at)
+    if rejected:
+        return max(rejected)
+    return max(other) if other and not rejected_only else None
 
 
 def reset_time(result: EngineResult | None, now: float | None = None) -> float | None:
     """When the limit that failed ``result`` resets (epoch seconds), or None when nothing says so.
 
-    Sources in order: ``raw["resets_at"]`` (epoch or ISO 8601), Claude Code's
-    ``raw["rate_limits"]`` (``resetsAt``), then the error / result text and
-    ``raw["api_error"]`` (see :func:`parse_reset_text`).
+    Sources in order: ``raw["resets_at"]`` (epoch or ISO 8601), the *rejected* windows of Claude
+    Code's ``raw["rate_limits"]`` (``resetsAt``), the error / result text and ``raw["api_error"]``
+    (see :func:`parse_reset_text`), and only then the latest of the other (allowed) windows: a
+    weekly window that merely warned must not be read as the reset of the session limit that refused.
     """
     if result is None:
         return None
@@ -482,7 +509,10 @@ def reset_time(result: EngineResult | None, now: float | None = None) -> float |
     at = _epoch(raw.get("resets_at"))
     if at is not None:
         return at
-    at = _rate_limit_reset(raw.get("rate_limits"), now)
+    at = _rate_limit_reset(raw.get("rate_limits"), now, rejected_only=True)
     if at is not None:
         return at
-    return parse_reset_text("\n".join(p for p in (_failure_text(result), str(result.result_text or "")) if p), now)
+    at = parse_reset_text("\n".join(p for p in (_failure_text(result), str(result.result_text or "")) if p), now)
+    if at is not None:
+        return at
+    return _rate_limit_reset(raw.get("rate_limits"), now)

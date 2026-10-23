@@ -534,7 +534,7 @@ class ToolTests(_Base):
     def test_bash_env_is_scrubbed(self):
         secrets = {"ANTHROPIC_API_KEY": "sk-ant-x", "NVIDIA_API_KEY": "nvapi-x", "FOO_API_KEY": "f",
                    "MY_SECRET_TOKEN": "t", "GH_TOKEN": "g", "DB_PASSWORD": "p"}
-        with mock.patch.dict(os.environ, {**secrets, "KYORA_KEEP_ME": "1"}):
+        with mock.patch.dict(os.environ, {**secrets, "KYORA_NOT_ALLOWLISTED": "1"}):
             eng = self.engine()
             cmd = f'"{sys.executable}" -c "import os, json; print(json.dumps(sorted(os.environ)))"'
             out, is_error = eng._bash(cmd, self.ws, {"EXTRA_TOKEN": "z", "KYORA_EXTRA": "y"})
@@ -542,15 +542,16 @@ class ToolTests(_Base):
         names = set(json.loads(out.strip().splitlines()[-1]))
         for name in list(secrets) + ["EXTRA_TOKEN"]:
             self.assertNotIn(name, names)
-        self.assertIn("KYORA_KEEP_ME", names)
-        self.assertIn("KYORA_EXTRA", names)
+        self.assertNotIn("KYORA_NOT_ALLOWLISTED", names)  # an allowlist: only what a shell/node/npm needs
+        self.assertIn("KYORA_EXTRA", names)  # explicit extras pass
         self.assertIn("PATH", names)
 
     def test_scrubbed_env_helper(self):
-        with mock.patch.dict(os.environ, {"SOME_ACCESS_KEY": "a", "PLAIN": "b"}):
+        with mock.patch.dict(os.environ, {"SOME_ACCESS_KEY": "a", "PLAIN": "b", "NO_COLOR": "1"}):
             env = scrubbed_env()
         self.assertNotIn("SOME_ACCESS_KEY", env)
-        self.assertEqual(env.get("PLAIN"), "b")
+        self.assertNotIn("PLAIN", env)
+        self.assertEqual(env.get("NO_COLOR"), "1")
 
     def test_bash_cwd_exit_code_and_timeout(self):
         eng = self.engine()

@@ -26,7 +26,8 @@ from kyora.app import App  # noqa: E402
 from kyora.config import Config, HubCfg  # noqa: E402
 from kyora.hub import (CLIENT_KEEP, NO_ENGINE_REASON, RESULT_ENTRY, HubAuth, HubClientEngine, HubJobNotFinished,  # noqa: E402
                        HubJobStore, encode_multipart, fallback_unzip, link_payload, zip_tree)
-from kyora.models.base import Availability, CodeEngine, EngineEvent, EngineJob, EngineResult  # noqa: E402
+from kyora.models.base import (Availability, CodeEngine, EngineEvent, EngineJob, EngineResult,  # noqa: E402
+                               classify_failure, reset_time)
 from kyora.pipeline.events import EventBus  # noqa: E402
 from kyora.server import KyoraServer, Router  # noqa: E402
 from kyora.util.fs import atomic_write_json  # noqa: E402
@@ -79,6 +80,24 @@ class FakeCodeEngine(CodeEngine):
                                                     "duration_ms": 5, "cost_usd": None, "result": "done"}))
         return EngineResult(ok=True, backend="fake", requested_model=job.model, active_model="fake-model",
                             session_id="sess-1", num_turns=2, duration_ms=5, result_text="done")
+
+
+class LimitedEngine(FakeCodeEngine):
+    """The hub's engine stops at a usage limit it classified itself (credits refused, a rejected window's reset)."""
+
+    def __init__(self, resets_at: float):
+        super().__init__()
+        self.resets_at = resets_at
+
+    def run(self, job: EngineJob, sink, cancel: threading.Event) -> EngineResult:
+        self.jobs.append(job)
+        return EngineResult(ok=False, backend="fake", requested_model=job.model, session_id="sess-limited",
+                            error="You're out of usage credits. Switch to another model to continue.",
+                            raw={"failure_kind": "quota", "resets_at": self.resets_at,
+                                 "api_error": {"api_error_status": 402},
+                                 "rate_limits": [{"status": "rejected", "resetsAt": int(self.resets_at),
+                                                  "errorCode": "credits_required"}],
+                                 "stream": "/hub/only/engine/stream.jsonl"})
 
 
 class RecordingSink:
@@ -243,6 +262,29 @@ class HubRoundTripTests(unittest.TestCase):
         # the hub's own bus carries the events tagged with the job id
         hub_events = self.hub.app.bus.replay(0, run_id="r_round1", types=["engine.*"])
         self.assertTrue(hub_events and all(e.data.get("hub_job_id") for e in hub_events))
+
+    def test_a_usage_limit_on_the_hub_keeps_its_failure_kind_and_reset(self):
+        at = float(int(time.time()) + 3 * 86400)
+        self.hub.app.claude_engine = LimitedEngine(at)
+        ws = self._workspace()
+        res = self._client_engine().run(self._engine_job(ws, "r_limit1"), RecordingSink(), threading.Event())
+        self.assertFalse(res.ok)
+        self.assertEqual(res.session_id, "sess-limited")
+        # the text alone names no time: without the hub's own reset the run would block instead of resuming
+        self.assertEqual((classify_failure(res), reset_time(res)), ("quota", at))
+        self.assertEqual(res.raw["rate_limits"], [{"status": "rejected", "resetsAt": int(at),
+                                                   "errorCode": "credits_required"}])
+        self.assertEqual(res.raw["api_error"], {"api_error_status": 402})
+        self.assertNotIn("stream", res.raw)  # hub-local paths stay on the hub
+        self.assertEqual(res.raw["hub"]["state"], "done")
+
+    def test_a_result_from_an_older_hub_without_raw_still_rebuilds(self):
+        doc = {"ok": False, "backend": "claude_code", "error": "usage limit reached", "session_id": "s1"}
+        res = HubClientEngine._rebuild_result(doc, state="done", requested_model="m", hub_raw={"job_id": "j1"})
+        self.assertEqual(res.raw, {"hub": {"job_id": "j1"}})
+        doc["raw"] = {"failure_kind": "quota", "resets_at": None, "run_dir": "/hub/only"}
+        res = HubClientEngine._rebuild_result(doc, state="done", requested_model="m", hub_raw={"job_id": "j1"})
+        self.assertEqual(res.raw, {"hub": {"job_id": "j1"}, "failure_kind": "quota"})
 
     def test_judge_delta_reported_to_client(self):
         # Regression for honesty-run-judge-stats-miss-unjudged-calls: the Hub's per-job judge delta (what its

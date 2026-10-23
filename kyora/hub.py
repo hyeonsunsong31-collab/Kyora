@@ -78,6 +78,9 @@ UPLOAD_EXCLUDE_TOP: tuple[str, ...] = ("cache",)
 #: Top-level names the client keeps when it replaces its workspace with the hub result
 #: (everything it did not upload, so nothing local is lost).
 CLIENT_KEEP: tuple[str, ...] = (".git",) + tuple(n for n in UPLOAD_EXCLUDE_ANY + UPLOAD_EXCLUDE_TOP if n != ".git")
+#: ``EngineResult.raw`` keys a hub result carries back: the client then classifies the failure and knows the
+#: reset of a usage limit as the hub's engine did (``models.base.classify_failure`` / ``reset_time``).
+RESULT_RAW_KEYS: tuple[str, ...] = ("failure_kind", "resets_at", "rate_limits", "api_error")
 RESULT_EXCLUDE: tuple[str, ...] = (".git", "node_modules")
 DEFAULT_PHONE_UI = "http://127.0.0.1:8765"
 DEFAULT_TIMEOUT_S = 7200.0
@@ -927,6 +930,8 @@ class HubWorker:
     @staticmethod
     def _result_doc(result: EngineResult, job: HubJob, backend: str | None, judge: dict) -> dict:
         doc = result.to_dict()
+        raw = result.raw if isinstance(result.raw, dict) else {}
+        doc["raw"] = {k: raw[k] for k in RESULT_RAW_KEYS if raw.get(k) is not None}
         doc["hub"] = {"job_id": job.id, "kind": job.kind, "engine": backend, "kyora_version": __version__,
                       "finished_at": now_iso()}
         doc["judge"] = judge
@@ -1520,6 +1525,7 @@ class HubClientEngine(CodeEngine):
     def _rebuild_result(doc: dict, *, state: str, requested_model: str, hub_raw: dict) -> EngineResult:
         doc = doc or {}
         remote_backend = str(doc.get("backend") or "unknown")
+        remote_raw = doc.get("raw") if isinstance(doc.get("raw"), dict) else {}  # older hubs send none
         num_turns = doc.get("num_turns")
         cost = doc.get("cost_usd")
         return EngineResult(
@@ -1535,5 +1541,5 @@ class HubClientEngine(CodeEngine):
             result_text=str(doc.get("result_text") or ""),
             error=doc.get("error"),
             permission_denials=list(doc.get("permission_denials") or []),
-            raw={"hub": hub_raw},
+            raw={"hub": hub_raw, **{k: v for k, v in remote_raw.items() if k in RESULT_RAW_KEYS and v is not None}},
         )

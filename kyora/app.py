@@ -18,6 +18,7 @@ from .config import Config
 from .models.base import select_engine
 from .pipeline.events import EventBus
 from .server import Request, Response, Router, event_stream, lan_addresses, resource_response
+from .util.envsafe import is_secret_name, looks_secret, register_secret
 from .util.fs import kyora_home, platform_info
 
 log = logging.getLogger("kyora.app")
@@ -58,6 +59,7 @@ class App:
         self.bench = None
         self.browser_results = None
         self._wire()
+        self.register_secrets()
 
     # ------------------------------------------------------------------ wiring
     def _try(self, name: str, fn):
@@ -188,13 +190,35 @@ class App:
             self.hub_worker.start()
         self.started.set()
 
+    def register_secrets(self) -> None:
+        """Make every configured key and token known to :func:`kyora.util.envsafe.redact` (tool output, journals).
+
+        Walks ``keys.json`` (nvidia kimi/nemotron, agent, anthropic, hub token and any other secret-named
+        entry) and ``settings.json`` (a token put there); called at start and whenever Settings change keys.
+        Values replaced later stay registered.
+        """
+        def walk(node, path: str, secret: bool) -> None:
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    walk(v, f"{path}.{k}" if path else str(k), secret or is_secret_name(str(k)))
+            elif isinstance(node, list):
+                for i, v in enumerate(node):
+                    walk(v, f"{path}[{i}]", secret)
+            elif isinstance(node, str) and (secret or looks_secret("", node)):  # also a URL with a password
+                register_secret(path, node)
+        try:
+            walk(self.config.raw_keys, "", False)
+            walk(self.config.raw_settings, "settings", False)
+        except Exception as exc:  # noqa: BLE001 - redaction is defence in depth; never block the app
+            log.warning("cannot register configured secrets for redaction: %s", exc)
+
     def apply_model_settings(self) -> None:
         """Endpoints, keys, models and fallbacks changed in Settings take effect without a restart."""
+        self.register_secrets()
         nv = self.config.nvidia
         for client, role, label in ((self.nim_nemotron, nv.nemotron, "nemotron"), (self.nim_kimi, nv.kimi, "kimi")):
-            if client is not None:
-                client.base_url = role.base_url
-                client.set_keys(role.api_key, f"{label} key", nv.alt_keys(label))
+            if client is not None:  # endpoint and keys in one step: a retry in flight never mixes them
+                client.set_endpoint(role.base_url, role.api_key, f"{label} key", nv.alt_keys(label))
         if self.nemotron is not None:
             self.nemotron.configure(nv.nemotron.model, nv.nemotron.fallback_models)
         if self.kimi is not None:
@@ -282,6 +306,8 @@ class App:
             changed = app.config.apply_patch(patch)
             if changed:
                 app.config.save()
+                if any(c.startswith("keys.") for c in changed):
+                    app.register_secrets()  # a new key is redacted from tool output from now on
                 if any(c.startswith("keys.nvidia.") for c in changed):
                     app.apply_model_settings()  # endpoints, keys and models apply without a restart
                 app.bus.publish("settings.changed", {"changed": changed})

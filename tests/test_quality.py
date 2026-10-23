@@ -15,11 +15,14 @@ import time
 import unittest
 import zlib
 from pathlib import Path
+from unittest import mock
 
 from kyora.config import QualityCfg
+from kyora.pipeline import quality
 from kyora.pipeline.quality import (BrowserResultsCollector, Check, GateResult, NodeRunner, QualityGate, StaticChecker,
                                     check_html, decode_screenshot, find_node, merge_checks, parse_tap, validate_browser_payload,
                                     validate_manifest)
+from kyora.util import envsafe, procs
 
 NODE = find_node()
 REPO = Path(__file__).resolve().parent.parent
@@ -428,6 +431,56 @@ class NodeRunnerTests(TempHomeCase):
         self.assertEqual(got, [("at-03", "pass"), ("lt-01", "fail"), ("lt-3", "pass"), ("lt-4", "skip")])
         self.assertTrue(all(c.group == "node" and c.runner == "node --test" for c in checks))
         self.assertIn("5", checks[1].detail)
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_logic_tests_cannot_read_keys_from_the_environment(self):
+        # the tests are model-written: they run with the allowlisted environment, not Kyora's own
+        (self.ws / "tests").mkdir()
+        (self.ws / "tests" / "logic-tests.mjs").write_text(
+            "import test from 'node:test';\nimport assert from 'node:assert/strict';\n"
+            "test('at-01 no keys', () => { assert.equal(process.env.NVIDIA_API_KEY, undefined);\n"
+            "  assert.equal(process.env.KYORA_CONFIG_DIR, undefined); assert.equal(process.env.GITHUB_PAT, undefined); });\n"
+            "test('at-02 path and no colour', () => { assert.ok(process.env.PATH || process.env.Path);\n"
+            "  assert.equal(process.env.NO_COLOR, '1'); });\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"NVIDIA_API_KEY": "nvapi-x-0123456789", "KYORA_CONFIG_DIR": str(self.ws),
+                                          "GITHUB_PAT": "github_pat_0123456789"}):
+            checks = NodeRunner(NODE, self.ws).logic_tests()
+        self.assertEqual([(c.id, c.status) for c in checks], [("at-01", "pass"), ("at-02", "pass")],
+                         [c.to_dict() for c in checks])
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_output_is_bounded_and_redacted(self):
+        (self.ws / "tests").mkdir()
+        (self.ws / "tests" / "logic-tests.mjs").write_text(
+            "import test from 'node:test';\nimport assert from 'node:assert/strict';\n"
+            "import { readFileSync } from 'node:fs';\n"
+            "test('at-01 floods', () => { for (let i = 0; i < 20000; i++) console.log('x'.repeat(100)); });\n"
+            "test('at-02 leaks', () => { assert.equal(readFileSync('key.txt', 'utf8'), 'other'); });\n",
+            encoding="utf-8")
+        (self.ws / "key.txt").write_text("nvapi-leaked-0123456789", encoding="utf-8")
+        envsafe.clear_secrets()
+        self.addCleanup(envsafe.clear_secrets)
+        envsafe.register_secret("nvidia.kimi.api_key", "nvapi-leaked-0123456789")
+        with mock.patch.object(procs, "run", wraps=procs.run) as run:
+            checks = NodeRunner(NODE, self.ws).logic_tests()
+        self.assertEqual(run.call_args.kwargs["max_output_chars"], quality.MAX_NODE_OUTPUT)
+        by_id = {c.id: c for c in checks}
+        self.assertEqual((by_id["at-01"].status, by_id["at-02"].status), ("pass", "fail"),
+                         [c.to_dict() for c in checks])
+        self.assertNotIn("nvapi-leaked-0123456789", by_id["at-02"].detail)
+        self.assertIn("[redacted nvidia.kimi.api_key]", by_id["at-02"].detail)
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_cancel_stops_the_tests_at_once(self):
+        (self.ws / "tests").mkdir()
+        (self.ws / "tests" / "logic-tests.mjs").write_text(
+            "import test from 'node:test';\ntest('at-01 hangs', () => new Promise(() => setInterval(() => {}, 1000)));\n",
+            encoding="utf-8")
+        cancel = threading.Event()
+        cancel.set()  # already set: procs.run must not start the process at all
+        checks = NodeRunner(NODE, self.ws, timeout_s=600, cancel=cancel).logic_tests()
+        self.assertEqual([(c.id, c.status, c.detail) for c in checks if c.id == "node:logic-tests"],
+                         [("node:logic-tests", "fail", "cancelled")])
 
     @unittest.skipUnless(NODE, "node not installed")
     def test_broken_test_file_is_a_failure(self):

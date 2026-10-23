@@ -15,7 +15,7 @@ from kyora.models.base import Metrics
 from kyora.models.nim_client import (
     DELTA_CONTENT, DELTA_REASONING, DELTA_TOOL_CALL, ChatResult, NIMCancelled, NIMClient, NIMError, NIMUnreachable,
     build_assistant_message, chat_with_events, extract_json_object, extract_structured, force_tool, function_tool,
-    is_tool_rejection, json_for_prompt, render_prompt, strip_think, tool_call_arguments,
+    is_tool_rejection, json_for_prompt, render_prompt, strip_think, tool_call_arguments, url_host,
 )
 from kyora.pipeline.events import (
     MODEL_DELTA, MODEL_DONE, MODEL_ERROR, MODEL_METRICS, MODEL_REQUEST, EventBus,
@@ -212,6 +212,14 @@ class ErrorTests(unittest.TestCase):
         self.assertEqual(res.content, "after retry")
         self.assertEqual(n_requests, 2)
 
+    def test_a_retry_after_beyond_the_cap_is_raised_at_once_with_the_wait(self):
+        with MockNIM(lambda req: {"status": 429, "retry_after": 900,
+                                  "error_body": {"error": {"message": "rate limited"}}}) as mock:
+            with self.assertRaises(NIMError) as ctx:
+                _client(mock).chat(MODEL, [{"role": "user", "content": "x"}])
+            self.assertEqual(len(mock.requests), 1)
+        self.assertEqual((ctx.exception.status, ctx.exception.retry_after, ctx.exception.attempts), (429, 900.0, 1))
+
     def test_retry_on_5xx_with_scripted_once_rule(self):
         handler = scripted_handler([
             (lambda req: True, {"status": 503, "once": True}),
@@ -339,6 +347,17 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(NIMClient("http://127.0.0.1:1/v1", "").key_hint(), "(no key)")
         with self.assertRaises(ValueError):
             NIMClient("", "k")
+
+    def test_host_in_messages_has_no_user_info_path_or_query(self):
+        client = NIMClient("https://user:s3cret@H.example:8443/v1?api_key=SECRET", "k")
+        self.assertEqual(client._host(), "h.example:8443")
+        self.assertEqual(NIMClient("h.example/v1?api_key=SECRET", "k")._host(), "h.example")  # no scheme
+        self.assertEqual(NIMClient("?api_key=SECRET", "k")._host(), "the endpoint")
+        self.assertEqual(url_host("http://[::1]:9/v1"), "[::1]:9")
+        self.assertEqual(url_host("https://h.example:notaport/v1"), "h.example")
+        self.assertEqual(url_host("localhost:8000/v1"), "localhost:8000")
+        self.assertEqual(url_host(None), "")
+        self.assertEqual(url_host("http://[::1/v1"), "", "a malformed URL never raises")
 
 
 class BodyTests(unittest.TestCase):
