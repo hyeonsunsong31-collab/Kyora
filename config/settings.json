@@ -15,7 +15,8 @@
   "agent_engine": {
     "enabled": true,
     "model": "z-ai/glm-5.3",
-    "fallback_models": ["nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-3-ultra-550b-a55b"],
+    "fallback_models": ["nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3.5-super-vl-120b-a12b",
+                        "nvidia/nemotron-3-super-120b-a12b"],
     "max_turns": 80,
     "max_tokens": 16384,
     "temperature": 0.6,

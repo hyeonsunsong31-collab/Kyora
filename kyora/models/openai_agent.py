@@ -86,7 +86,14 @@ MAX_THINKING_RETRIES = 3      # answers cut off at max_tokens while still thinki
 # reasoning characters an answer may stream, with no text and no tool call, after thinking was switched OFF: a model
 # that ignores the switch is stopped there (live 2026-10-23: GLM-5.3 reasoned 16384 tokens - 29 minutes - twice)
 MAX_UNREQUESTED_REASONING = 8000
-RUNAWAY_COOLDOWN_S = 1800.0   # such a model waits behind the others for the rest of a BUILD/FIX (it did it again)
+# ...or, slower, this many characters once the request is this old (live 2026-10-24: GLM-5.3 took 135-185 s to stream
+# the 8000 characters, three times in one run)
+SLOW_UNREQUESTED_REASONING = 2000
+MAX_UNREQUESTED_REASONING_S = 90.0
+# such a model is sidelined for this long (a sticky cooldown: answering does not end it; the chain, and so the wait,
+# carries over to the next BUILD/FIX), so it does not stand in for a model that is only rate limited (live
+# 2026-10-24: each time it did, it reasoned again)
+RUNAWAY_COOLDOWN_S = 1800.0
 MAX_RETRY_TOKENS = 32768      # cap of the doubled max_tokens of such a retry
 MAX_TOOL_CALLS_PER_TURN = 32
 CHECK_TIMEOUT_S = 120         # the Node logic tests of one kyora_check (NodeRunner's default)
@@ -527,12 +534,14 @@ class _TurnStop(threading.Event):
 
 
 class _RunawayReasoning(Exception):
-    """A model asked not to think streamed :data:`MAX_UNREQUESTED_REASONING` characters of reasoning and nothing else."""
+    """A model asked not to think streamed reasoning and nothing else past the limits (:data:`MAX_UNREQUESTED_REASONING`
+    characters, or :data:`SLOW_UNREQUESTED_REASONING` after :data:`MAX_UNREQUESTED_REASONING_S` seconds)."""
 
-    def __init__(self, model: str, chars: int, reasoning: str):
-        super().__init__(f"{model} kept reasoning ({chars} characters, no text and no tool call) although thinking "
-                         "was switched off")
-        self.model, self.chars, self.reasoning = model, chars, reasoning
+    def __init__(self, model: str, chars: int, reasoning: str, seconds: float | None = None):
+        took = f" in {seconds:.0f} s" if seconds is not None else ""
+        super().__init__(f"{model} kept reasoning ({chars} characters{took}, no text and no tool call) although "
+                         "thinking was switched off")
+        self.model, self.chars, self.reasoning, self.seconds = model, chars, reasoning, seconds
 
 
 class _ProbeBudget(NIMError):
@@ -759,7 +768,8 @@ class OpenAIAgentEngine(ToolLoopEngine):
 
     # ------------------------------------------------------------------ model calls
     def _call_chain(self, chain: ModelChain, call: Callable[[str], Any], attempts: list, served: set, *,
-                    run_id: str | None = None, project_id: str | None = None, purpose: str | None = None) -> Any:
+                    run_id: str | None = None, project_id: str | None = None, purpose: str | None = None,
+                    skip_sidelined: bool = False) -> Any:
         """:func:`call_with_model_fallback`, and a model that refuses function tools is skipped for this engine.
 
         A tool refusal only counts for a model that has not answered in this run yet (later 400s come
@@ -768,7 +778,7 @@ class OpenAIAgentEngine(ToolLoopEngine):
         for _ in range(2 + len(chain.fallbacks)):
             try:
                 return call_with_model_fallback(chain, None, call, role=ROLE, run_id=run_id, project_id=project_id,
-                                                purpose=purpose)
+                                                purpose=purpose, skip_sidelined=skip_sidelined)
             except NIMError as exc:
                 if isinstance(exc, (NIMCancelled, NIMUnreachable)) or not is_tool_rejection(exc) or not attempts:
                     raise
@@ -785,21 +795,26 @@ class OpenAIAgentEngine(ToolLoopEngine):
         """One model call with key and model fallback; returns ``(result, model that answered)``.
 
         ``state["turn_thinking"]`` / ``state["turn_max_tokens"]`` (set after an answer was cut off while
-        thinking) override ``c.thinking`` / ``c.max_tokens`` for this turn.
+        thinking) override ``c.thinking`` / ``c.max_tokens`` for this turn. A model sidelined for runaway
+        reasoning does not stand in for one that failed temporarily (the loop waits and retries instead)
+        until this turn's last try (``state["last_resort"]`` or the last transient retry).
         """
         attempts: list[tuple[str, BaseException | None]] = []
         streamed = {"content": 0, "reasoning": 0, "tool_call": 0}
         state["last_attempts"] = attempts
         thinking = c.thinking if state.get("turn_thinking") is None else bool(state["turn_thinking"])
         max_tokens = state.get("turn_max_tokens") or c.max_tokens
-        guard = {"stop": None, "off": False, "reasoning": []}
+        guard = {"stop": None, "off": False, "reasoning": [], "t0": time.monotonic()}
 
         def on_delta(delta) -> None:
             streamed[delta.kind] = streamed.get(delta.kind, 0) + len(delta.text or "")
             if delta.kind == "reasoning" and guard["off"]:
                 guard["reasoning"].append(delta.text or "")
-                if (streamed["reasoning"] > MAX_UNREQUESTED_REASONING and not streamed["content"]
-                        and not streamed["tool_call"] and guard["stop"] is not None):
+                chars = streamed["reasoning"]
+                if (not streamed["content"] and not streamed["tool_call"] and guard["stop"] is not None
+                        and (chars > MAX_UNREQUESTED_REASONING or (
+                            chars > SLOW_UNREQUESTED_REASONING
+                            and time.monotonic() - guard["t0"] > MAX_UNREQUESTED_REASONING_S))):
                     guard["stop"].stop("runaway reasoning")
 
         def call(model: str):
@@ -809,6 +824,7 @@ class OpenAIAgentEngine(ToolLoopEngine):
             # the switch-off was sent: a stream of reasoning alone is a model ignoring it, ended early
             guard["off"] = (extra.get("chat_template_kwargs") or {}).get("enable_thinking") is False
             guard["reasoning"] = []
+            guard["t0"] = time.monotonic()
             guard["stop"] = turn_stop = _TurnStop(stop)
             try:
                 res = client.chat(model, msgs, tools=tools, tool_choice="auto", stream=True, max_tokens=max_tokens,
@@ -816,7 +832,8 @@ class OpenAIAgentEngine(ToolLoopEngine):
                                   cancel=turn_stop, timeout_s=timeout_s)
             except NIMCancelled as exc:
                 if turn_stop.reason and not stop.is_set():
-                    runaway = _RunawayReasoning(model, streamed["reasoning"], "".join(guard["reasoning"]))
+                    runaway = _RunawayReasoning(model, streamed["reasoning"], "".join(guard["reasoning"]),
+                                                time.monotonic() - guard["t0"])
                     attempts.append((model, runaway))
                     raise runaway from None
                 attempts.append((model, exc))
@@ -828,8 +845,10 @@ class OpenAIAgentEngine(ToolLoopEngine):
             return res, model
 
         try:
+            skip = state["transient_retries"] < self.transient_retries and not state["last_resort"]
+            state["skipped_sidelined"] = skip and bool(chain.sidelined())
             out = self._call_chain(chain, call, attempts, state["served"], run_id=job.run_id,
-                                   project_id=job.project_id, purpose=job.kind)
+                                   project_id=job.project_id, purpose=job.kind, skip_sidelined=skip)
             state["streamed"] = dict(streamed)  # characters per delta kind, for the journal
             return out
         finally:
@@ -882,6 +901,17 @@ class OpenAIAgentEngine(ToolLoopEngine):
             if model != c.model and why:
                 data["reason"] = why
             self._emit(sink, ENGINE_MODEL_RESOLVED, data)
+
+    def _switch_model(self, model: str, nxt: str, why: str, chain: ModelChain, sink: EngineSink, state: dict, *,
+                      cooldown_s: float, sticky: bool = False) -> str:
+        """``model`` waits ``cooldown_s`` behind the others and the turn continues on ``nxt``; returns the change."""
+        chain.mark_busy(model, cooldown_s, why, sticky=sticky)
+        state["turn_thinking"] = state["turn_max_tokens"] = None
+        info = {"from_model": model, "to_model": nxt, "status": None, "reason": why, "temporary": True,
+                **({"sidelined_s": cooldown_s} if sticky else {})}
+        state["model_switches"].append(info)
+        self._emit(sink, ENGINE_STDERR, {"line": f"agent model {why}; trying {nxt}", "kind": "model", **info})
+        return f"the next model of the chain ({nxt})"
 
     @staticmethod
     def _context_overflow(exc: NIMError) -> bool:
@@ -945,44 +975,46 @@ class OpenAIAgentEngine(ToolLoopEngine):
     def _rethink(self, model: str, c: "AgentEngineCfg", sink: EngineSink, state: dict, transcript: Path,
                  res: ChatResult | None, chain: ModelChain | None = None,
                  runaway: "_RunawayReasoning | None" = None) -> bool:
-        """After an answer cut off while still thinking: change the next request of this turn.
+        """After an answer cut off while still thinking, or a ``runaway``: change the next request of this turn.
 
-        First thinking is switched off (when it is on and ``model`` has a switch). When it was off
-        already - the model thinks anyway - the next model of ``chain`` continues the turn (``model``
-        cools down like an overloaded one; :data:`RUNAWAY_COOLDOWN_S` after a stop), at most twice per
-        other model of the chain; only then is
-        max_tokens doubled (at most :data:`MAX_RETRY_TOKENS`), never after a ``runaway`` (stopped
-        early: more tokens would only stream more reasoning). ``False`` when nothing is left to change
-        - the same request would end the same way.
+        A ``runaway`` (reasoning although thinking was off, stopped early) moves the turn to the next
+        model of ``chain`` that is not sidelined, and sidelines ``model`` for :data:`RUNAWAY_COOLDOWN_S`
+        (a sticky cooldown: it does not stand in for a model that is only rate limited); that bounds
+        these switches, so they use none of the turn's thinking retries. A sidelined model that runs
+        away again (it was the turn's last resort) ends the run.
+        For a cut-off thought, first thinking is switched off (when it is on and ``model`` has a
+        switch). When it was off already - the model thinks anyway - the next model of ``chain``
+        continues the turn (``model`` cools down like an overloaded one), at most twice per other model
+        of the chain; only then is max_tokens doubled (at most :data:`MAX_RETRY_TOKENS`). ``False`` when
+        nothing is left to change - the same request would end the same way.
         """
-        if state["thinking_retries"] >= MAX_THINKING_RETRIES:
-            return False
         tokens = state.get("turn_max_tokens") or c.max_tokens
         thinking = c.thinking if state.get("turn_thinking") is None else bool(state["turn_thinking"])
         others = [m for m in chain.candidates() if m != model] if chain is not None else []
-        if thinking and family_extra(model, False) and runaway is None:
-            state["turn_thinking"] = False
-            change = "thinking switched off"
-        elif others and state["thinking_switches"] < 2 * len(others):
-            why = (str(runaway) if runaway is not None else
-                   f"{model} used all {tokens} tokens thinking and wrote no answer")
-            chain.mark_busy(model, RUNAWAY_COOLDOWN_S if runaway is not None else BUSY_COOLDOWN_S, why)
-            state["thinking_switches"] += 1
-            state["turn_thinking"] = state["turn_max_tokens"] = None
-            change = f"the next model of the chain ({others[0]})"
-            info = {"from_model": model, "to_model": others[0], "status": None, "reason": why, "temporary": True}
-            state["model_switches"].append(info)
-            self._emit(sink, ENGINE_STDERR, {"line": f"agent model {why}; trying {others[0]}", "kind": "model",
-                                             **info})
-        elif runaway is not None:
-            return False
-        else:
-            more = max(tokens, min(2 * int(c.max_tokens), MAX_RETRY_TOKENS))
-            if more <= tokens:
+        if runaway is not None:
+            sidelined = chain.sidelined() if chain is not None else set()
+            fresh = [m for m in others if m not in sidelined]
+            if not fresh or model in sidelined:
                 return False
-            state["turn_max_tokens"] = more
-            change = f"max_tokens={more}"
-        state["thinking_retries"] += 1
+            change = self._switch_model(model, fresh[0], str(runaway), chain, sink, state,
+                                        cooldown_s=RUNAWAY_COOLDOWN_S, sticky=True)
+        else:
+            if state["thinking_retries"] >= MAX_THINKING_RETRIES:
+                return False
+            if thinking and family_extra(model, False):
+                state["turn_thinking"] = False
+                change = "thinking switched off"
+            elif others and state["thinking_switches"] < 2 * len(others):
+                state["thinking_switches"] += 1
+                change = self._switch_model(model, others[0], f"{model} used all {tokens} tokens thinking and wrote "
+                                            "no answer", chain, sink, state, cooldown_s=BUSY_COOLDOWN_S)
+            else:
+                more = max(tokens, min(2 * int(c.max_tokens), MAX_RETRY_TOKENS))
+                if more <= tokens:
+                    return False
+                state["turn_max_tokens"] = more
+                change = f"max_tokens={more}"
+            state["thinking_retries"] += 1
         turn = state["turns"] + 1
         what = (f"{model} kept reasoning ({runaway.chars} characters) although thinking was switched off and was "
                 "stopped" if runaway is not None else f"{model} used all {tokens} tokens thinking")
@@ -1095,7 +1127,7 @@ class OpenAIAgentEngine(ToolLoopEngine):
                        "budget": max(1, int(c.context_chars or 1)), "missing_files": [],
                        "last_attempts": [], "keep": KEEP_TOOL_MESSAGES, "transient_retries": 0, "retries": 0,
                        "thinking_retries": 0, "thinking_switches": 0, "turn_thinking": None, "turn_max_tokens": None,
-                       "text_call_nudges": 0,
+                       "text_call_nudges": 0, "last_resort": False, "skipped_sidelined": False,
                        "idle_nudges": 0, "final_seen": False, "used_ids": set()}
         msgs: list[dict] = [{"role": "system", "content": system}, {"role": "user", "content": job.prompt or ""}]
         effort = "thinking" if _thinking_sent(family_extra(chain.active, c.thinking)) else "default"
@@ -1150,12 +1182,19 @@ class OpenAIAgentEngine(ToolLoopEngine):
                     self._emit(sink, ENGINE_THINKING, {"text": _clip(exc.reasoning)})
                     if self._rethink(exc.model, c, sink, state, transcript, None, chain, runaway=exc):
                         continue
-                    error, failure_kind = (f"{exc}, and no other configured agent model is left to continue: choose "
-                                           "another agent_engine.model or add fallback_models"), "model"
+                    others = [m for m in chain.candidates() if m != exc.model]
+                    left = (f", and the other configured agent model{'s' if len(others) > 1 else ''} "
+                            f"({', '.join(others)}) could not take over (unavailable, or stopped for the same "
+                            "reason)" if others else ", and no other configured agent model is left to continue")
+                    error, failure_kind = (f"{exc}{left}: choose another agent_engine.model or add "
+                                           "fallback_models"), "model"
                     break
                 why = self._transient(exc, host)
                 if why and self._retry_turn(why, exc, stop, sink, state, transcript):
                     continue  # the same turn again: msgs only grow after an answer; the loop top sees a cancel
+                if why and state["skipped_sidelined"] and not state["last_resort"]:
+                    state["last_resort"] = True  # no retry is left: a sidelined model may try this turn once
+                    continue
                 if isinstance(exc, NIMError) and exc.status in (400, 422) and state.get("turn_max_tokens"):
                     # the max_tokens bump after an answer cut off while thinking was refused (above the model's
                     # output or context limit): not a long conversation, so nothing is elided and no context
@@ -1219,6 +1258,7 @@ class OpenAIAgentEngine(ToolLoopEngine):
                                            "reasoning": _truncate(res.reasoning or "", JOURNAL_TEXT_LIMIT)})
                 break
             state["transient_retries"] = state["thinking_retries"] = 0
+            state["last_resort"] = False
             state["turn_thinking"] = state["turn_max_tokens"] = None
             state["turns"] += 1
             m = res.metrics.to_dict()

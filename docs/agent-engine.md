@@ -66,10 +66,21 @@ measured by the full self-check and by the run itself.
      output or context limit), the call ends with an error that says the answer was cut off while
      thinking; no context retry is used up for it.
    * A model that was sent the thinking switch-off and still streams more than 8000 characters of
-     reasoning with no text and no tool call is **stopped early** (live on 2026-10-23 GLM-5.3 reasoned
-     16384 tokens - 29 minutes - twice in one turn, in 2 of 2 runs that day): the next model of the
-     chain continues the turn and the stopped model waits behind the others for 30 minutes; with none
-     left the call fails with `failure_kind: "model"`.
+     reasoning with no text and no tool call, or more than 2000 once its request is 90 s old, is
+     **stopped early** (live on 2026-10-23 GLM-5.3 reasoned 16384 tokens - 29 minutes - twice in one
+     turn, in 2 of 2 runs that day; on 2026-10-24 it took 135-185 s to reach the 8000 characters): the
+     next model of the chain that is not sidelined continues the turn, and the stopped model is
+     **sidelined** for 30 minutes: it waits behind the others, an answer does not end that wait, and it
+     does not stand in for a model that is only rate limited, overloaded or slow - the turn waits and
+     retries that model instead (see the retries below). The sidelined model gets the turn's last try:
+     after the last retry, or at once when the endpoint asks for a longer wait than a retry may take; a
+     model that is gone (404/410) still hands over to it. These switches use none of the turn's 3
+     thinking retries; the sidelining bounds them.
+     When no model that is not sidelined is left, or a sidelined model stops the same way again, the
+     call fails with `failure_kind: "model"` and the error names the models that could not take over.
+     (Live on 2026-10-24, before this rule: Nemotron-3-Ultra answered 429 for a few seconds at a time,
+     each time the turn went back to the stopped GLM-5.3, which reasoned again for 2-3 minutes, and the
+     third time BUILD ended early; the same ended the first FIX iteration without progress.)
    * An answer that **writes a tool call as text** (`<tool_call>`, `<|tool_call...`, `<function=`, or a
      JSON `{"name": <tool>, "arguments": ...}`) ran nothing: the model is reminded to use function
      calling, at most 3 times. After that the model is skipped for this endpoint (its tool calls are not
@@ -189,7 +200,11 @@ change in one step, and a request whose endpoint changed meanwhile is not resent
 ### Model chain
 
 `agent_engine.model` comes first, then `agent_engine.fallback_models` in order (default
-`z-ai/glm-5.3` -> `nvidia/nemotron-3-super-120b-a12b` -> `nvidia/nemotron-3-ultra-550b-a55b`). The next
+`z-ai/glm-5.3` -> `nvidia/nemotron-3-ultra-550b-a55b` -> `nvidia/nemotron-3.5-super-vl-120b-a12b` ->
+`nvidia/nemotron-3-super-120b-a12b`). Nemotron-3-Ultra answered most turns of the live runs of
+2026-10-24 that passed the gate; Nemotron-3.5-Super-VL was chosen from that day's tool-call probe only
+(it answered a function call; no full run on it is measured); Nemotron-3-Super answered 404 ("not found
+for account") for the committed key that day and stays last for accounts that still have it. The next
 model is tried when
 
 * the endpoint says the model is gone (HTTP 404 or 410): it is skipped for good while the endpoint, the
@@ -314,12 +329,12 @@ BUILD/FIX without a restart.
 |---|---|---|
 | `agent_engine.enabled` | `true` | Offer the engine. Off: it is never selected (self-check SKIP). |
 | `agent_engine.model` | `z-ai/glm-5.3` | First model; needs function calling at the endpoint. |
-| `agent_engine.fallback_models` | `["nvidia/nemotron-3-ultra-550b-a55b", "poolside/laguna-xs-2.1", "nvidia/nemotron-3-super-120b-a12b"]` | Tried in order (see [Model chain](#model-chain)). |
+| `agent_engine.fallback_models` | `["nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3.5-super-vl-120b-a12b", "nvidia/nemotron-3-super-120b-a12b"]` | Tried in order (see [Model chain](#model-chain)). |
 | `agent_engine.max_turns` | `80` | Model turns per BUILD/FIX call (positive integer). |
 | `agent_engine.max_tokens` | `16384` | Output tokens per answer (positive integer). |
 | `agent_engine.temperature` | `0.6` | Sampling temperature (0 to 2). |
 | `agent_engine.top_p` | `0.95` | Nucleus sampling (validated: 0 to 2). |
-| `agent_engine.thinking` | `true` | Thinking switch for models that read it (Nemotron family). |
+| `agent_engine.thinking` | `false` | Thinking switch for models that read it (Nemotron family; GLM when off). See [Thinking](#thinking). |
 | `agent_engine.timeout_s` | `5400` | Wall clock per BUILD/FIX call, in seconds (positive integer). |
 | `agent_engine.context_chars` | `400000` | Context budget in characters (positive integer). |
 | `agent_engine.self_check_tool` | `true` | Offer the `kyora_check` tool. |

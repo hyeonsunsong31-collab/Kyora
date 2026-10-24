@@ -1190,7 +1190,9 @@ class ModelChain:
     retired, see :data:`MODEL_GONE_STATUSES`). A model that stayed temporarily overloaded through
     the client's retries is marked *busy* (:meth:`mark_busy`): until its cooldown ends it moves
     behind the healthy models (it is never removed, so it is still tried when nothing else
-    answers) and then returns to its configured place. Every skip is published as
+    answers) and then returns to its configured place. Such a mark ends early when the model
+    answers; a *sticky* one (a model that misbehaved, e.g. reasoning that never ends) runs its
+    full time, and :meth:`sidelined` names those models. Every skip is published as
     ``model.fallback`` and every ``model.*`` event names the model that actually answered. A new
     chain (Settings change) forgets what was skipped. ``clock`` (default :func:`time.monotonic`)
     exists for tests.
@@ -1200,7 +1202,7 @@ class ModelChain:
         self.requested = str(model)
         self.fallbacks = [str(m) for m in dict.fromkeys(fallbacks or ()) if m and str(m) != self.requested]
         self._gone: dict[str, str] = {}
-        self._busy: dict[str, tuple[float, str]] = {}  # model -> (monotonic time the cooldown ends, why)
+        self._busy: dict[str, tuple[float, str, bool]] = {}  # model -> (monotonic end of the cooldown, why, sticky)
         self._clock = clock
         self._lock = threading.Lock()
 
@@ -1210,9 +1212,9 @@ class ModelChain:
     def _busy_left(self) -> dict[str, float]:
         """Seconds left per still-cooling model; drops expired entries. Call with the lock held."""
         now = self._now()
-        for m in [m for m, (until, _) in self._busy.items() if until <= now]:
+        for m in [m for m, entry in self._busy.items() if entry[0] <= now]:
             del self._busy[m]
-        return {m: until - now for m, (until, _) in self._busy.items()}
+        return {m: entry[0] - now for m, entry in self._busy.items()}
 
     def candidates(self) -> list[str]:
         """Models to try, in order: healthy ones as configured, then still-cooling busy ones (soonest free first)."""
@@ -1241,17 +1243,35 @@ class ModelChain:
         with self._lock:
             return dict(self._gone)
 
-    def mark_busy(self, model: str, seconds: float, why: str = "") -> None:
-        """``model`` is temporarily overloaded: try it after the healthy models for ``seconds``."""
+    def mark_busy(self, model: str, seconds: float, why: str = "", *, sticky: bool = False) -> None:
+        """``model`` is temporarily unavailable: try it after the healthy models for ``seconds``.
+
+        A mark never shortens a cooldown that ends later, and one that extends a sticky cooldown keeps
+        it sticky. ``sticky`` (the model misbehaved, it was not merely overloaded) keeps the cooldown
+        when the model answers meanwhile (:meth:`clear_busy`).
+        """
         with self._lock:
             if model in self._gone:
                 return
-            self._busy[model] = (self._now() + max(0.0, float(seconds)), str(why or ""))
+            self._busy_left()
+            until = self._now() + max(0.0, float(seconds))
+            old = self._busy.get(model)
+            if old is not None and old[0] >= until:
+                self._busy[model] = (old[0], old[1], old[2] or sticky)
+            else:
+                self._busy[model] = (until, str(why or ""), sticky or (old is not None and old[2]))
 
     def clear_busy(self, model: str) -> None:
-        """``model`` answered: it is not busy any more."""
+        """``model`` answered: an overload cooldown ends; a sticky one runs its time."""
         with self._lock:
-            self._busy.pop(model, None)
+            entry = self._busy.get(model)
+            if entry is not None and not entry[2]:
+                del self._busy[model]
+
+    def sidelined(self) -> set[str]:
+        """The models under a sticky cooldown now (see :meth:`mark_busy`)."""
+        with self._lock:
+            return {m for m in self._busy_left() if self._busy[m][2]}
 
     def busy(self) -> dict[str, float]:
         """``{model: seconds of cooldown left}`` for the models currently marked busy."""
@@ -1266,12 +1286,13 @@ class ModelChain:
 
     def to_dict(self) -> dict:
         return {"requested": self.requested, "fallbacks": list(self.fallbacks), "active": self.active,
-                "gone": self.gone(), "busy": self.busy()}
+                "gone": self.gone(), "busy": self.busy(), "sidelined": sorted(self.sidelined())}
 
 
 def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any], *, role: str,
                              run_id: str | None = None, project_id: str | None = None,
-                             purpose: str | None = None, busy_cooldown_s: float | None = None) -> Any:
+                             purpose: str | None = None, busy_cooldown_s: float | None = None,
+                             skip_sidelined: bool = False) -> Any:
     """``call(model)`` for the chain's models in order; re-raises everything a next model cannot fix.
 
     Moves to the next candidate when the model is gone (404/410: skipped for good) or temporarily
@@ -1280,10 +1301,16 @@ def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any],
     ``model.fallback`` with ``temporary`` saying which of the two it was. A model that sent nothing
     within the time limit (:class:`NIMTimeout`) counts as temporarily overloaded. A refused key
     (401/403), an unreachable endpoint and a cancellation never change the model.
+    ``skip_sidelined`` puts the models under a sticky cooldown (:meth:`ModelChain.sidelined`) last
+    and does not hand them a call that another model failed only temporarily: that failure is
+    re-raised, so the caller waits for that model and retries. A gone model still moves on to them.
     """
     from ..pipeline.events import MODEL_FALLBACK
     cooldown = BUSY_COOLDOWN_S if busy_cooldown_s is None else float(busy_cooldown_s)
     candidates = chain.candidates()
+    sidelined = chain.sidelined() if skip_sidelined else set()
+    if sidelined:
+        candidates = [m for m in candidates if m not in sidelined] + [m for m in candidates if m in sidelined]
     for i, model in enumerate(candidates):
         try:
             res = call(model)
@@ -1291,11 +1318,13 @@ def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any],
             raise
         except NIMError as exc:
             has_next = i + 1 < len(candidates)
+            # only sidelined models are left after this one: a temporary failure is waited out instead
+            wait = model not in sidelined and has_next and all(m in sidelined for m in candidates[i + 1:])
             if isinstance(exc, NIMTimeout):  # nothing arrived in time: overloaded, like a 503
                 temporary = True
                 reason = f"{model} did not answer in time: slow or overloaded now"
                 chain.mark_busy(model, cooldown, reason)
-                if not has_next:
+                if not has_next or wait:
                     raise
             elif isinstance(exc, NIMUnreachable):
                 raise  # the endpoint itself: no other model is any closer
@@ -1307,10 +1336,10 @@ def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any],
                 chain.mark_gone(model, reason)
             elif is_temporary_failure(exc):
                 temporary = True
-                reason = explain_http_failure(exc.status, exc.body or str(exc), model, fallback=has_next,
+                reason = explain_http_failure(exc.status, exc.body or str(exc), model, fallback=has_next and not wait,
                                               attempts=getattr(exc, "attempts", None))
                 chain.mark_busy(model, cooldown, reason)
-                if not has_next:
+                if not has_next or wait:
                     raise
             else:
                 raise

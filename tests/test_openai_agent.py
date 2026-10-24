@@ -1334,6 +1334,97 @@ class ThinkingCutTests(_Base):
         self.assertEqual(res.raw["failure_kind"], "model")
         self.assertIn("kept reasoning", res.error)
 
+    RUNAWAY = {"reasoning": "hmm " * 6000, "reasoning_chunks": 60, "finish_reason": "length"}
+    RATE_LIMITED = {"status": 429, "error_body": {"status": 429, "title": "Too Many Requests"}}
+
+    def _by_model(self, glm_steps, ultra_429s: int, limited: dict | None = None):
+        """GLM answers ``glm_steps`` in turn (the last repeats); ULTRA answers ``limited`` (default a plain 429) to
+        its first ``ultra_429s`` requests after its first answer, then works."""
+        seen = {GLM: 0, ULTRA: 0}
+
+        def handler(req):
+            model = req["model"]
+            n = seen[model] = seen.get(model, 0) + 1
+            if model == GLM:
+                step = glm_steps[min(n, len(glm_steps)) - 1]
+                return dict(step) if isinstance(step, dict) else step(req)
+            if n == 1:
+                return answer(editor("view", "existing.txt", "v1"))
+            if n <= 1 + ultra_429s:
+                return dict(limited or self.RATE_LIMITED)
+            return answer(content="done")
+        return handler
+
+    def test_a_rate_limited_model_is_waited_for_not_replaced_by_the_sidelined_runaway(self):
+        # live 2026-10-24 (CI, NVIDIA free tier): Nemotron-3-Ultra answered 429 while GLM-5.3 was cooling down
+        # after reasoning with thinking off; the turn went back to GLM, which reasoned again for 2-3 minutes, three
+        # times in BUILD, until no switch was left and BUILD ended early
+        mock_ = self.serve(self._by_model([self.RUNAWAY], ultra_429s=2))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        res, sink = self.run_engine(self.engine(FakeJudge(), thinking=False, fallback_models=[ULTRA]))
+        self.assertTrue(res.ok, res.error)
+        models = [r["model"] for r in mock_.requests]
+        self.assertEqual(models.count(GLM), 1, f"GLM is not asked again while sidelined: {models}")
+        self.assertEqual(models, [GLM, ULTRA, ULTRA, ULTRA, ULTRA])  # the client's 2 attempts, then a turn retry
+        self.assertEqual(res.raw["retries"], 1)
+        self.assertIn(GLM, res.raw["model_chain"]["sidelined"])
+        self.assertEqual(res.raw["model_switches"][0].get("sidelined_s"), openai_agent.RUNAWAY_COOLDOWN_S)
+
+    def test_a_sidelined_model_answers_only_as_the_last_try_and_stays_sidelined(self):
+        mock_ = self.serve(self._by_model([self.RUNAWAY, answer(editor("view", "existing.txt", "v2"))],
+                                          ultra_429s=6))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        eng = self.engine(FakeJudge(), thinking=False, fallback_models=[ULTRA])
+        eng.transient_retries = 2
+        res, _sink = self.run_engine(eng)
+        self.assertTrue(res.ok, res.error)
+        models = [r["model"] for r in mock_.requests]
+        # GLM stops; ULTRA answers, then is rate limited through the turn's 2 retries (2 requests each); on the
+        # last try GLM stands in, answers - and the next turn still starts on ULTRA
+        self.assertEqual(models, [GLM, ULTRA] + [ULTRA] * 6 + [GLM, ULTRA])
+        self.assertIn(GLM, res.raw["model_chain"]["sidelined"])
+
+    def test_a_sidelined_model_that_runs_away_again_ends_the_run_and_names_the_others(self):
+        self.serve(self._by_model([self.RUNAWAY], ultra_429s=99))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        eng = self.engine(FakeJudge(), thinking=False, fallback_models=[ULTRA])
+        eng.transient_retries = 1
+        res, _sink = self.run_engine(eng)
+        self.assertFalse(res.ok)
+        self.assertEqual(res.raw["failure_kind"], "model")
+        self.assertIn("kept reasoning", res.error)
+        self.assertIn(f"the other configured agent model ({ULTRA}) could not take over", res.error)
+
+    def test_a_wait_too_long_for_a_retry_gives_the_sidelined_model_its_last_try_at_once(self):
+        long_wait = {"status": 429, "retry_after": 900, "error_body": {"error": {"message": "Too Many Requests"}}}
+        mock_ = self.serve(self._by_model([self.RUNAWAY, answer(content="done")], ultra_429s=2, limited=long_wait))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        eng = self.engine(FakeJudge(), thinking=False, fallback_models=[ULTRA])
+        eng.retry_base_s = 30
+        t0 = time.monotonic()
+        res, _sink = self.run_engine(eng)
+        self.assertLess(time.monotonic() - t0, 20, "no wait the endpoint said it would refuse")
+        self.assertTrue(res.ok, res.error)
+        # the last try goes through the chain in its normal order: ULTRA once more, then the sidelined GLM
+        self.assertEqual([r["model"] for r in mock_.requests], [GLM, ULTRA, ULTRA, ULTRA, GLM])
+        self.assertEqual(res.raw["retries"], 0)
+
+    def test_slow_reasoning_with_thinking_off_is_stopped_by_time(self):
+        slow = {"reasoning": "hmm " * 1000, "reasoning_chunks": 100, "delay_s": 0.03, "finish_reason": "length"}
+        mock_ = self.serve(self._by_model([slow], ultra_429s=0))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        with mock.patch.object(openai_agent, "MAX_UNREQUESTED_REASONING_S", 0.5), \
+                mock.patch.object(openai_agent, "SLOW_UNREQUESTED_REASONING", 200):
+            res, sink = self.run_engine(self.engine(FakeJudge(), thinking=False, fallback_models=[ULTRA]))
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual([r["model"] for r in mock_.requests][:2], [GLM, ULTRA])
+        [note] = [e for e in sink.of("engine.stderr") if e.get("kind") == "thinking"]
+        chars = int(note["line"].split("kept reasoning (")[1].split(" ")[0])
+        self.assertLess(chars, 4000, "stopped by the time limit, before the 4000 characters were streamed")
+        self.assertGreater(chars, 200)
+        [switch] = res.raw["model_switches"]
+        self.assertRegex(switch["reason"], r"characters in \d+ s, no text and no tool call")
+
     def test_a_cut_off_thought_with_thinking_already_off_moves_to_the_next_model(self):
         # not more tokens first: a model that thinks although asked not to does the same with more room
         laguna = "poolside/laguna-xs-2.1"  # no thinking switch: the cut-off cannot be fixed by switching it off

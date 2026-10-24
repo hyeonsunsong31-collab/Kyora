@@ -244,11 +244,12 @@ jobs:
       fail-fast: false
       matrix:
         # the default set-up only. The comparison of 2026-10-18 (same game, one run each) chose it: glm-5.3 without
-        # thinking passed the gate 28/28; nemotron-3-super with and without thinking ended below it
+        # thinking passed the gate 28/28; nemotron-3-super with and without thinking ended below it (on 2026-10-24
+        # it answered 404 for the committed key, so the default fallbacks put the served models first)
         include:
           - id: glm-5.3-no-thinking
             model: z-ai/glm-5.3
-            fallbacks: nvidia/nemotron-3-super-120b-a12b,nvidia/nemotron-3-ultra-550b-a55b
+            fallbacks: nvidia/nemotron-3-ultra-550b-a55b,nvidia/nemotron-3.5-super-vl-120b-a12b,nvidia/nemotron-3-super-120b-a12b
             thinking: "off"
     steps:
       - uses: actions/checkout@v4

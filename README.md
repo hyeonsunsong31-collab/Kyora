@@ -163,7 +163,8 @@ of three routes, which differ in what changes:
 2. **The Kyora agent engine on your NVIDIA keys - no Claude at all.** `agent_engine` (on by default)
    runs BUILD and FIX as Kyora's own tool loop on an OpenAI-compatible endpoint, by default NVIDIA's API
    Catalog with the keys in `keys.json`: model `z-ai/glm-5.3`, then the configured fallbacks
-   `nvidia/nemotron-3-ultra-550b-a55b`, `poolside/laguna-xs-2.1` and `nvidia/nemotron-3-super-120b-a12b`.
+   `nvidia/nemotron-3-ultra-550b-a55b`, `nvidia/nemotron-3.5-super-vl-120b-a12b` and
+   `nvidia/nemotron-3-super-120b-a12b`.
    Its tools are the judged `bash` and a file editor confined to the workspace, plus `kyora_check`, which
    runs Kyora's static checks and Node logic tests so the model can fix failures before TEST. **This is
    a different model, so Kyora does not claim it is as capable as Claude.** What does not change is the
@@ -173,7 +174,10 @@ of three routes, which differ in what changes:
    free tier, rate limits and the occasional overload are handled by retries, a cooldown of the busy
    model and the fallback models, and every substitution is shown. The CI job "live pipeline without
    Claude (NVIDIA models + Kyora agent engine)" runs one game from prompt to gate with
-   `engines.order = ["openai_agent"]`; its result is reported there. Details:
+   `engines.order = ["openai_agent"]`; its result is reported there. On 2026-10-24 (one run, not a
+   benchmark) it ended `complete`: gate 32/32 (threshold 94 %) after two fix iterations, about 30 minutes,
+   BUILD/FIX answered by GLM-5.3 and Nemotron-3-Ultra, the Kimi and Nemotron roles by their fallback
+   Nemotron-3-Ultra (one Kimi-role call by GLM-5.3), 73 judged tool calls allowed. Details:
    [`docs/agent-engine.md`](docs/agent-engine.md).
 3. **A Kyora Hub on another machine.** Link a Hub (scan its QR code, or *Settings -> Hub*) and BUILD/FIX
    run on that machine's first available engine: its Claude Code login, its Anthropic API key or its
@@ -223,8 +227,8 @@ show the current state.
 * **Kimi K3 is retired on NVIDIA's free endpoint.** `moonshotai/kimi-k3` answers HTTP 410 (end of life
   2026-10-15) and `moonshotai/kimi-k2.6` answers HTTP 404 ("Not found for account"). The Kimi role
   (intake, plan, judge, review) therefore runs on its fallback models, in order
-  `nvidia/nemotron-3-ultra-550b-a55b`, `z-ai/glm-5.3`, `nvidia/nemotron-3-super-120b-a12b`
-  (`nvidia.kimi.fallback_models`), and sends each model its own controls (a Nemotron model gets its
+  `nvidia/nemotron-3-ultra-550b-a55b`, `z-ai/glm-5.3`, `nvidia/nemotron-3.5-super-vl-120b-a12b`,
+  `nvidia/nemotron-3-super-120b-a12b` (`nvidia.kimi.fallback_models`), and sends each model its own controls (a Nemotron model gets its
   thinking switch, not Kimi's `reasoning_effort`). This is shown in the log (`model.fallback`), on the
   Kimi K3 tile (the model that answered and "fallback from moonshotai/kimi-k3"), in every `model.*`
   event (`requested_model`, `fallback: true`), in the judge journal (`judge_model`) and in self-check
@@ -245,10 +249,13 @@ show the current state.
   to enable it) and enter it in Settings.
 * **The key in the Kimi slot answers 14 models**, among them `z-ai/glm-5.3`,
   `nvidia/nemotron-3-ultra-550b-a55b`, `nvidia/nemotron-3-super-120b-a12b` and `poolside/laguna-xs-2.1`.
+  On 2026-10-24 it answered 13: `nvidia/nemotron-3-super-120b-a12b` answered HTTP 404 ("not found for
+  account") although `/models` still lists it, so the default fallback lists now put
+  `nvidia/nemotron-3.5-super-vl-120b-a12b` (it answered, also with a function call) before it.
 * **Nemotron-3-Ultra is often overloaded on the free tier**: HTTP 503 "Service temporarily overloaded",
   also as an error chunk inside a 200 stream. Kyora retries the request, then lets the model cool down
-  for 120 s and the Nemotron role continues on `nvidia/nemotron-3-super-120b-a12b` (then
-  `nvidia/nemotron-3.5-super-vl-120b-a12b`); after the cooldown it returns to Ultra. `model.fallback`
+  for 120 s and the Nemotron role continues on `nvidia/nemotron-3.5-super-vl-120b-a12b` (then
+  `nvidia/nemotron-3-super-120b-a12b`); after the cooldown it returns to Ultra. `model.fallback`
   says `temporary: true`.
 * **A live UI-spec call once spent all 12288 tokens in thinking mode and arrived truncated.** Nemotron's
   design and UI-spec calls are now sampled at the model card's defaults (temperature 1.0, top_p 0.95);
@@ -397,8 +404,8 @@ decides who counts as "the same machine" carefully.
   one as if it had served. Details: [`docs/claude-code-engine.md`](docs/claude-code-engine.md).
 * **Anthropic API engine** (`anthropic_api`): the same `claude_code.model`, `fallback_models` and
   `effort` on the Messages API, with Kyora's judged `bash` and file-editor tools.
-* **Kyora agent engine** (`openai_agent`): `z-ai/glm-5.3`, then `nvidia/nemotron-3-super-120b-a12b` and
-  `nvidia/nemotron-3-ultra-550b-a55b`, at `temperature` 0.6, `top_p` 0.95 (at most 1), at most 16384
+* **Kyora agent engine** (`openai_agent`): `z-ai/glm-5.3`, then `nvidia/nemotron-3-ultra-550b-a55b`,
+  `nvidia/nemotron-3.5-super-vl-120b-a12b` and `nvidia/nemotron-3-super-120b-a12b`, at `temperature` 0.6, `top_p` 0.95 (at most 1), at most 16384
   output tokens per answer, at most 80 turns. It has no Claude effort level; `agent_engine.thinking`
   (default off: in one live comparison on 2026-10-18 GLM-5.3 without thinking passed the gate 28/28,
   with thinking it had not finished BUILD after 85 minutes) is sent to the models that read a thinking
@@ -414,7 +421,7 @@ decides who counts as "the same machine" carefully.
   verdict at max effort takes seconds; lower `kimi.judge_reasoning_effort` to `high` or `low` for faster
   builds. The Pipeline view's Judge card counts how many verdicts came from rules, the cache and Kimi.
 * **Nemotron-3-Ultra** (`nvidia/nemotron-3-ultra-550b-a55b`, fallbacks
-  `nvidia/nemotron-3-super-120b-a12b`, `nvidia/nemotron-3.5-super-vl-120b-a12b`): design and UI spec with
+  `nvidia/nemotron-3.5-super-vl-120b-a12b`, `nvidia/nemotron-3-super-120b-a12b`): design and UI spec with
   thinking on (`nemotron.thinking_for_design`) at temperature 1.0, top_p 0.95; an answer that is cut off
   or unusable is asked for once more without thinking as plain JSON, then once from the next model of
   the chain. Narration with thinking off at temperature 0.2.
@@ -454,7 +461,7 @@ decides who counts as "the same machine" carefully.
   commercial products (Kyora shows it always).
 * **NVIDIA Nemotron-3-Ultra** and the other NVIDIA-hosted models Kyora calls (the fallback models and the
   Kyora agent engine's models, e.g. `z-ai/glm-5.3`, `poolside/laguna-xs-2.1`,
-  `nvidia/nemotron-3-super-120b-a12b`): used through NVIDIA's API Catalog under NVIDIA's terms and the
+  `nvidia/nemotron-3.5-super-vl-120b-a12b`, `nvidia/nemotron-3-super-120b-a12b`): used through NVIDIA's API Catalog under NVIDIA's terms and the
   model providers' terms; nothing of them is vendored. The Nemotron developer repository is Apache-2.0
   and is not vendored.
 * **Claude Code** (Anthropic): installed and logged in by you, used under Anthropic's terms. Nothing

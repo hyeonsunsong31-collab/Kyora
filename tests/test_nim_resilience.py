@@ -247,6 +247,83 @@ class ChainBusyTests(unittest.TestCase):
         chain.clear_busy(ULTRA)
         self.assertEqual(chain.candidates(), [ULTRA, GLM, LAGUNA])
 
+    def test_a_sticky_cooldown_outlasts_an_answer_and_a_shorter_mark(self):
+        # live 2026-10-24: GLM-5.3, stopped for reasoning although thinking was off, answered one turn as the
+        # stand-in for a rate-limited model, lost its cooldown that way and ran away again
+        clock = Clock()
+        chain = ModelChain(GLM, [ULTRA], clock=clock)
+        chain.mark_busy(GLM, 1800, "kept reasoning", sticky=True)
+        chain.clear_busy(GLM)  # it answered: a sticky cooldown runs its time
+        self.assertEqual(chain.candidates(), [ULTRA, GLM])
+        self.assertEqual(chain.sidelined(), {GLM})
+        chain.mark_busy(GLM, 120, "overloaded")  # a shorter mark never shortens it
+        self.assertEqual(chain.busy(), {GLM: 1800.0})
+        self.assertEqual(chain.busy_reason(GLM), "kept reasoning")
+        self.assertEqual(chain.to_dict()["sidelined"], [GLM])
+        clock.advance(1800)
+        self.assertEqual((chain.candidates(), chain.sidelined()), ([GLM, ULTRA], set()))
+
+    def test_a_plain_cooldown_ends_with_an_answer_and_a_longer_sticky_mark_replaces_it(self):
+        clock = Clock()
+        chain = ModelChain(ULTRA, [GLM], clock=clock)
+        chain.mark_busy(ULTRA, 120, "overloaded")
+        self.assertEqual(chain.sidelined(), set())
+        chain.mark_busy(ULTRA, 1800, "kept reasoning", sticky=True)
+        self.assertEqual((chain.busy(), chain.sidelined()), ({ULTRA: 1800.0}, {ULTRA}))
+        clock.advance(1790)
+        chain.mark_busy(ULTRA, 120, "overloaded")  # extends the sticky cooldown: still sticky
+        self.assertEqual((chain.busy(), chain.sidelined()), ({ULTRA: 120.0}, {ULTRA}))
+        clock.advance(120)
+        chain.mark_busy(ULTRA, 120, "overloaded")  # the sticky one has ended: a plain mark
+        chain.clear_busy(ULTRA)
+        self.assertEqual((chain.busy(), chain.candidates()), ({}, [ULTRA, GLM]))
+
+    def test_skip_sidelined_leaves_the_sidelined_model_out_unless_nothing_else_is_left(self):
+        chain = ModelChain(GLM, [ULTRA])
+        chain.mark_busy(GLM, 1800, "kept reasoning", sticky=True)
+        called = []
+
+        def rate_limited(model):
+            called.append(model)
+            raise NIMError(f"HTTP 429 from integrate.api.nvidia.com for {model}", status=429,
+                           body='{"status":429,"title":"Too Many Requests"}')
+        with self.assertRaises(NIMError):
+            call_with_model_fallback(chain, None, rate_limited, role="agent", skip_sidelined=True)
+        self.assertEqual(called, [ULTRA], "the caller waits for ULTRA; GLM does not stand in for it")
+        called.clear()
+        with self.assertRaises(NIMError):  # without the flag (a caller's last try) it is still tried, last
+            call_with_model_fallback(chain, None, rate_limited, role="agent")
+        self.assertEqual(called, [ULTRA, GLM])
+        only = ModelChain(GLM, [])
+        only.mark_busy(GLM, 1800, "kept reasoning", sticky=True)
+        self.assertEqual(call_with_model_fallback(only, None, lambda m: m, role="agent", skip_sidelined=True), GLM,
+                         "a chain with only sidelined models still answers")
+
+    def test_skip_sidelined_still_moves_on_from_a_gone_model_and_puts_sidelined_ones_last(self):
+        clock = Clock()
+        chain = ModelChain(GLM, [ULTRA, LAGUNA], clock=clock)
+        chain.mark_busy(GLM, 1800, "kept reasoning", sticky=True)
+        clock.advance(1750)  # 50 s left: sooner free than a model just marked busy for 120 s
+        chain.mark_busy(LAGUNA, 120, "overloaded")
+        self.assertEqual(chain.candidates(), [ULTRA, GLM, LAGUNA])
+        called = []
+
+        def call(model):
+            called.append(model)
+            if model == ULTRA:
+                raise NIMError(f"HTTP 404 for {model}", status=404, body="Not found for account")
+            if model == LAGUNA:
+                raise NIMTimeout(f"{model} did not answer within 20 s")
+            return f"answer from {model}"
+        with self.assertRaises(NIMTimeout):  # LAGUNA timed out: wait for it, GLM does not stand in
+            call_with_model_fallback(chain, None, call, role="agent", skip_sidelined=True)
+        self.assertEqual(called, [ULTRA, LAGUNA], "sidelined GLM moved behind LAGUNA")
+        self.assertIn(ULTRA, chain.gone())
+        called.clear()
+        chain.mark_gone(LAGUNA, "gone too")
+        self.assertEqual(call_with_model_fallback(chain, None, call, role="agent", skip_sidelined=True),
+                         f"answer from {GLM}", "only the sidelined model is left")
+
     def test_gone_stays_excluded_and_beats_busy(self):
         clock = Clock()
         chain = ModelChain(ULTRA, [GLM, LAGUNA], clock=clock)

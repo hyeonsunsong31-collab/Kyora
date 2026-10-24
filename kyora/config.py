@@ -29,12 +29,15 @@ DEFAULT_KEYS: dict = {
         "base_url": "https://integrate.api.nvidia.com/v1",
         # fallback_models: tried in order when the requested model is gone (404/410) or overloaded (503 after
         # retries); every substitution is shown. Measured on 2026-10-18: Nemotron-3-Ultra answers but is often
-        # "temporarily overloaded" on the free tier; moonshotai/kimi-k3 left the free endpoint on 2026-10-15.
+        # "temporarily overloaded" on the free tier; moonshotai/kimi-k3 left the free endpoint on 2026-10-15. On
+        # 2026-10-24 nemotron-3-super answered 404 ("not found for account") for the committed key while
+        # nemotron-3.5-super-vl answered with tool calls: the served one comes first, the other stays for accounts
+        # that still have it (a 404 is skipped for good after one request).
         "nemotron": {"model": "nvidia/nemotron-3-ultra-550b-a55b", "api_key": "", "base_url": "",
-                     "fallback_models": ["nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-3.5-super-vl-120b-a12b"]},
+                     "fallback_models": ["nvidia/nemotron-3.5-super-vl-120b-a12b", "nvidia/nemotron-3-super-120b-a12b"]},
         "kimi": {"model": "moonshotai/kimi-k3", "api_key": "", "base_url": "",
                  "fallback_models": ["nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3",
-                                     "nvidia/nemotron-3-super-120b-a12b"]},
+                                     "nvidia/nemotron-3.5-super-vl-120b-a12b", "nvidia/nemotron-3-super-120b-a12b"]},
         # a role whose own key is refused (401/403) may use the other role's key on the same endpoint
         "share_keys": True,
     },
@@ -67,9 +70,12 @@ DEFAULT_SETTINGS: dict = {
     "agent_engine": {
         "enabled": True,
         # measured live 2026-10-18 (CI, NVIDIA free tier): glm-5.3 without thinking built a game that passed the
-        # gate 28/28 on its first iteration; with thinking it had not finished BUILD after 85 minutes
+        # gate 28/28 on its first iteration; with thinking it had not finished BUILD after 85 minutes. Fallbacks:
+        # nemotron-3-ultra did most turns of the live runs of 2026-10-24 that passed the gate; nemotron-3.5-super-vl
+        # is chosen from that day's tool-call probe only (nemotron-3-super answered 404 for the committed key)
         "model": "z-ai/glm-5.3",
-        "fallback_models": ["nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-3-ultra-550b-a55b"],
+        "fallback_models": ["nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3.5-super-vl-120b-a12b",
+                            "nvidia/nemotron-3-super-120b-a12b"],
         "max_turns": 80,
         "max_tokens": 16384,
         "temperature": 0.6,

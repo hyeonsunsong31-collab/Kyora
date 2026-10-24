@@ -4,6 +4,33 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 
 ## Unreleased
 
+### Changed - 2026-10-24: a stopped model no longer stands in for a rate-limited one
+
+- **Measured live first** (CI, NVIDIA free tier, commit e2643be): the pipeline without Claude ended
+  `complete`, gate 32/32 after two fix iterations in about 30 minutes. The log also showed what cost
+  time: Nemotron-3-Ultra answered 429 for a few seconds at a time, and each time the turn went back to
+  GLM-5.3, which had been stopped for reasoning with thinking off and reasoned again for 2-3 minutes;
+  the third time no switch was left, so BUILD ended early, and the first FIX iteration ended the same way
+  without progress. `nvidia/nemotron-3-super-120b-a12b` answered 404 ("not found for account") for the
+  committed key, so the agent chain had one fallback left.
+- **A model stopped for runaway reasoning is sidelined for 30 minutes**: answering a turn no longer ends
+  its wait, a shorter cooldown never shortens it, and it does not stand in for a model that is only
+  rate limited, overloaded or slow: the turn waits and retries that model (5, 10, 20 ... s). The
+  sidelined model gets the turn's last try (after the last retry, or at once when the endpoint asks for
+  a longer wait than a retry may take), and a gone model (404/410) still hands over to it. These
+  switches no longer use up a per-run allowance;
+  a sidelined model that runs away again ends the call, and the error names the models that could not
+  take over. `model_chain.sidelined` in the engine result lists such models.
+- **Slow runaway reasoning is stopped sooner**: besides 8000 characters, more than 2000 characters of
+  reasoning with no text and no tool call once the request is 90 s old.
+- **Default fallback models**: the agent engine `z-ai/glm-5.3` -> `nvidia/nemotron-3-ultra-550b-a55b`
+  (it did most turns of the passing live runs) -> `nvidia/nemotron-3.5-super-vl-120b-a12b` (chosen from
+  the tool-call probe of the same day only) -> `nvidia/nemotron-3-super-120b-a12b`; the Nemotron role
+  `nvidia/nemotron-3.5-super-vl-120b-a12b` before `nvidia/nemotron-3-super-120b-a12b`; the Kimi role
+  adds `nvidia/nemotron-3.5-super-vl-120b-a12b`. A model that answers 404 is skipped for good after one
+  request, so accounts that still have Nemotron-3-Super lose nothing.
+- docs/agent-engine.md: the settings table now shows the real defaults (`thinking` off, the fallbacks).
+
 ### Changed - 2026-10-23: resilience and honest attribution
 
 - **Every surface names the role and the model that answered.** NVIDIA retired Kimi K3 on 2026-10-15, so
