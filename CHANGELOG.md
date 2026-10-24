@@ -18,7 +18,8 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   connects to its own listeners every 3 s and opens one that fails twice again on the same port.
 - The launcher no longer prints the address before Kyora listens and names `http://127.0.0.1:8765`
   (with `http://`) instead of `localhost`; `install-ish.sh`, the README and docs/platforms.md say the
-  same. The iSH CI job now starts the launcher's `serve` on 32-bit Alpine and loads the page.
+  same. iSH is also recognised by `/dev/location`. The iSH CI job now starts the launcher's `serve` on
+  32-bit Alpine with a FIFO in place of `/dev/location` and loads the page.
 
 ### Changed - 2026-10-24: a stopped model no longer stands in for a rate-limited one
 

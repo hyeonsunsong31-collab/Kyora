@@ -113,7 +113,8 @@ def platform_info() -> dict:
     is_termux = bool(os.environ.get("TERMUX_VERSION")) or os.path.isdir("/data/data/com.termux")
     is_ish = False
     try:
-        if sysname == "linux" and os.path.exists("/proc/ish"):
+        if sysname == "linux" and (os.path.exists("/proc/ish") or os.path.exists("/dev/location")):
+            # /proc/ish and /dev/location exist only in iSH (the location stream is an iSH device)
             is_ish = True
         elif sysname == "linux" and platform.machine() in ("i686", "i386") and os.path.exists("/etc/alpine-release"):
             # iSH emulates 32-bit x86 Alpine; this is the most common signature

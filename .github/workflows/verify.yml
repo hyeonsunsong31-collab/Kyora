@@ -181,7 +181,11 @@ jobs:
             grep -E "^(FAIL|ERROR):" unittest.log || true; tail -40 unittest.log
             sh launchers/kyora-ish.sh version
             python3 -m kyora selfcheck --no-probe || true
-            # the launcher as on the phone: serve, then load the page the way Safari would (http://127.0.0.1)
+            # the launcher as on the phone: serve, then load the page the way Safari would (http://127.0.0.1).
+            # A FIFO stands in for iSH's /dev/location (Kyora detects iSH by it and holds it open).
+            mkfifo /dev/location
+            ( while :; do echo "+0.000000,+0.000000"; sleep 1; done > /dev/location ) &
+            feeder=$!
             PYTHONUNBUFFERED=1 KYORA_HOME=/tmp/kyora-serve sh launchers/kyora-ish.sh > serve.log 2>&1 &
             pid=$!
             i=0
@@ -190,9 +194,11 @@ jobs:
             done
             wget -q -O - http://127.0.0.1:8765/api/status | head -c 200; echo
             kill "$pid"; wait "$pid" || true
+            kill "$feeder" 2>/dev/null || true
             cat serve.log
+            grep -q "Kyora 0.1.0 - ish" serve.log
             grep -q "iSH: in Safari, open http://127.0.0.1:8765" serve.log
-            grep -q "does not exist" serve.log  # no /dev/location in a container: the note says so
+            grep -q "Kyora keeps iSH running while Safari is in front" serve.log
             exit "$rc"
           '
 

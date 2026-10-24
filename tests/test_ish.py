@@ -141,6 +141,8 @@ class ListenerWatchTests(unittest.TestCase):
         srv.start()
         return srv
 
+    @unittest.skipIf(os.name == "nt", "the watch runs on iSH only; Windows' exclusive bind (SO_EXCLUSIVEADDRUSE) "
+                                      "keeps a port unavailable while connections it accepted linger")
     def test_a_reclaimed_listener_listens_again_on_the_same_port(self):
         # iOS may take the listening socket of a paused app away; afterwards nothing listens on the port
         srv = self._server()
@@ -152,6 +154,15 @@ class ListenerWatchTests(unittest.TestCase):
         self.assertTrue(_until(lambda: _get(preview, timeout=0.5) == 200), "the preview listener was not opened again")
         self.assertEqual((srv.port, srv.preview_port), (port, preview))
         self.assertGreaterEqual(srv.relistens, 2)
+
+    def test_a_port_that_cannot_be_opened_again_is_retried_and_the_server_still_stops(self):
+        srv = self._server(watch_s=None)
+        with mock.patch.object(srv.httpd, "server_bind", side_effect=OSError("address in use")), \
+                self.assertLogs("kyora.server", "WARNING") as logs:
+            self.assertFalse(srv._relisten(srv.httpd, "kyora-server"))
+        self.assertIn("could not listen again", "\n".join(logs.output))
+        self.assertEqual(srv.relistens, 0)
+        srv.shutdown()  # the listener's loop had ended: shutdown must not wait for it
 
     def test_an_answering_listener_is_left_alone(self):
         srv = self._server()
@@ -180,6 +191,21 @@ class ListenerWatchTests(unittest.TestCase):
         before = len(srv._threads)
         srv.start()
         self.assertEqual(len(srv._threads), before)
+
+
+class DetectionTests(unittest.TestCase):
+    def test_the_location_device_marks_ish(self):
+        from kyora.util import fs
+        real_exists = os.path.exists
+        with mock.patch("platform.system", return_value="Linux"), mock.patch("platform.machine", return_value="x86_64"), \
+                mock.patch.object(fs.os.path, "exists", lambda p: p == "/dev/location" or (
+                    p not in ("/proc/ish", "/etc/alpine-release", "/data/data/com.termux") and real_exists(p))), \
+                mock.patch.dict(os.environ, {"TERMUX_VERSION": ""}):
+            info = fs.platform_info()
+        if os.name == "nt":
+            self.assertEqual(info["kind"], "windows")
+        else:
+            self.assertEqual((info["kind"], info["is_ish"]), ("ish", True))
 
 
 class LauncherTextTests(unittest.TestCase):

@@ -156,9 +156,11 @@ even once iSH runs again (Apple TN2277, "Networking and Multitasking"). On iSH, 
 Wait for Kyora's `Open:` line before you switch to Safari (the first start under iSH takes a while), and
 type the whole address, `http://127.0.0.1:8765`. Without location access, an iPad can show iSH and
 Safari side by side (Split View), which keeps both in front; on an iPhone the page then loads only for a
-few seconds after you switch. The CI job runs the launcher's `serve` on 32-bit Alpine and loads the page
-over HTTP; it cannot run iOS itself, so the pause and the location stream are covered by unit tests (a
-FIFO stands in for `/dev/location`, a closed listening socket for the reclaimed one).
+few seconds after you switch. Kyora recognises iSH by `/proc/ish` or `/dev/location` (both exist only
+there), or by 32-bit x86 Alpine. The CI job runs the launcher's `serve` on 32-bit Alpine with a FIFO in
+place of `/dev/location` and loads the page over HTTP; it cannot run iOS itself, so the pause and a
+reclaimed socket are covered by unit tests (a closed listening socket stands in for the reclaimed one;
+macOS, whose networking iOS shares, runs that test too).
 
 * iSH emulates a 32-bit x86 CPU in software: everything works but slowly; the first start takes a
   while. Kyora Bench is not recommended there.
