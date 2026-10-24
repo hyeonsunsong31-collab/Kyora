@@ -339,8 +339,13 @@ reset for a quota failure (one already in the past counts as now, so the run res
 error text: "resets 1:20pm (UTC)", "resets Oct 20, 10am (Europe/Berlin)", "resets at <ISO>",
 "try again in 3h 20m", "Retry-After: 120"), the partial work is committed when the tree changed
 (`partial_work_kept`), `auto_resume_at` is stored and the run blocks with `StageBlocked(..., resume_at=)`;
-the reason names the reset in UTC. Otherwise the run blocks (no `index.html`, or the engines changed no
-file relative to the iteration base) or TEST/GATE measure what the engines produced.
+the reason names the reset in UTC. A failure that passes by itself (`stages.passes_by_itself`: failure kind
+`unavailable`, or `quota` whose text is a rate limit - HTTP 429, "Too Many Requests" - without credit or
+billing wording) and has no known reset gets `retry_at` = its time + `TRANSIENT_RETRY_S` (120, 300, 900,
+1800 s by the run's automatic resumes so far) in its `engine_runs` entry; the block resumes at the soonest
+reset or `retry_at`, and `_still_failing` treats that engine as usable again once `retry_at` passed.
+Otherwise the run blocks (no `index.html`, or the engines changed no file relative to the iteration base)
+or TEST/GATE measure what the engines produced.
 
 **Automatic resume** (`RunManager`): a blocked run with `auto_resume_at` is resumed at
 `auto_resume_at + AUTO_RESUME_GRACE_S` (60 s). The timer wakes at least every `AUTO_RESUME_STEP_S`

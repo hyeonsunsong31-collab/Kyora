@@ -22,10 +22,15 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - **A review no model can give no longer stops the run.** With the gate measured and fix iterations left,
   the failing checks (required first) become the fix instructions of a `fix` decision with
   `source: "rules"` and `model: null`; the log says "review by rules (no model answered)".
-- **Temporary role failures resume by themselves.** An unreachable endpoint, 429 or 5xx after the
-  client's retries and the role's fallbacks blocks the stage with an automatic resume after 120 s (at
-  most 24 automatic resumes per run). A connection reset or DNS failure before any answer is retried by
-  the client.
+- **Temporary failures resume by themselves.** An unreachable endpoint, 429 or 5xx after the client's
+  retries and the role's fallbacks blocks the stage with an automatic resume after 120 s. A code engine
+  stopped by a rate limit (HTTP 429 without credit or billing wording, measured live on 2026-10-23: the
+  NVIDIA free tier answered 429 for minutes and gave no reset time) or an outage, with no other engine
+  left, blocks with an automatic resume after 2, 5, 15, then 30 minutes; the resumed run uses that engine
+  again. At most 24 automatic resumes per run. A connection reset or DNS failure before any answer is
+  retried by the client.
+- The live CI pipeline runs only the chosen default set-up, one per branch at a time (a new push cancels
+  the older live run): the three set-ups of every push shared one free-tier key.
 - **Keys never go to another endpoint.** A role's key is sent to the agent endpoint only when the role
   uses that endpoint (a Moonshot key in the Kimi slot never reaches NVIDIA). Endpoint and keys change in
   one step in Settings, and a retry whose endpoint changed meanwhile is not resent. A role whose own key
@@ -199,8 +204,8 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - The Kyora agent engine runs a different model than Claude. No capability comparison is claimed or
   published; each game passes or fails the same measured gate, possibly after more fix rounds.
 - When every model of a role stays overloaded or unreachable, the stage blocks and resumes by itself after
-  120 s (since 2026-10-23); a refusal (401/403, 400) waits for Resume. The agent engine records no reset
-  time for its own quota failures, so such a block waits for Resume unless the error text names a reset.
+  120 s (since 2026-10-23); a refusal (401/403, 400) waits for Resume. A code engine's rate limit or outage
+  resumes by itself after a back-off (2 to 30 minutes); a credits or billing failure waits for Resume.
 
 ### Security
 

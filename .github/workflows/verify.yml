@@ -235,19 +235,17 @@ jobs:
     name: live pipeline without Claude (${{ matrix.id }})
     runs-on: ubuntu-latest
     timeout-minutes: 100
+    # one live pipeline per branch at a time: every push of a series used to start its own, and all of them shared
+    # one free-tier key (HTTP 429 for minutes, 2026-10-23); a new push cancels the older live run
+    concurrency:
+      group: live-pipeline-${{ github.ref }}
+      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
-        # the same game on three agent-engine set-ups; the gate and the wall clock decide the default
+        # the default set-up only. The comparison of 2026-10-18 (same game, one run each) chose it: glm-5.3 without
+        # thinking passed the gate 28/28; nemotron-3-super with and without thinking ended below it
         include:
-          - id: nemotron-3-super-thinking
-            model: nvidia/nemotron-3-super-120b-a12b
-            fallbacks: nvidia/nemotron-3-ultra-550b-a55b,z-ai/glm-5.3
-            thinking: "on"
-          - id: nemotron-3-super-no-thinking
-            model: nvidia/nemotron-3-super-120b-a12b
-            fallbacks: nvidia/nemotron-3-ultra-550b-a55b,z-ai/glm-5.3
-            thinking: "off"
           - id: glm-5.3-no-thinking
             model: z-ai/glm-5.3
             fallbacks: nvidia/nemotron-3-super-120b-a12b,nvidia/nemotron-3-ultra-550b-a55b

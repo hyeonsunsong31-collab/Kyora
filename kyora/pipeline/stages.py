@@ -56,6 +56,20 @@ CONTINUED_FAILURES = ("quota", "interrupted")
 # a usage limit whose reset already passed (refused again right after it, a stale value, clock skew): the n-th
 # automatic resume waits this long, plus the run manager's minute of grace (1, 5, 15, then 30 min)
 PAST_RESET_RETRY_S = (0.0, 240.0, 840.0, 1740.0)
+# an engine stopped by a rate limit (HTTP 429, no reset time known) or an outage of its service is tried again after
+# these waits, indexed by the run's automatic resumes so far (at most AUTO_RESUME_MAX of them)
+TRANSIENT_RETRY_S = (120.0, 300.0, 900.0, 1800.0)
+_RATE_LIMIT_RE = re.compile(r"\bHTTP 429\b|too many requests|rate[- ]?limit", re.IGNORECASE)
+_CREDIT_RE = re.compile(r"\bHTTP 402\b|payment required|insufficient[ _](?:credit|balance|funds|quota)|billing|"
+                        r"credit balance is too low", re.IGNORECASE)
+
+
+def passes_by_itself(failure_kind: str | None, error: str | None) -> bool:
+    """An engine failure that ends without the user: a service outage, or a rate limit (not credits or billing)."""
+    if failure_kind == "unavailable":
+        return True
+    text = str(error or "")
+    return failure_kind == "quota" and bool(_RATE_LIMIT_RE.search(text)) and not _CREDIT_RE.search(text)
 SESSION_GONE_RE = re.compile(r"no conversation found|session\b.{0,60}(?:not found|does not exist|expired)|"
                              r"(?:could not|cannot|unable to) resume", re.IGNORECASE)
 NO_BROWSER_REASON = ("no browser attached: open the run in Kyora on any device (Pipeline > Run tests on this device), "
@@ -362,7 +376,10 @@ def _still_failing(ctx: StageContext, name: str, now: float) -> bool:
             if e.get("failure_kind") not in FAILURE_KINDS:
                 return False  # it worked, or a task failure / interruption: nothing says it fails again
             at = e.get("resets_at")
-            if e.get("failure_kind") != "quota" or not isinstance(at, (int, float)) or isinstance(at, bool):
+            retry = e.get("retry_at")
+            if not _is_epoch(at) and _is_epoch(retry):  # a rate limit or an outage: usable again after the back-off
+                return now < retry
+            if e.get("failure_kind") != "quota" or not _is_epoch(at):
                 return True
             failed_at = e.get("failed_at")
             if isinstance(failed_at, (int, float)) and at <= failed_at:
@@ -370,6 +387,10 @@ def _still_failing(ctx: StageContext, name: str, now: float) -> bool:
                 return now < failed_at + PAST_RESET_RETRY_S[1]
             return at > now
     return False
+
+
+def _is_epoch(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _choose_after_failover(ctx: StageContext) -> CodeEngine:
@@ -437,6 +458,10 @@ def _engine_attempt(ctx: StageContext, eng: CodeEngine, kind: str, prompt: str,
     if failure == "quota":
         info["resets_at"] = reset_time(result)  # a later BUILD/FIX skips this engine until then
         info["failed_at"] = time.time()
+    if info.get("resets_at") is None and passes_by_itself(failure, result.error):
+        info.setdefault("failed_at", time.time())
+        done = len(ctx.run.extra.get("auto_resumes") or [])
+        info["retry_at"] = info["failed_at"] + TRANSIENT_RETRY_S[min(done, len(TRANSIENT_RETRY_S) - 1)]
     ctx.last_engine = info
     ctx.run.engine = info
     entry = {"kind": kind, "iteration": ctx.run.iteration, "engine": eng.name, **{
@@ -446,6 +471,8 @@ def _engine_attempt(ctx: StageContext, eng: CodeEngine, kind: str, prompt: str,
         entry["resets_at"] = info["resets_at"]
     if info.get("failed_at") is not None:
         entry["failed_at"] = info["failed_at"]
+    if info.get("retry_at") is not None:
+        entry["retry_at"] = info["retry_at"]
     ctx.run.extra.setdefault("engine_runs", []).append(entry)
     if not result.ok and not cancelled:
         ctx.run.extra.setdefault("engine_failures", []).append(
@@ -618,15 +645,18 @@ def _after_failed_attempts(ctx: StageContext, kind: str, eng: CodeEngine, result
         tried = "; ".join(f"{e.name}: {failure_reason(i['failure_kind'], r.error, 120)}" for e, r, i in failed)
     # a usage limit is why no engine is left when the last attempt failed for account reasons and one of them
     # (usually Claude Code) reported a limit; the soonest known reset is when an engine is back
-    limit_block = bool(failed) and failed[-1][1] is result and any(i["failure_kind"] == "quota" for _, _, i in failed)
+    limit_block = bool(failed) and failed[-1][1] is result and any(
+        i["failure_kind"] == "quota" or _is_epoch(i.get("retry_at")) for _, _, i in failed)
     if limit_block and _engines_setting(ctx, "auto_resume_on_limit", True):
         now = time.time()
-        resets = sorted(((reset_time(r, now), e.name, r.error) for e, r, i in failed if i["failure_kind"] == "quota"),
-                        key=lambda t: t[0] or 0.0)
-        resets = [t for t in resets if t[0] is not None]
+        # the soonest time an engine is back: a usage limit's known reset, or the back-off of a rate limit / outage
+        resets = [(reset_time(r, now), e.name, r.error, "limit") for e, r, i in failed if i["failure_kind"] == "quota"]
+        resets += [(i["retry_at"], e.name, r.error, "transient") for e, r, i in failed
+                   if _is_epoch(i.get("retry_at")) and reset_time(r, now) is None]
+        resets = sorted((t for t in resets if t[0] is not None), key=lambda t: t[0])
         if resets:
-            at, limited, limited_error = resets[0]
-            if at < now:
+            at, limited, limited_error, why = resets[0]
+            if why == "limit" and at < now:
                 # a reset already in the past (refused again right after it, a stale value or clock skew): the limit
                 # should be over, so resume instead of grading the half-finished work as the result; each further
                 # automatic resume waits longer (PAST_RESET_RETRY_S, at most AUTO_RESUME_MAX times)
@@ -637,8 +667,12 @@ def _after_failed_attempts(ctx: StageContext, kind: str, eng: CodeEngine, result
             others = (f"the engines tried: {tried}; no other code engine is available" if tried
                       else "failover is off (settings engines.failover)" if not _engines_setting(ctx, "failover", True)
                       else "no other code engine is available")
-            limit = (f"code engine ({limited}) hit a usage limit ({' '.join(str(limited_error or '').split())[:300]}); "
-                     f"{others}. The limit resets at {utc_iso(at)}")
+            detail = ' '.join(str(limited_error or '').split())[:300]
+            if why == "transient":
+                limit = (f"code engine ({limited}) is rate limited or its service is temporarily unavailable "
+                         f"({detail}); {others}. It is tried again at {utc_iso(at)}")
+            else:
+                limit = f"code engine ({limited}) hit a usage limit ({detail}); {others}. The limit resets at {utc_iso(at)}"
             if bench_options(ctx):
                 # Kyora Bench records the blocked task and moves on: resuming it by itself after the reset would spend
                 # the new quota (and the device) on a task the bench already reported, next to its later tasks
@@ -1192,6 +1226,7 @@ __all__ = [
     "StageBlocked", "RunCancelled", "StageContext", "render_template", "select_engine", "run_engine",
     "intake_stage", "plan_stage", "design_stage", "write_build_files", "build_stage", "fix_stage", "test_stage",
     "gate_stage", "load_gate", "review_stage", "finalize_stage", "show_view", "narrate", "plan_tests", "plan_files",
-    "NO_ENGINE_REASON", "NO_BROWSER_REASON", "gate_threshold", "rule_review", "RULE_REVIEW_CHECKS", "served_models", "served_engines", "tree_fingerprint",
+    "NO_ENGINE_REASON", "NO_BROWSER_REASON", "gate_threshold", "rule_review", "RULE_REVIEW_CHECKS",
+    "passes_by_itself", "TRANSIENT_RETRY_S", "served_models", "served_engines", "tree_fingerprint",
     "CONTINUE_PREFIX", "PARTIAL_WORK_PREFIX", "CHANGED_SINCE_TEXT", "KEPT_WORK_TEXT", "failure_reason", "utc_iso",
 ]

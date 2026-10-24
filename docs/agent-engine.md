@@ -249,8 +249,12 @@ A call that fails after every key, retry and fallback is classified in the engin
 
 With the default order the agent engine is last, so after its own account failure no engine is left and
 the run is BLOCKED (resumable) with the reason, unless the engines changed the work tree and `index.html`
-exists, in which case TEST and GATE measure what they produced. The agent engine records no reset time, so such a block is
-resumed automatically only when the error text itself names one; otherwise it waits for *Resume*.
+exists, in which case TEST and GATE measure what they produced. A block that passes by itself is resumed
+automatically (`engines.auto_resume_on_limit`, at most 24 times per run): a reset time named in the error,
+or, for a rate limit (HTTP 429 without credit or billing wording) or an outage of the service
+(`unavailable`), after 2, 5, 15 and then 30 minutes (by the run's automatic resumes so far); the resumed
+run tries that engine again once its wait is over. Refused keys, credits and retired models wait for
+*Resume*.
 Failover, partial work and automatic resume are described in
 [`architecture.md`](architecture.md#code-engines-registry-order-failover-and-automatic-resume).
 

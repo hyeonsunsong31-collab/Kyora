@@ -48,6 +48,16 @@ QUIET = {"model.delta", "engine.text", "engine.thinking", "engine.stderr", "stag
 _NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
+def _auto_resume_at(base: str, rid: str) -> float | None:
+    """When Kyora resumes the blocked run by itself (``auto_resume_at``, epoch seconds), or None."""
+    try:
+        run = api(base, "GET", f"/api/runs/{rid}")["run"]
+    except Exception:  # noqa: BLE001 - no answer: treat the block as final
+        return None
+    at = run.get("auto_resume_at", (run.get("extra") or {}).get("auto_resume_at"))
+    return float(at) if isinstance(at, (int, float)) and not isinstance(at, bool) else None
+
+
 def api(base: str, method: str, path: str, body=None, timeout: float = 60, raw: bool = False):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(base + path, data=data, method=method,
@@ -187,6 +197,7 @@ def main(argv=None) -> int:
     fallbacks: list[dict] = []
     judge = Counter()
     turns = 0
+    auto_waits: list[float] = []  # seconds to each automatic resume the run was waited through
     final: dict = {}
     rid = None
     t0 = time.monotonic()
@@ -238,6 +249,15 @@ def main(argv=None) -> int:
             sys.stdout.flush()
             if t == "run.state":
                 state = str(d.get("state"))
+                if state == "blocked":
+                    time.sleep(2)  # the block's automatic resume is armed right after the state is saved
+                    at = _auto_resume_at(server.url, rid)
+                    if at is not None and time.monotonic() + (at - time.time()) + 90 < deadline:
+                        # a rate limit or an outage: Kyora resumes the run by itself; wait for it as a user would
+                        auto_waits.append(round(at - time.time(), 1))
+                        print(f"{stamp} blocked; Kyora resumes the run by itself in {at - time.time():.0f} s "
+                              "(waiting, as a user would)")
+                        continue
                 if state in TERMINAL or state == "blocked":
                     time.sleep(2)
                     break
@@ -256,7 +276,7 @@ def main(argv=None) -> int:
         report["seconds"] = round(time.monotonic() - t0, 1)
 
     gate = (final.get("gate") or {}).get("final") or final.get("gate") or {}
-    extra = final.get("extra") or {}
+    extra = final.get("extra") or final  # the run's extra fields are flattened into its JSON
     report.update(
         final_state=final.get("state"), blocked_reason=final.get("blocked_reason"), error_state=final.get("error"),
         iteration=final.get("iteration"), result_slide=final.get("result_slide"), gate=gate,
@@ -264,7 +284,8 @@ def main(argv=None) -> int:
         judge_verdicts=dict(judge), engine_tool_calls=turns, stage_seconds={k: round(v / 1000.0, 1)
                                                                             for k, v in stage_ms.items()},
         agent_turns=len(turn_log), agent_turn_seconds=_turn_stats(turn_log),
-        engine_runs=extra.get("engine_runs"), engine_failovers=extra.get("engine_failovers"))
+        engine_runs=extra.get("engine_runs"), engine_failovers=extra.get("engine_failovers"),
+        automatic_resumes_waited=auto_waits, role_models=extra.get("role_models"))
     with open(out / "events.jsonl", "w", encoding="utf-8") as fh:
         for e in events:
             fh.write(json.dumps(e, ensure_ascii=False) + "\n")
@@ -298,6 +319,8 @@ def main(argv=None) -> int:
     print(f"model/key fallbacks: {len(fallbacks)}; judge verdicts: {dict(judge)}; agent tool calls: {turns}; "
           f"duration {report['seconds']} s")
     print(f"stage seconds: {report['stage_seconds']}")
+    if auto_waits:
+        print(f"automatic resumes waited through (rate limit / outage): {len(auto_waits)}, after {auto_waits} s")
     print(f"agent turns: {report['agent_turns']}; per-turn seconds: {report['agent_turn_seconds']}")
     ok = report.get("final_state") == "complete"
     print("LIVE PIPELINE WITHOUT CLAUDE: " + ("COMPLETE (gate passed)" if ok else "NOT COMPLETE"))

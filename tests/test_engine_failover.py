@@ -681,6 +681,62 @@ class LimitBlockTests(_Harness):
             S.run_engine(ctx, "build", "B")
         self.assertGreaterEqual(cm.exception.resume_at, before + S.PAST_RESET_RETRY_S[-1])
 
+    RATE_LIMITED = {"ok": False, "raw": {"failure_kind": "quota"},
+                    "error": "HTTP 429 from integrate.api.nvidia.com for nvidia/nemotron-3-ultra-550b-a55b after "
+                             "retries: rate limited or out of credits: wait and retry, or check the account's limits"}
+
+    def test_a_rate_limited_last_engine_resumes_by_itself_after_a_back_off(self):
+        # measured live 2026-10-23: the NVIDIA free tier answered HTTP 429 for minutes and gave no reset time
+        self.claude.available = False
+        self.agent.steps = [dict(self.RATE_LIMITED)]
+        ctx = self.ctx()
+        before = time.time()
+        with self.assertRaises(StageBlocked) as cm:
+            S.run_engine(ctx, "fix", "FIX")
+        self.assertGreaterEqual(cm.exception.resume_at, before + S.TRANSIENT_RETRY_S[0])
+        self.assertLessEqual(cm.exception.resume_at, time.time() + S.TRANSIENT_RETRY_S[0])
+        self.assertIn("code engine (openai_agent) is rate limited or its service is temporarily unavailable",
+                      cm.exception.reason)
+        self.assertIn("Kyora resumes this run by itself", cm.exception.reason)
+        run = self.store.get_run(ctx.run_id)
+        self.assertEqual(run.extra["auto_resume_at"], cm.exception.resume_at)
+        [entry] = run.extra["engine_runs"]
+        self.assertEqual(entry["retry_at"], cm.exception.resume_at)
+        self.assertTrue(S._still_failing(ctx, "openai_agent", entry["retry_at"] - 1))
+        self.assertFalse(S._still_failing(ctx, "openai_agent", entry["retry_at"] + 1), "usable again after it")
+
+    def test_an_outage_resumes_and_later_resumes_wait_longer(self):
+        self.claude.available = False
+        ctx = self.ctx()
+        ctx.run.extra["auto_resumes"] = ["a", "b"]
+        self.agent.steps = [{"ok": False, "error": "HTTP 503: Service temporarily overloaded",
+                             "raw": {"failure_kind": "unavailable"}}]
+        before = time.time()
+        with self.assertRaises(StageBlocked) as cm:
+            S.run_engine(ctx, "build", "B")
+        self.assertGreaterEqual(cm.exception.resume_at, before + S.TRANSIENT_RETRY_S[2])
+
+    def test_credits_and_refused_keys_wait_for_the_user(self):
+        self.claude.available = False
+        for step in ({"ok": False, "error": "HTTP 402 Payment Required: insufficient credit balance",
+                      "raw": {"failure_kind": "quota"}},
+                     {"ok": False, "error": "HTTP 403: Authorization failed", "raw": {"failure_kind": "auth"}}):
+            self.agent.steps = [step]
+            ctx = self.ctx()
+            with self.assertRaises(StageBlocked) as cm:
+                S.run_engine(ctx, "build", "B")
+            self.assertIsNone(cm.exception.resume_at, step["error"])
+            self.assertNotIn("auto_resume_at", self.store.get_run(ctx.run_id).extra)
+
+    def test_passes_by_itself(self):
+        self.assertTrue(S.passes_by_itself("quota", self.RATE_LIMITED["error"]))
+        self.assertTrue(S.passes_by_itself("unavailable", "endpoint unreachable"))
+        self.assertTrue(S.passes_by_itself("quota", "429 Too Many Requests"))
+        self.assertFalse(S.passes_by_itself("quota", "HTTP 402 Payment Required"))
+        self.assertFalse(S.passes_by_itself("quota", "You've hit your usage limit"))  # Claude's plan limit: a reset
+        self.assertFalse(S.passes_by_itself("auth", "HTTP 429"))
+        self.assertFalse(S.passes_by_itself(None, "rate limited"))
+
     def test_a_bench_run_blocks_without_resuming_by_itself(self):
         self.agent.available = False
         self.claude.steps = [self.quota(time.time() + 3600, files={"src/half.js": "// partial"})]
