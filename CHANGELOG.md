@@ -51,10 +51,15 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   highest-ranked usable engine is taken again; a hard kill keeps and announces only what the attempt
   changed. Process sessions are killed before their leader is reaped, so a reused PID is never signalled.
 - The metrics tile drops "fallback from X" when X answers again.
+- **A model that sends nothing in time counts as overloaded**, for every role and the agent engine: the next
+  model of the chain answers (live on 2026-10-23 GLM-5.3 needed 26 s for a 1-token chat, and the agent
+  self-check reported the endpoint "unreachable" after one read timeout). The agent probe gives each model
+  a share of its time and names a timeout as such.
 - **A model that ignores the thinking switch-off is stopped early.** Live on 2026-10-23 GLM-5.3, asked not to
   think, streamed 16384 tokens of reasoning (29 minutes) and nothing else, twice in one turn, and the build
   failed after 58 minutes. More than 8000 characters of reasoning with no text and no tool call now ends the
-  request, and the next model of the chain continues the turn. An answer cut off while thinking with
+  request, the next model of the chain continues the turn and the stopped model waits behind the others
+  for 30 minutes (it happened in 2 of 2 live runs that day, both at the fourth turn). An answer cut off while thinking with
   thinking already off also moves to the next model before `max_tokens` is doubled.
 
 ### Added - 2026-10-18: working without a Claude subscription

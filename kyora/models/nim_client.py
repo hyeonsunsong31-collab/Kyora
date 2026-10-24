@@ -74,6 +74,17 @@ class NIMUnreachable(NIMError):
     """The endpoint could not be reached (DNS, connection refused, TLS, timeout, connection lost)."""
 
 
+class NIMTimeout(NIMUnreachable):
+    """The endpoint took the request but the model sent nothing within the time limit: slow or overloaded.
+
+    Nothing reached the caller, so the next model of a role's chain may answer instead (like a 503).
+    """
+
+
+def _is_timeout(reason: Any) -> bool:
+    return isinstance(reason, (TimeoutError, socket.timeout)) or "timed out" in str(reason).lower()
+
+
 class NIMCancelled(NIMError):
     """The caller's cancel event was set while a request was in flight."""
 
@@ -652,7 +663,11 @@ class NIMClient:
                     attempt += 1
                     self._sleep(delay, cancel)
                     continue
-                unreachable = NIMUnreachable(f"{self._host()} unreachable: {reason}")
+                if _is_timeout(reason):
+                    unreachable = NIMTimeout(f"{model} at {self._host()} did not answer within {timeout:g} s "
+                                             f"({reason})")
+                else:
+                    unreachable = NIMUnreachable(f"{self._host()} unreachable: {reason}")
                 unreachable.attempts = attempt + 1
                 raise unreachable from None
             delay = 0.0
@@ -741,6 +756,8 @@ class NIMClient:
         except NIMError:
             raise
         except (OSError, http.client.HTTPException) as exc:
+            if _is_timeout(exc) and not text_chunks and not acc.reasoning:
+                raise NIMTimeout(f"{self._host()} sent no output in time ({exc})") from None
             raise NIMUnreachable(f"connection to {self._host()} lost mid-stream: {exc}") from None
         t_end = time.monotonic()
         content = "".join(acc.content)
@@ -756,6 +773,8 @@ class NIMClient:
         try:
             raw = resp.read()
         except (OSError, http.client.HTTPException) as exc:
+            if _is_timeout(exc):
+                raise NIMTimeout(f"{self._host()} did not finish the answer in time ({exc})") from None
             raise NIMUnreachable(f"connection to {self._host()} lost while reading: {exc}") from None
         t_end = time.monotonic()
         text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
@@ -1250,8 +1269,9 @@ def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any],
     Moves to the next candidate when the model is gone (404/410: skipped for good) or temporarily
     overloaded after the client's own retries (:func:`is_temporary_failure`: busy for
     ``busy_cooldown_s``, default :data:`BUSY_COOLDOWN_S`). Each move is published as
-    ``model.fallback`` with ``temporary`` saying which of the two it was. A refused key (401/403),
-    an unreachable endpoint and a cancellation never change the model.
+    ``model.fallback`` with ``temporary`` saying which of the two it was. A model that sent nothing
+    within the time limit (:class:`NIMTimeout`) counts as temporarily overloaded. A refused key
+    (401/403), an unreachable endpoint and a cancellation never change the model.
     """
     from ..pipeline.events import MODEL_FALLBACK
     cooldown = BUSY_COOLDOWN_S if busy_cooldown_s is None else float(busy_cooldown_s)
@@ -1259,11 +1279,19 @@ def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any],
     for i, model in enumerate(candidates):
         try:
             res = call(model)
-        except (NIMCancelled, NIMUnreachable):
+        except NIMCancelled:
             raise
         except NIMError as exc:
             has_next = i + 1 < len(candidates)
-            if exc.status in MODEL_GONE_STATUSES:
+            if isinstance(exc, NIMTimeout):  # nothing arrived in time: overloaded, like a 503
+                temporary = True
+                reason = f"{model} did not answer in time: slow or overloaded now"
+                chain.mark_busy(model, cooldown, reason)
+                if not has_next:
+                    raise
+            elif isinstance(exc, NIMUnreachable):
+                raise  # the endpoint itself: no other model is any closer
+            elif exc.status in MODEL_GONE_STATUSES:
                 if not has_next:
                     raise
                 temporary = False
@@ -1278,7 +1306,8 @@ def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any],
                     raise
             else:
                 raise
-            what = f"HTTP {exc.status}" if exc.status is not None else "a temporary error"
+            what = (f"HTTP {exc.status}" if exc.status is not None else
+                    "nothing in time" if isinstance(exc, NIMTimeout) else "a temporary error")
             log.warning("%s: %s answered %s%s; falling back to %s", role, model, what,
                         f" (busy for {cooldown:.0f}s)" if temporary else "", candidates[i + 1])
             if bus is not None:
@@ -1299,7 +1328,7 @@ def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any],
 __all__ = [
     "ModelChain", "call_with_model_fallback", "explain_http_failure", "MODEL_GONE_STATUSES",
     "BUSY_COOLDOWN_S", "TEMPORARY_STATUSES", "is_temporary_failure",
-    "NIMError", "NIMUnreachable", "NIMCancelled", "NIMBodyError", "Delta", "ChatResult", "NIMClient",
+    "NIMError", "NIMUnreachable", "NIMTimeout", "NIMCancelled", "NIMBodyError", "Delta", "ChatResult", "NIMClient",
     "build_assistant_message", "tool_call_arguments", "function_tool", "force_tool", "url_host",
     "strip_think", "extract_json_object", "extract_structured", "is_tool_rejection",
     "load_prompt", "render_prompt", "json_for_prompt", "chat_with_events",

@@ -1325,6 +1325,7 @@ class ThinkingCutTests(_Base):
         self.assertTrue(any("kept reasoning" in n and "although thinking was switched off" in n
                             and f"the next model of the chain ({SUPER})" in n for n in notes), notes)
         self.assertEqual(res.raw["model_switches"][0]["from_model"], GLM)
+        self.assertGreater(res.raw["model_chain"]["busy"].get(GLM, 0), 1000, "GLM waits behind for the rest")
 
     def test_reasoning_with_thinking_off_and_no_other_model_fails_as_a_model_failure(self):
         self.serve(Script([{"reasoning": "hmm " * 6000, "reasoning_chunks": 60, "finish_reason": "length"}]))

@@ -61,14 +61,15 @@ measured by the full self-check and by the run itself.
      with "continue" (chat templates drop old reasoning, so the same request would come back): the
      same turn is sent again with thinking switched off (when the model has a switch); when thinking
      was off already, the next model of the chain continues the turn (the first one cools down for
-     120 s); only when no other model is left is `max_tokens` doubled (at most 32768); at most 3 such
+     120 s, 30 minutes after an early stop, see below); only when no other model is left is `max_tokens` doubled (at most 32768); at most 3 such
      retries per turn. When the endpoint refuses the larger `max_tokens` (HTTP 400/422, the model's
      output or context limit), the call ends with an error that says the answer was cut off while
      thinking; no context retry is used up for it.
    * A model that was sent the thinking switch-off and still streams more than 8000 characters of
      reasoning with no text and no tool call is **stopped early** (live on 2026-10-23 GLM-5.3 reasoned
-     16384 tokens - 29 minutes - twice in one turn): the next model of the chain continues the turn;
-     with none left the call fails with `failure_kind: "model"`.
+     16384 tokens - 29 minutes - twice in one turn, in 2 of 2 runs that day): the next model of the
+     chain continues the turn and the stopped model waits behind the others for 30 minutes; with none
+     left the call fails with `failure_kind: "model"`.
    * An answer that **writes a tool call as text** (`<tool_call>`, `<|tool_call...`, `<function=`, or a
      JSON `{"name": <tool>, "arguments": ...}`) ran nothing: the model is reminded to use function
      calling, at most 3 times. After that the model is skipped for this endpoint (its tool calls are not
@@ -194,8 +195,10 @@ model is tried when
 * the endpoint says the model is gone (HTTP 404 or 410): it is skipped for good while the endpoint, the
   model and the fallback list stay the same (the chain is kept across runs; it starts over when every
   model was found gone, or after a run failed because no model could serve);
-* it stays temporarily unavailable after the client's retries (HTTP 500/502/503/504 or overload wording):
-  it cools down for 120 s, moves behind the healthy models and returns to its place afterwards;
+* it stays temporarily unavailable after the client's retries (HTTP 500/502/503/504 or overload wording),
+  or sends nothing within the request's time limit (slow or overloaded; live on 2026-10-23 GLM-5.3 took
+  26 s for a 1-token chat): it cools down for 120 s, moves behind the healthy models and returns to its
+  place afterwards;
 * it refuses function tools (HTTP 400/422 that names tools or functions) before it has answered in this
   run: it is skipped like a gone model, because this engine cannot work without tool calls;
 * it keeps writing its tool calls as text after 3 reminders (the endpoint does not parse them): it is

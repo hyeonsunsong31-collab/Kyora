@@ -56,7 +56,8 @@ from .agent_tools import BASH_TIMEOUT_S, BASH_TOOL, EDITOR_TOOL, EditorError, To
 from .base import Availability, EngineJob, EngineResult, EngineSink
 from .kimi import model_family
 from .nim_client import (
-    BUSY_COOLDOWN_S, MODEL_GONE_STATUSES, ChatResult, ModelChain, NIMCancelled, NIMClient, NIMError, NIMUnreachable, _retry_after_raw,
+    BUSY_COOLDOWN_S, MODEL_GONE_STATUSES, ChatResult, ModelChain, NIMCancelled, NIMClient, NIMError, NIMTimeout,
+    NIMUnreachable, _retry_after_raw,
     call_with_model_fallback, explain_http_failure, function_tool, is_temporary_failure, is_tool_rejection,
     strip_think, url_host,
 )
@@ -85,6 +86,7 @@ MAX_THINKING_RETRIES = 3      # answers cut off at max_tokens while still thinki
 # reasoning characters an answer may stream, with no text and no tool call, after thinking was switched OFF: a model
 # that ignores the switch is stopped there (live 2026-10-23: GLM-5.3 reasoned 16384 tokens - 29 minutes - twice)
 MAX_UNREQUESTED_REASONING = 8000
+RUNAWAY_COOLDOWN_S = 1800.0   # such a model waits behind the others for the rest of a BUILD/FIX (it did it again)
 MAX_RETRY_TOKENS = 32768      # cap of the doubled max_tokens of such a retry
 MAX_TOOL_CALLS_PER_TURN = 32
 CHECK_TIMEOUT_S = 120         # the Node logic tests of one kyora_check (NodeRunner's default)
@@ -898,6 +900,8 @@ class OpenAIAgentEngine(ToolLoopEngine):
         """
         if not isinstance(exc, NIMError) or isinstance(exc, NIMCancelled):
             return None
+        if isinstance(exc, NIMTimeout):
+            return f"no agent model answered in time ({str(exc)[:300]})"
         if isinstance(exc, NIMUnreachable):
             return f"the agent endpoint could not be reached ({str(exc)[:300]})"
         text = " ".join(f"{exc.body or exc}".split())[:300]
@@ -945,7 +949,8 @@ class OpenAIAgentEngine(ToolLoopEngine):
 
         First thinking is switched off (when it is on and ``model`` has a switch). When it was off
         already - the model thinks anyway - the next model of ``chain`` continues the turn (``model``
-        cools down like an overloaded one), at most once per other model of the chain; only then is
+        cools down like an overloaded one; :data:`RUNAWAY_COOLDOWN_S` after a stop), at most twice per
+        other model of the chain; only then is
         max_tokens doubled (at most :data:`MAX_RETRY_TOKENS`), never after a ``runaway`` (stopped
         early: more tokens would only stream more reasoning). ``False`` when nothing is left to change
         - the same request would end the same way.
@@ -961,7 +966,7 @@ class OpenAIAgentEngine(ToolLoopEngine):
         elif others and state["thinking_switches"] < 2 * len(others):
             why = (str(runaway) if runaway is not None else
                    f"{model} used all {tokens} tokens thinking and wrote no answer")
-            chain.mark_busy(model, BUSY_COOLDOWN_S, why)
+            chain.mark_busy(model, RUNAWAY_COOLDOWN_S if runaway is not None else BUSY_COOLDOWN_S, why)
             state["thinking_switches"] += 1
             state["turn_thinking"] = state["turn_max_tokens"] = None
             change = f"the next model of the chain ({others[0]})"
@@ -1011,6 +1016,9 @@ class OpenAIAgentEngine(ToolLoopEngine):
         hint = explain_http_failure(status, body, model)
         tried = ", ".join(f"{m} ({f'HTTP {e.status}' if getattr(e, 'status', None) is not None else type(e).__name__})"
                           for m, e in attempts)
+        if isinstance(exc, NIMTimeout):
+            return (f"no agent model at {host} answered in time (tried: {tried}): {exc}", "unavailable",
+                    str(exc)[:500], "the models are slow or overloaded now; the run resumes by itself later")
         if isinstance(exc, NIMUnreachable):
             return (f"cannot reach the agent endpoint {host}: {exc}", "unavailable", str(exc)[:500],
                     "check the network connection and the agent endpoint URL")
@@ -1391,6 +1399,8 @@ class OpenAIAgentEngine(ToolLoopEngine):
             client = self._client(c)
             chain = self._chain_for(c)
             deadline = time.monotonic() + float(timeout_s)
+            # each model gets a share of the budget: one slow model must not use it up before the next is tried
+            per_model = max(20.0, float(timeout_s) / max(1, len(chain.candidates())))
             attempts: list[tuple[str, BaseException | None]] = []
             msgs = [{"role": "user", "content": PROBE_PROMPT}]
 
@@ -1404,7 +1414,8 @@ class OpenAIAgentEngine(ToolLoopEngine):
                     # the sampling fields a run sends: an endpoint that refuses them fails here, not in BUILD
                     res = client.chat(model, msgs, stream=False, tools=[PROBE_FUNCTION], tool_choice="auto",
                                       max_tokens=PROBE_MAX_TOKENS, extra=family_extra(model, False) or None,
-                                      temperature=c.temperature, top_p=c.top_p, timeout_s=max(1.0, left))
+                                      temperature=c.temperature, top_p=c.top_p,
+                                      timeout_s=max(1.0, min(left, per_model)))
                 except BaseException as exc:
                     attempts.append((model, exc))
                     out["latency_ms"] = round((time.monotonic() - t0) * 1000.0, 1)
@@ -1425,8 +1436,11 @@ class OpenAIAgentEngine(ToolLoopEngine):
                 out["failure_kind"] = kind
                 if kind == "model":
                     self._forget_chain(chain)
-                out["hint"] = hint or ("check the network connection and the agent endpoint URL"
-                                       if isinstance(exc, NIMUnreachable) else "")
+                out["hint"] = hint or (
+                    "no model of the chain answered within the probe's time: they are slow or overloaded now "
+                    "(a run waits longer and retries)" if isinstance(exc, NIMTimeout) else
+                    "check the network connection and the agent endpoint URL" if isinstance(exc, NIMUnreachable)
+                    else "")
                 return out
             tokens = PROBE_MAX_TOKENS
             left = deadline - time.monotonic()

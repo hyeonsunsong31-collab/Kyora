@@ -19,7 +19,7 @@ from kyora.models import nim_client
 from kyora.models.kimi import Kimi, KimiConversation
 from kyora.models.nemotron import Nemotron
 from kyora.models.nim_client import (
-    BUSY_COOLDOWN_S, ModelChain, NIMBodyError, NIMCancelled, NIMClient, NIMError, NIMUnreachable,
+    BUSY_COOLDOWN_S, ModelChain, NIMBodyError, NIMCancelled, NIMClient, NIMError, NIMTimeout, NIMUnreachable,
     call_with_model_fallback, explain_http_failure, is_temporary_failure,
 )
 from kyora.pipeline.events import EventBus
@@ -213,6 +213,27 @@ class ChainBusyTests(unittest.TestCase):
         self.assertEqual((chain.active, chain.fallback_active), (ULTRA, False))
         self.assertEqual(chain.to_dict()["busy"], {})
         self.assertIsNone(chain.busy_reason(ULTRA))
+
+    def test_a_model_that_sends_nothing_in_time_is_skipped_like_an_overloaded_one(self):
+        # live 2026-10-23: GLM-5.3 took 26 s for a 1-token chat and the agent probe ran out of time on it
+        chain = ModelChain(GLM, [ULTRA])
+        bus = EventBus(None)
+        self.addCleanup(bus.close)
+
+        def call(model):
+            if model == GLM:
+                raise NIMTimeout(f"{model} at integrate.api.nvidia.com did not answer within 20 s (timed out)")
+            return f"answer from {model}"
+        self.assertEqual(call_with_model_fallback(chain, bus, call, role="agent"), f"answer from {ULTRA}")
+        self.assertIn(GLM, chain.busy())
+        [fb] = [e.data for e in bus.replay(0) if e.type == "model.fallback"]
+        self.assertEqual((fb["from_model"], fb["to_model"], fb["temporary"], fb["status"]), (GLM, ULTRA, True, None))
+        self.assertIn("did not answer in time", fb["reason"])
+        unreachable = ModelChain(GLM, [ULTRA])  # the endpoint itself: no other model is closer
+        with self.assertRaises(NIMUnreachable):
+            call_with_model_fallback(unreachable, None, lambda m: (_ for _ in ()).throw(
+                NIMUnreachable("integrate.api.nvidia.com unreachable: [Errno -3] DNS")), role="agent")
+        self.assertEqual(unreachable.busy(), {})
 
     def test_several_busy_models_soonest_free_first(self):
         clock = Clock()

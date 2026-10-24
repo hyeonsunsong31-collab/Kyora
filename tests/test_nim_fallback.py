@@ -20,7 +20,7 @@ from pathlib import Path
 from kyora.config import Config, KimiCfg, NemotronCfg
 from kyora.models.kimi import Kimi, KimiConversation
 from kyora.models.nemotron import Nemotron
-from kyora.models.nim_client import ModelChain, NIMClient, NIMError, NIMUnreachable, explain_http_failure
+from kyora.models.nim_client import ModelChain, NIMClient, NIMError, NIMTimeout, NIMUnreachable, explain_http_failure
 from kyora.pipeline.events import EventBus
 from tests.mock_nim import MockNIM
 
@@ -138,6 +138,8 @@ class KeyFallbackTests(_Base):
         with self.assertRaises(NIMUnreachable) as cm:  # a timeout is not doubled by a retry
             c.chat(ULTRA, [{"role": "user", "content": "hi"}], stream=False, max_tokens=1)
         self.assertEqual(cm.exception.attempts, 1)
+        self.assertIsInstance(cm.exception, NIMTimeout)  # a slow model, so the next one of a chain may answer
+        self.assertIn("did not answer within", str(cm.exception))
         refused = [ConnectionRefusedError(111, "Connection refused")]
 
         class Closed:
