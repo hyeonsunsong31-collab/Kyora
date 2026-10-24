@@ -182,7 +182,7 @@ jobs:
             sh launchers/kyora-ish.sh version
             python3 -m kyora selfcheck --no-probe || true
             # the launcher as on the phone: serve, then load the page the way Safari would (http://127.0.0.1).
-            # A FIFO stands in for iSH's /dev/location (Kyora detects iSH by it and holds it open).
+            # A FIFO stands in for the iSH location device /dev/location (Kyora detects iSH by it and holds it open).
             mkfifo /dev/location
             ( while :; do echo "+0.000000,+0.000000"; sleep 1; done > /dev/location ) &
             feeder=$!

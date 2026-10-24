@@ -196,10 +196,12 @@ class ListenerWatchTests(unittest.TestCase):
 class DetectionTests(unittest.TestCase):
     def test_the_location_device_marks_ish(self):
         from kyora.util import fs
-        real_exists = os.path.exists
+        real_exists, real_isdir = os.path.exists, os.path.isdir
+        hidden = ("/proc/ish", "/etc/alpine-release", "/data/data/com.termux")  # this host's own markers
         with mock.patch("platform.system", return_value="Linux"), mock.patch("platform.machine", return_value="x86_64"), \
                 mock.patch.object(fs.os.path, "exists", lambda p: p == "/dev/location" or (
-                    p not in ("/proc/ish", "/etc/alpine-release", "/data/data/com.termux") and real_exists(p))), \
+                    p not in hidden and real_exists(p))), \
+                mock.patch.object(fs.os.path, "isdir", lambda p: p not in hidden and real_isdir(p)), \
                 mock.patch.dict(os.environ, {"TERMUX_VERSION": ""}):
             info = fs.platform_info()
         if os.name == "nt":
