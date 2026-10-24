@@ -1304,6 +1304,50 @@ class ThinkingCutTests(_Base):
         self.assertEqual([(r.get("chat_template_kwargs"), r["max_tokens"]) for r in mock_.requests],
                          [(None, 4096), ({"enable_thinking": False}, 4096), ({"enable_thinking": False}, 8192)])
 
+    def test_reasoning_with_thinking_off_is_stopped_early_and_the_next_model_continues(self):
+        # live 2026-10-23: GLM-5.3 asked not to think reasoned 16384 tokens (29 minutes) twice and wrote nothing
+        runaway = {"reasoning": "hmm " * 6000, "reasoning_chunks": 60, "delay_s": 0.01, "finish_reason": "length"}
+
+        def by_model(req):
+            if req["model"] == GLM:
+                return dict(runaway)
+            if tool_messages(req):
+                return answer(content="done")
+            return answer(editor("view", "existing.txt", "v1"))
+        mock_ = self.serve(Script([by_model]))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        res, sink = self.run_engine(self.engine(FakeJudge(), thinking=False))
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual(res.active_model, SUPER)
+        self.assertEqual([r["model"] for r in mock_.requests][:2], [GLM, SUPER])
+        self.assertEqual(mock_.requests[0]["chat_template_kwargs"], {"enable_thinking": False})
+        notes = [e["line"] for e in sink.of("engine.stderr") if e.get("kind") == "thinking"]
+        self.assertTrue(any("kept reasoning" in n and "although thinking was switched off" in n
+                            and f"the next model of the chain ({SUPER})" in n for n in notes), notes)
+        self.assertEqual(res.raw["model_switches"][0]["from_model"], GLM)
+
+    def test_reasoning_with_thinking_off_and_no_other_model_fails_as_a_model_failure(self):
+        self.serve(Script([{"reasoning": "hmm " * 6000, "reasoning_chunks": 60, "finish_reason": "length"}]))
+        res, _sink = self.run_engine(self.engine(FakeJudge(), thinking=False, fallback_models=[]))
+        self.assertFalse(res.ok)
+        self.assertEqual(res.raw["failure_kind"], "model")
+        self.assertIn("kept reasoning", res.error)
+
+    def test_a_cut_off_thought_with_thinking_already_off_moves_to_the_next_model(self):
+        # not more tokens first: a model that thinks although asked not to does the same with more room
+        laguna = "poolside/laguna-xs-2.1"  # no thinking switch: the cut-off cannot be fixed by switching it off
+
+        def by_model(req):
+            if req["model"] == laguna:
+                return dict(self.CUT)
+            return answer(content="done") if tool_messages(req) else answer(editor("view", "existing.txt", "v1"))
+        mock_ = self.serve(Script([by_model]))
+        (self.ws / "index.html").write_text(INDEX_HTML, encoding="utf-8")
+        res, _sink = self.run_engine(self.engine(FakeJudge(), model=laguna, fallback_models=[GLM, SUPER]))
+        self.assertTrue(res.ok, res.error)
+        self.assertEqual([(r["model"], r["max_tokens"]) for r in mock_.requests][:2], [(laguna, 4096), (GLM, 4096)])
+        self.assertEqual(res.active_model, GLM)
+
     def test_a_refused_max_tokens_bump_names_the_cut_off_thought_not_the_context(self):
         too_long = {"status": 400, "error_body": {"error": {"message": "This model's maximum context length is 8192 "
                                                                        "tokens. However, you requested 8300 tokens"}}}
