@@ -202,9 +202,10 @@ change in one step, and a request whose endpoint changed meanwhile is not resent
 `agent_engine.model` comes first, then `agent_engine.fallback_models` in order (default
 `z-ai/glm-5.3` -> `nvidia/nemotron-3-ultra-550b-a55b` -> `nvidia/nemotron-3.5-super-vl-120b-a12b` ->
 `nvidia/nemotron-3-super-120b-a12b`). Nemotron-3-Ultra answered most turns of the live runs of
-2026-10-24 that passed the gate; Nemotron-3.5-Super-VL was chosen from that day's tool-call probe only
-(it answered a function call; no full run on it is measured); Nemotron-3-Super answered 404 ("not found
-for account") for the committed key that day and stays last for accounts that still have it. The next
+2026-10-24 that passed the gate; Nemotron-3.5-Super-VL was chosen from that day's tool-call probe (it
+answered a function call) and then answered 31 of 213 agent turns in one live run, among them about
+half of the FIX iteration that passed the gate (one run, not a benchmark); Nemotron-3-Super answered 404
+("not found for account") for the committed key that day and stays last for accounts that still have it. The next
 model is tried when
 
 * the endpoint says the model is gone (HTTP 404 or 410): it is skipped for good while the endpoint, the

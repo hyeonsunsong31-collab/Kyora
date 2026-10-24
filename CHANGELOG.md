@@ -25,11 +25,16 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   reasoning with no text and no tool call once the request is 90 s old.
 - **Default fallback models**: the agent engine `z-ai/glm-5.3` -> `nvidia/nemotron-3-ultra-550b-a55b`
   (it did most turns of the passing live runs) -> `nvidia/nemotron-3.5-super-vl-120b-a12b` (chosen from
-  the tool-call probe of the same day only) -> `nvidia/nemotron-3-super-120b-a12b`; the Nemotron role
+  the tool-call probe of the same day) -> `nvidia/nemotron-3-super-120b-a12b`; the Nemotron role
   `nvidia/nemotron-3.5-super-vl-120b-a12b` before `nvidia/nemotron-3-super-120b-a12b`; the Kimi role
   adds `nvidia/nemotron-3.5-super-vl-120b-a12b`. A model that answers 404 is skipped for good after one
   request, so accounts that still have Nemotron-3-Super lose nothing.
 - docs/agent-engine.md: the settings table now shows the real defaults (`thinking` off, the fallbacks).
+- **Measured after the change** (CI, commit e3cad31, another generated game): `complete`, gate 29/29
+  after two fix iterations in about 47 minutes, no model stopped for runaway reasoning; GLM-5.3 needed
+  25-34 s to start each answer and handed over at turn 3; Nemotron-3-Ultra answered 178 of 213 agent
+  turns and Nemotron-3.5-Super-VL 31 (about half of the FIX iteration that passed); BUILD and the first
+  FIX iteration used all 80 turns, and that FIX iteration changed no result. One run, not a benchmark.
 
 ### Changed - 2026-10-23: resilience and honest attribution
 

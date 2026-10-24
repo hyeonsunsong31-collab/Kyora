@@ -72,7 +72,8 @@ DEFAULT_SETTINGS: dict = {
         # measured live 2026-10-18 (CI, NVIDIA free tier): glm-5.3 without thinking built a game that passed the
         # gate 28/28 on its first iteration; with thinking it had not finished BUILD after 85 minutes. Fallbacks:
         # nemotron-3-ultra did most turns of the live runs of 2026-10-24 that passed the gate; nemotron-3.5-super-vl
-        # is chosen from that day's tool-call probe only (nemotron-3-super answered 404 for the committed key)
+        # was chosen from that day's tool-call probe and answered 31 of 213 turns of one of them (nemotron-3-super
+        # answered 404 for the committed key)
         "model": "z-ai/glm-5.3",
         "fallback_models": ["nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-3.5-super-vl-120b-a12b",
                             "nvidia/nemotron-3-super-120b-a12b"],

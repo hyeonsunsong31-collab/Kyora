@@ -177,7 +177,10 @@ of three routes, which differ in what changes:
    `engines.order = ["openai_agent"]`; its result is reported there. On 2026-10-24 (one run, not a
    benchmark) it ended `complete`: gate 32/32 (threshold 94 %) after two fix iterations, about 30 minutes,
    BUILD/FIX answered by GLM-5.3 and Nemotron-3-Ultra, the Kimi and Nemotron roles by their fallback
-   Nemotron-3-Ultra (one Kimi-role call by GLM-5.3), 73 judged tool calls allowed. Details:
+   Nemotron-3-Ultra (one Kimi-role call by GLM-5.3), 73 judged tool calls allowed. A second run that day,
+   after the sidelining change in the CHANGELOG (another generated game), also ended `complete`: gate
+   29/29 after two fix iterations, about 47 minutes; BUILD and the first FIX iteration used all 80 turns,
+   and Nemotron-3-Ultra answered 178 of the 213 agent turns, Nemotron-3.5-Super-VL 31, GLM-5.3 4. Details:
    [`docs/agent-engine.md`](docs/agent-engine.md).
 3. **A Kyora Hub on another machine.** Link a Hub (scan its QR code, or *Settings -> Hub*) and BUILD/FIX
    run on that machine's first available engine: its Claude Code login, its Anthropic API key or its
