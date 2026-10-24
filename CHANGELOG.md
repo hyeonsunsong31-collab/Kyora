@@ -51,6 +51,13 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
   highest-ranked usable engine is taken again; a hard kill keeps and announces only what the attempt
   changed. Process sessions are killed before their leader is reaped, so a reused PID is never signalled.
 - The metrics tile drops "fallback from X" when X answers again.
+- **A rate-limited model is skipped like an overloaded one.** NVIDIA's free tier limits each model
+  separately (live on 2026-10-24 Nemotron-3-Ultra answered HTTP 429 to the Kimi role's intake while GLM-5.3
+  answered), so a 429 without credit or billing wording now moves the role to its next fallback model for
+  120 s instead of failing the stage.
+- **Windows: writing a run file no longer fails when another thread has it open.** The live Windows runner
+  failed a run with "WinError 5: Access is denied" while replacing run.json; the replace is tried again for
+  about two seconds.
 - **A model that sends nothing in time counts as overloaded**, for every role and the agent engine: the next
   model of the chain answers (live on 2026-10-23 GLM-5.3 needed 26 s for a 1-token chat, and the agent
   self-check reported the endpoint "unreachable" after one read timeout). The agent probe gives each model

@@ -133,6 +133,8 @@ def _body_error(err: Any) -> tuple[str, int | None]:
 
 # Provider-side, temporary: the model may answer again shortly (another model may answer now).
 TEMPORARY_STATUSES = (500, 502, 503, 504)
+_CREDIT_WORDING_RE = re.compile(r"insufficient.?(?:balance|credit|funds|quota)|out of credits|payment required|billing|"
+                                r"credit balance", re.IGNORECASE)
 _TEMPORARY_RE = re.compile(r"overload|temporarily unavailable|service unavailable", re.IGNORECASE)
 
 
@@ -152,15 +154,19 @@ def _retryable_body_error(exc: NIMBodyError) -> bool:
 def is_temporary_failure(exc: BaseException) -> bool:
     """True when ``exc`` is a temporary failure on the provider side (after the client's own retries).
 
-    HTTP 500/502/503/504, or an error without a 4xx status whose message or body says overloaded /
-    temporarily unavailable / Service Unavailable (NVIDIA's free tier answers "Service temporarily
-    overloaded", also inside a 200 stream). Never for an unreachable endpoint, a cancellation, a
-    refused key (401/403) or a gone model (404/410): another model cannot fix those.
+    HTTP 500/502/503/504, an HTTP 429 rate limit without credit or billing wording (NVIDIA's free tier
+    limits each model separately: live on 2026-10-23 Nemotron-3-Ultra answered 429 while GLM-5.3
+    answered), or an error without a 4xx status whose message or body says overloaded / temporarily
+    unavailable / Service Unavailable (NVIDIA's free tier answers "Service temporarily overloaded",
+    also inside a 200 stream). Never for an unreachable endpoint, a cancellation, a refused key
+    (401/403) or a gone model (404/410): another model cannot fix those.
     """
     if not isinstance(exc, NIMError) or isinstance(exc, (NIMUnreachable, NIMCancelled)):
         return False
     if exc.status in TEMPORARY_STATUSES:
         return True
+    if exc.status == 429:
+        return not _CREDIT_WORDING_RE.search(_error_text(exc))
     if exc.status is not None and exc.status < 500:
         return False
     return bool(_TEMPORARY_RE.search(_error_text(exc)))
@@ -1056,6 +1062,8 @@ def explain_http_failure(status: int | None, body: str | None, model: str, *, fa
     if status == 402:
         return "the endpoint asks for payment: the account has no credits left for this model"
     if status == 429:
+        if fallback:
+            return "rate limited (HTTP 429): Kyora uses the next fallback model; it returns to this model after a short cooldown"
         return "rate limited or out of credits: wait and retry, or check the account's limits"
     if status is None or status >= 500:
         tail = _temporary_tail(fallback, attempts)

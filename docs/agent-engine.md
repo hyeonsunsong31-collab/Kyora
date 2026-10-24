@@ -196,7 +196,8 @@ model is tried when
   model and the fallback list stay the same (the chain is kept across runs; it starts over when every
   model was found gone, or after a run failed because no model could serve);
 * it stays temporarily unavailable after the client's retries (HTTP 500/502/503/504 or overload wording),
-  or sends nothing within the request's time limit (slow or overloaded; live on 2026-10-23 GLM-5.3 took
+  is rate limited (HTTP 429 without credit or billing wording: NVIDIA's free tier limits each model
+  separately), or sends nothing within the request's time limit (slow or overloaded; live on 2026-10-23 GLM-5.3 took
   26 s for a 1-token chat): it cools down for 120 s, moves behind the healthy models and returns to its
   place afterwards;
 * it refuses function tools (HTTP 400/422 that names tools or functions) before it has answered in this

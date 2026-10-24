@@ -212,6 +212,26 @@ class UtilTests(unittest.TestCase):
         self.assertTrue(new_id("r").startswith("r_"))
         self.assertEqual(slug("Sky Runner!! v2"), "sky-runner-v2")
 
+    def test_a_replace_windows_refuses_for_a_moment_is_tried_again(self):
+        # live on the Windows runner (2026-10-24): WinError 5 while another thread had run.json open
+        from unittest import mock
+        import kyora.util.fs as fs
+        real, refusals = os.replace, [PermissionError(13, "Access is denied")] * 2
+
+        def flaky(src, dst):
+            if refusals:
+                raise refusals.pop()
+            return real(src, dst)
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(fs, "_WINDOWS", True), \
+                mock.patch.object(fs, "_REPLACE_RETRY_S", (0.0, 0.0, 0.0)), mock.patch.object(fs.os, "replace", flaky):
+            fs.atomic_write_json(Path(d) / "run.json", {"state": "complete"})
+            self.assertEqual(read_json(Path(d) / "run.json"), {"state": "complete"})
+            self.assertEqual([p.name for p in Path(d).iterdir()], ["run.json"], "no temp file left")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(fs, "_WINDOWS", False), \
+                mock.patch.object(fs.os, "replace", lambda s, t: (_ for _ in ()).throw(PermissionError(13, "x"))):
+            with self.assertRaises(PermissionError):  # elsewhere a refusal is real: raised at once
+                fs.atomic_write_json(Path(d) / "run.json", {})
+
 
 if __name__ == "__main__":
     unittest.main()

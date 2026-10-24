@@ -8,8 +8,25 @@ import shutil
 import stat
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
+
+# Windows refuses to replace a file another thread has open (a reader of run.json) or is replacing at the same
+# moment (WinError 5 / 32); both last milliseconds, so the replace is tried again for about two seconds
+_WINDOWS = os.name == "nt"
+_REPLACE_RETRY_S = (0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8)
+
+
+def _replace(src: str, dst: Path) -> None:
+    for delay in (*_REPLACE_RETRY_S, None):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if not _WINDOWS or delay is None:
+                raise
+            time.sleep(delay)
 
 
 def kyora_home() -> Path:
@@ -27,7 +44,7 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
-        os.replace(tmp, path)
+        _replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             try:

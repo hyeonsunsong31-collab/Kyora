@@ -358,7 +358,7 @@ class FallbackRuleTests(unittest.TestCase):
     def test_what_another_model_cannot_fix_never_changes_the_model(self):
         cases = [NIMError("HTTP 401", status=401, body="Service temporarily unavailable"),
                  NIMError("HTTP 403", status=403, body='{"detail": "Authorization failed"}'),
-                 NIMError("HTTP 429", status=429, body="overloaded"), NIMError("HTTP 400", status=400),
+                 NIMError("HTTP 429", status=429, body="insufficient credit balance"), NIMError("HTTP 400", status=400),
                  NIMError("HTTP 501", status=501), NIMUnreachable("host unreachable: Service Unavailable"),
                  NIMCancelled()]
         for exc in cases:
@@ -369,6 +369,17 @@ class FallbackRuleTests(unittest.TestCase):
                 self.assertEqual(self.calls, [ULTRA])
                 self.assertEqual((self.chain.busy(), self.chain.gone()), ({}, {}))
         self.assertEqual(self.events("model.fallback"), [])
+
+    def test_a_rate_limited_model_is_skipped_like_an_overloaded_one(self):
+        # NVIDIA's free tier limits each model: live 2026-10-23 Nemotron-3-Ultra answered 429 while GLM-5.3 answered
+        limited = NIMError("HTTP 429", status=429, body='{"status":429,"title":"Too Many Requests"}')
+        self.assertEqual(self.run_chain({ULTRA: limited}), f"answer from {GLM}")
+        [fb] = self.events("model.fallback")
+        self.assertEqual((fb["status"], fb["temporary"]), (429, True))
+        self.assertIn("next fallback model", fb["reason"])
+        self.assertIn(ULTRA, self.chain.busy())
+        self.clock.advance(BUSY_COOLDOWN_S)
+        self.assertEqual(self.chain.candidates()[0], ULTRA, "it returns after the cooldown")
 
     def test_gone_is_unchanged_and_says_temporary_false(self):
         gone = NIMError("HTTP 410", status=410, body="reached its end of life on 2026-10-15T08:00:00Z")
