@@ -181,6 +181,18 @@ jobs:
             grep -E "^(FAIL|ERROR):" unittest.log || true; tail -40 unittest.log
             sh launchers/kyora-ish.sh version
             python3 -m kyora selfcheck --no-probe || true
+            # the launcher as on the phone: serve, then load the page the way Safari would (http://127.0.0.1)
+            PYTHONUNBUFFERED=1 KYORA_HOME=/tmp/kyora-serve sh launchers/kyora-ish.sh > serve.log 2>&1 &
+            pid=$!
+            i=0
+            until wget -q -O /dev/null http://127.0.0.1:8765/ 2>/dev/null; do
+              i=$((i + 1)); if [ "$i" -ge 180 ]; then cat serve.log; exit 1; fi; sleep 1
+            done
+            wget -q -O - http://127.0.0.1:8765/api/status | head -c 200; echo
+            kill "$pid"; wait "$pid" || true
+            cat serve.log
+            grep -q "iSH: in Safari, open http://127.0.0.1:8765" serve.log
+            grep -q "does not exist" serve.log  # no /dev/location in a container: the note says so
             exit "$rc"
           '
 

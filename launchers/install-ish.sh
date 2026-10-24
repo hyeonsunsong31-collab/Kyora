@@ -43,11 +43,13 @@ Notes for iSH (iOS):
     go through a Kyora Hub: on your PC run "kyora.ps1 hub" (or "kyora hub"), then scan the QR code
     it prints with the iPhone camera / open the link in Safari to link this phone. Without a Hub,
     BUILD runs are reported as BLOCKED (never faked).
-  * Keep iSH in the foreground while Kyora works: iOS suspends background apps and the local
-    server stops answering until you switch back.
+  * iOS pauses iSH a few seconds after Safari comes to the front, and a paused iSH cannot answer
+    Safari. Kyora keeps iSH running on its own while it serves: iOS asks once for location access
+    for iSH - choose "Allow While Using App" (Kyora keeps no location; it only holds iSH's location
+    stream open). Open http://127.0.0.1:8765 in Safari once Kyora prints "Open:".
   * Browser tests run in Safari through Kyora's test harness page; the UI opens it for you.
 EOF
 echo ""
 echo "Next steps:"
 echo "    sh $script_dir/kyora-ish.sh selfcheck"
-echo "    sh $script_dir/kyora-ish.sh            (then open Safari at http://localhost:8765)"
+echo "    sh $script_dir/kyora-ish.sh            (then open http://127.0.0.1:8765 in Safari)"

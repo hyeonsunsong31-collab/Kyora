@@ -132,8 +132,33 @@ Install iSH from the App Store, copy or `git clone` the Kyora folder into it, th
 ```sh
 sh launchers/install-ish.sh               # apk update; apk add python3 git
 sh launchers/kyora-ish.sh selfcheck
-sh launchers/kyora-ish.sh                 # prints "Open Safari at http://localhost:8765"
+sh launchers/kyora-ish.sh                 # wait for "Open: http://127.0.0.1:8765", open it in Safari
 ```
+
+### Reaching Kyora from Safari
+
+iOS pauses an app a few seconds after another app comes to the front. While iSH is paused, Safari's
+connection to `http://127.0.0.1:8765` is accepted by iOS but never answered, so the page does not load;
+and iOS may take the listening socket of a paused app away, after which nothing listens on the port
+even once iSH runs again (Apple TN2277, "Networking and Multitasking"). On iSH, `kyora serve` therefore:
+
+* **keeps iSH running while Safari is in front** by holding iSH's location stream (`/dev/location`)
+  open, the method the iSH wiki documents for running in the background. iOS asks once for location
+  access for iSH: choose *Allow While Using App* (iOS then shows the location indicator while Kyora
+  runs). Kyora keeps no location: it reads the stream and discards it, counting only the updates; the
+  stream closes when Kyora stops. `KYORA_ISH_BACKGROUND=0` turns this off. If no location update has
+  arrived after 45 s, Kyora prints what a refused permission means (iSH reports no error for it, and
+  indoors the first update can also take a while);
+* **opens its port again** when iOS took it away: every 3 s it connects to its own listeners, and one
+  that fails twice in a row is closed and opened again on the same port (log line "listener on port
+  ... listens again"); reload the page after that.
+
+Wait for Kyora's `Open:` line before you switch to Safari (the first start under iSH takes a while), and
+type the whole address, `http://127.0.0.1:8765`. Without location access, an iPad can show iSH and
+Safari side by side (Split View), which keeps both in front; on an iPhone the page then loads only for a
+few seconds after you switch. The CI job runs the launcher's `serve` on 32-bit Alpine and loads the page
+over HTTP; it cannot run iOS itself, so the pause and the location stream are covered by unit tests (a
+FIFO stands in for `/dev/location`, a closed listening socket for the reclaimed one).
 
 * iSH emulates a 32-bit x86 CPU in software: everything works but slowly; the first start takes a
   while. Kyora Bench is not recommended there.
@@ -148,8 +173,6 @@ sh launchers/kyora-ish.sh                 # prints "Open Safari at http://localh
 * The CI job "iSH userland (32-bit Alpine, musl, real apk)" runs `install-ish.sh`, the unit tests (the
   agent engine's included, against the mock endpoint) and the launcher on 32-bit Alpine; it is not the
   iSH app itself.
-* Keep iSH in the foreground while Kyora works: iOS suspends background apps, and the local server
-  stops answering until you switch back.
 * Browser acceptance tests run in Safari through Kyora's harness page, which the UI opens for you.
 * If Alpine's `python3` is older than 3.10, point `/etc/apk/repositories` at a newer Alpine release
   and run `apk update && apk upgrade`; `install-ish.sh` checks the version.

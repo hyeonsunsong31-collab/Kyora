@@ -4,6 +4,22 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 
 ## Unreleased
 
+### Fixed - 2026-10-24: Safari on iPhone/iPad reaches Kyora running in iSH
+
+- **Kyora keeps answering while Safari is in front.** iOS pauses an app a few seconds after another app
+  comes to the front, so Safari's request to iSH was accepted but never answered, and the launcher's
+  advice to keep iSH in the foreground cannot be followed on an iPhone while Safari is open. On iSH,
+  `kyora serve` now holds iSH's location stream (`/dev/location`) open, iSH's documented way to keep
+  running in the background: iOS asks once for location access for iSH (*Allow While Using App*); Kyora
+  discards the stream and keeps no location. `KYORA_ISH_BACKGROUND=0` turns it off; without access
+  Kyora prints what that means and the Split View alternative on an iPad.
+- **A listening socket that iOS took away is opened again.** iOS may reclaim the listening socket of a
+  paused app, after which nothing listens even once the app runs again (Apple TN2277). On iSH the server
+  connects to its own listeners every 3 s and opens one that fails twice again on the same port.
+- The launcher no longer prints the address before Kyora listens and names `http://127.0.0.1:8765`
+  (with `http://`) instead of `localhost`; `install-ish.sh`, the README and docs/platforms.md say the
+  same. The iSH CI job now starts the launcher's `serve` on 32-bit Alpine and loads the page.
+
 ### Changed - 2026-10-24: a stopped model no longer stands in for a rate-limited one
 
 - **Measured live first** (CI, NVIDIA free tier, commit e2643be): the pipeline without Claude ended

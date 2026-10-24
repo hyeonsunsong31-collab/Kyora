@@ -44,6 +44,9 @@ from .util.sse import encode_event, keepalive
 log = logging.getLogger("kyora.server")
 IS_WINDOWS = os.name == "nt"
 MAX_BODY = 256 * 1024 * 1024
+# A listener that misses this many self-probes in a row is opened again on its port (see KyoraServer watch_s)
+WATCH_MISSES = 2
+WATCH_PROBE_TIMEOUT_S = 2.0
 LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 LOOPBACK_NAMES = {"localhost", "127.0.0.1", "::1"}  # Host names that always mean this machine
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -525,13 +528,24 @@ class KyoraServer:
     the app. ``preview_port`` None reads ``app.config.server.preview_port``; None there means
     main port + 1 (an ephemeral port when that one is busy or the main port is 0). The app's
     ``preview_url`` is set to the listener's loopback base so the main listener can redirect.
+
+    ``watch_s`` (used on iSH) connects to each listener every ``watch_s`` seconds; one that misses
+    :data:`WATCH_MISSES` probes in a row is closed and opened again on the same port. iOS may
+    reclaim the listening socket of a suspended app, after which the app is no longer listening,
+    even once it runs again, and is not necessarily told (Apple TN2277).
     """
 
     def __init__(self, app, host: str, port: int, router: Router | None = None, *,
-                 preview_port: int | None = None, preview_router: Router | None = None):
+                 preview_port: int | None = None, preview_router: Router | None = None,
+                 watch_s: float | None = None):
         self.app = app
         self.host = host
         self.port = port
+        self.watch_s = watch_s
+        self.relistens = 0
+        self._stop = threading.Event()
+        self._relisten_lock = threading.Lock()
+        self._watch: threading.Thread | None = None
         self.router = router or Router()
         self.httpd = _HTTPServer((host, port), _bound_handler(app, self.router, "SAMEORIGIN"))
         self.port = self.httpd.server_address[1]
@@ -582,34 +596,97 @@ class KyoraServer:
         """Loopback base of the preview listener ("" without one)."""
         return self._base(self.host, self.preview_port) if self.preview_httpd is not None else ""
 
+    @staticmethod
+    def _loop(httpd: ThreadingHTTPServer) -> None:
+        try:
+            httpd.serve_forever(poll_interval=0.5)
+        except OSError as exc:  # the listening socket went away under the loop; the watch opens it again
+            log.warning("listener on port %s stopped: %s", httpd.server_address[1], exc)
+
     def _start_thread(self, httpd: ThreadingHTTPServer, name: str) -> None:
         self._serving.add(id(httpd))
-        t = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.5}, name=name, daemon=True)
+        t = threading.Thread(target=self._loop, args=(httpd,), name=name, daemon=True)
         t.start()
         self._threads.append(t)
 
+    def _listeners(self) -> list[tuple[ThreadingHTTPServer, str]]:
+        return [(h, n) for h, n in ((self.httpd, "kyora-server"), (self.preview_httpd, "kyora-preview"))
+                if h is not None]
+
     def start(self) -> None:
-        if self.preview_httpd is not None:
-            self._start_thread(self.preview_httpd, "kyora-preview")
-        self._start_thread(self.httpd, "kyora-server")
+        for httpd, name in reversed(self._listeners()):  # the preview listener first, as before
+            if id(httpd) not in self._serving:
+                self._start_thread(httpd, name)
+        if self.watch_s and self._watch is None:
+            self._watch = threading.Thread(target=self._watch_loop, name="kyora-listener-watch", daemon=True)
+            self._watch.start()
 
     def serve_forever(self) -> None:
-        if self.preview_httpd is not None:
-            self._start_thread(self.preview_httpd, "kyora-preview")
-        self._serving.add(id(self.httpd))
-        self.httpd.serve_forever(poll_interval=0.5)
+        """Serve until :meth:`shutdown` (from another thread) or KeyboardInterrupt in the calling thread."""
+        self.start()
+        while not self._stop.wait(0.5):
+            pass
+
+    @staticmethod
+    def _answers(httpd: ThreadingHTTPServer) -> bool:
+        host, port = httpd.server_address[:2]
+        probe = {"0.0.0.0": "127.0.0.1", "": "127.0.0.1", "::": "::1"}.get(str(host), str(host))
+        try:
+            with socket.create_connection((probe, port), timeout=WATCH_PROBE_TIMEOUT_S):
+                return True
+        except OSError:
+            return False
+
+    def _watch_loop(self) -> None:
+        misses: dict[int, int] = {}
+        while not self._stop.wait(float(self.watch_s)):
+            for httpd, name in self._listeners():
+                if self._answers(httpd):
+                    misses[id(httpd)] = 0
+                    continue
+                misses[id(httpd)] = misses.get(id(httpd), 0) + 1
+                if misses[id(httpd)] >= WATCH_MISSES and self._relisten(httpd, name):
+                    misses[id(httpd)] = 0
+
+    def _relisten(self, httpd: ThreadingHTTPServer, name: str) -> bool:
+        """Close ``httpd``'s listening socket and listen again on the same address; False when that failed."""
+        with self._relisten_lock:
+            if self._stop.is_set():
+                return False
+            port = httpd.server_address[1]
+            if id(httpd) in self._serving:
+                httpd.shutdown()  # ends its loop (it polls every 0.5 s) before the socket is replaced
+                self._serving.discard(id(httpd))
+            try:
+                httpd.socket.close()
+            except OSError:
+                pass
+            httpd.socket = socket.socket(httpd.address_family, httpd.socket_type)
+            try:
+                httpd.server_bind()
+                httpd.server_activate()
+            except OSError as exc:
+                log.warning("listener on port %s could not listen again (%s); trying again", port, exc)
+                return False
+            self._start_thread(httpd, name)
+            self.relistens += 1
+        log.warning("listener on port %s had stopped answering (iOS reclaims the listening socket of a paused "
+                    "app); it listens again", port)
+        return True
 
     def shutdown(self) -> None:
-        for httpd in (self.httpd, self.preview_httpd):
-            if httpd is None:
-                continue
-            try:
-                if id(httpd) in self._serving:  # shutdown() of a never-started loop would wait forever
-                    httpd.shutdown()
-                httpd.server_close()
-            except Exception:
-                pass
-        self._serving.clear()
+        self._stop.set()
+        with self._relisten_lock:
+            for httpd, _name in self._listeners():
+                try:
+                    if id(httpd) in self._serving:  # shutdown() of a never-started loop would wait forever
+                        httpd.shutdown()
+                    httpd.server_close()
+                except Exception:
+                    pass
+            self._serving.clear()
+        if self._watch is not None and self._watch is not threading.current_thread():
+            self._watch.join(timeout=WATCH_PROBE_TIMEOUT_S + 1.0)
 
 
 # ----------------------------------------------------------------------------- SSE stream helper

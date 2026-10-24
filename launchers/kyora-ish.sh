@@ -3,8 +3,14 @@
 #
 # Usage:  sh launchers/kyora-ish.sh [serve | selfcheck | bench | version] [args...]
 #
-#   (no command)  serve: start the local server; then open Safari at http://localhost:8765
+#   (no command)  serve: start the local server; when it prints "Open:", open that address
+#                 (http://127.0.0.1:8765) in Safari
 #   other args    passed to Kyora unchanged, e.g.  sh launchers/kyora-ish.sh serve --port 9000
+#
+# iOS pauses iSH a few seconds after Safari comes to the front, and a paused iSH cannot answer
+# Safari. Kyora therefore keeps iSH running in the background on its own: it holds iSH's location
+# stream open (iOS asks once for location access; Kyora discards the locations) and opens its
+# port again if iOS took it away. KYORA_ISH_BACKGROUND=0 turns the location stream off.
 #
 # iSH cannot be a Hub (no Claude Code on iOS); link this phone to a PC Hub instead.
 # Release layout: <root>/kyora.pyz -> "python3 <root>/kyora.pyz serve"; a source checkout runs
@@ -59,8 +65,8 @@ else
 fi
 
 if [ "$cmd" = serve ]; then
-    echo "Open Safari at http://localhost:$port"
-    echo "(keep iSH in the foreground; iOS pauses background apps)"
+    echo "Starting Kyora (under iSH the first start can take a minute)."
+    echo "When it prints \"Open: http://127.0.0.1:$port\", type that address into Safari."
 fi
 
 exec python3 "$@"

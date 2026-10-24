@@ -112,8 +112,13 @@ engine when the NVIDIA endpoint is reachable from the phone, or through a linked
 
 ```sh
 sh launchers/install-ish.sh             # python3, git
-sh launchers/kyora-ish.sh               # "Open Safari at http://localhost:8765"
+sh launchers/kyora-ish.sh               # wait for "Open: http://127.0.0.1:8765", then open it in Safari
 ```
+
+On iSH, Kyora keeps answering while Safari is in front: iOS pauses an app a few seconds after another
+app comes to the front, so Kyora holds iSH's location stream open (iOS asks once for location access
+for iSH: choose *Allow While Using App*; Kyora keeps no location) and opens its port again if iOS took
+it away. Details and the opt-out: [`docs/platforms.md`](docs/platforms.md#ios--ipados-ish).
 
 **Anywhere with Python 3.10+**: `python3 kyora.pyz serve --open` (or `python3 -m kyora serve --open`
 in a source checkout).
@@ -447,8 +452,9 @@ decides who counts as "the same machine" carefully.
 | Kyora agent engine: "model did not call the tool" | The full self-check's tool-call request was answered without a tool call. Choose another `agent_engine.model` or add fallback models that support function calling. |
 | Kimi K3 **400** mentioning `reasoning_effort` | The gateway rejected the top-level field. Set Settings -> `kimi.effort_field` to `extra_body` (the effort is then sent as `chat_template_kwargs.reasoning_effort`) and re-run self-check, which names the field it sent and shows the provider's error body. "Accepted" means the gateway answered 200 to that body; a 1-token probe cannot show that the effort was applied. The `extra_body` mode is best-effort: Kimi K3's documented control is the top-level `reasoning_effort`, its template is not documented to read the keyword, so the model may ignore it and run at its default effort (self-check and the `model.request` / `model.metrics` events say so). |
 | `judge.unavailable` events | The judge could not be reached or the Kimi role failed; the tool ran (fail-open) and the run records it. Check the NVIDIA key and network. |
-| Tests wait for the browser / run BLOCKED after `quality.browser_wait_s` | The harness page needs an open browser tab on a device that can reach Kyora. Keep the Kyora tab open (on iOS keep Safari and iSH in the foreground). |
-| iSH is very slow | Expected: iSH emulates x86 in software. Let the first start finish, keep iSH in the foreground, expect a local BUILD with the Kyora agent engine to be slow too (or build through a Hub), skip Bench there. |
+| Tests wait for the browser / run BLOCKED after `quality.browser_wait_s` | The harness page needs an open browser tab on a device that can reach Kyora. Keep the Kyora tab open in Safari. |
+| iSH: Safari does not load `http://127.0.0.1:8765` | iOS paused iSH (it pauses an app a few seconds after Safari comes to the front) and a paused iSH cannot answer. Kyora prevents that by holding iSH's location stream open: allow location access for iSH (*Allow While Using App*; Settings > Privacy & Security > Location Services > iSH if you refused) and restart Kyora. Wait for Kyora's `Open:` line before opening Safari, and type the whole address with `http://`. If iOS took the port away while iSH was paused, Kyora listens again within about ten seconds of running again; reload the page. Without location access, use Split View on an iPad (iSH and Safari side by side). |
+| iSH is very slow | Expected: iSH emulates x86 in software. Let the first start finish, expect a local BUILD with the Kyora agent engine to be slow too (or build through a Hub), skip Bench there. |
 | Phone cannot open the LAN link | Run `kyora hub` (binds 0.0.0.0), enable `hub.expose_ui`, allow Python through the PC firewall on private networks (ports 8765 and 8766), use the same Wi-Fi. |
 | Preview stays blank on another device | Games come from the preview port (8766 by default, `preview_port` in `/api/status`). Let it through the firewall too, or set `server.preview_port`. |
 | `403 host not allowed: <name>` | Kyora was reached by a name it does not know as its own (DNS rebinding protection). Use the IP address or `localhost`, or add the name to `server.allowed_hosts` in `settings.json` and restart. |

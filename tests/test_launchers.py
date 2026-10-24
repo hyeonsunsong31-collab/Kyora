@@ -144,10 +144,12 @@ class LauncherContentTests(unittest.TestCase):
 
     def test_ish_requirements(self):
         inst = self.read("install-ish.sh")
-        for needle in ("apk update", "apk add python3 git", "Claude Code", "foreground", "QR", "Safari"):
+        for needle in ("apk update", "apk add python3 git", "Claude Code", "Allow While Using App", "QR",
+                       "http://127.0.0.1:8765 in Safari"):
             self.assertIn(needle, inst)
         run = self.read("kyora-ish.sh")
-        self.assertIn('echo "Open Safari at http://localhost:$port"', run)
+        self.assertIn('Open: http://127.0.0.1:$port', run)
+        self.assertIn("KYORA_ISH_BACKGROUND=0", run)
         self.assertIn("port=8765", run)
         self.assertIn('exec python3 "$@"', run)
 
@@ -276,12 +278,12 @@ class ShellLauncherRunTests(unittest.TestCase):
         self.assertEqual(_stub_argv(r.stdout.decode()), ["hub", "--port", "9123", "--x"])
         r = _run(["sh", str(root / "launchers" / "kyora-ish.sh")], env=self.env, cwd=str(self.tmp))
         out = r.stdout.decode()
-        self.assertIn("Open Safari at http://localhost:8765", out)
+        self.assertIn('When it prints "Open: http://127.0.0.1:8765", type that address into Safari.', out)
         self.assertEqual(_stub_argv(out), ["serve"])
         r = _run(["sh", str(root / "launchers" / "kyora-ish.sh"), "serve", "--port=9001", "--exit3"],
                  env=self.env, cwd=str(self.tmp))
         self.assertEqual(r.returncode, 3, "exit code of Kyora must be propagated")
-        self.assertIn("Open Safari at http://localhost:9001", r.stdout.decode())
+        self.assertIn("Open: http://127.0.0.1:9001", r.stdout.decode())
 
     def test_unknown_command_and_ish_hub(self):
         r = _run(["sh", str(LAUNCHERS / "kyora-termux.sh"), "bogus"], env=self.env)
@@ -314,7 +316,7 @@ class ShellLauncherRunTests(unittest.TestCase):
         r = _run(["sh", str(LAUNCHERS / "install-ish.sh")], env=env)
         self.assertEqual(r.returncode, 0, r.stdout.decode() + r.stderr.decode())
         self.assertIn("apk add python3 git", log.read_text(encoding="utf-8"))
-        self.assertIn("foreground", r.stdout.decode())
+        self.assertIn("Allow While Using App", r.stdout.decode())
 
 
 @unittest.skipIf(shutil.which("pwsh") is None, "pwsh not installed")

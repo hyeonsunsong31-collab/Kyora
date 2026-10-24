@@ -13,6 +13,9 @@ from pathlib import Path
 
 from . import __version__
 
+# seconds between the iSH listener probes (iOS may reclaim the listening socket of a paused app)
+ISH_LISTENER_WATCH_S = 3.0
+
 
 def _build_app(args, hub_mode: bool = False):
     from .app import App
@@ -43,10 +46,12 @@ def cmd_serve(args, hub_mode: bool = False) -> int:
         return 2
     host = args.host or ("0.0.0.0" if hub_mode else app.config.server.host)
     port = args.port if args.port is not None else app.config.server.port
+    on_ish = (getattr(app, "platform", None) or {}).get("kind") == "ish"
     router = Router()
     app.register_routes(router)
     try:
-        server = KyoraServer(app, host, port, router, preview_port=getattr(args, "preview_port", None))
+        server = KyoraServer(app, host, port, router, preview_port=getattr(args, "preview_port", None),
+                             watch_s=ISH_LISTENER_WATCH_S if on_ish else None)
     except OSError as exc:
         # Before app.start(): a second Kyora must not touch the first one's runs.
         print(f"Kyora cannot listen on {host}:{port} (or its preview port): {exc}\n"
@@ -76,6 +81,7 @@ def cmd_serve(args, hub_mode: bool = False) -> int:
             print(f"(QR unavailable: {exc})")
     if app.missing:
         print("Unavailable components: " + ", ".join(f"{k} ({v})" for k, v in app.missing.items()))
+    keeper = _ish_background(server.url) if on_ish else None
     if getattr(args, "open", False):
         threading.Timer(0.8, lambda: webbrowser.open(server.url)).start()
     try:
@@ -83,10 +89,31 @@ def cmd_serve(args, hub_mode: bool = False) -> int:
     except KeyboardInterrupt:
         print("\nStopping...")
     finally:
+        if keeper is not None:
+            keeper.stop()
         server.shutdown()
         app.stop()
         lock.release()
     return 0
+
+
+def _ish_background(url: str):
+    """On iSH: keep iSH running while Safari is in front (unless turned off) and say what to open."""
+    from .util import ish
+    keeper = None if ish.background_disabled() else ish.BackgroundKeeper(ish.LOCATION_DEVICE)
+    if keeper is not None:
+        keeper.start()
+    for line in ish.serve_notes(url, keeper):
+        print(line, flush=True)
+    if keeper is not None and keeper.state == "waiting":
+        def hint() -> None:
+            note = ish.no_update_note(keeper)
+            if note:
+                print(note, flush=True)
+        timer = threading.Timer(ish.NO_UPDATE_HINT_S, hint)
+        timer.daemon = True
+        timer.start()
+    return keeper
 
 
 def cmd_selfcheck(args) -> int:
