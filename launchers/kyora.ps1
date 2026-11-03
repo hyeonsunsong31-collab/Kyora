@@ -8,8 +8,8 @@
       serve       run the local Kyora server and open the UI in your browser (default command;
                   add --no-open to skip the browser)
       hub         serve and expose the code engine to phones/tablets on your LAN (prints link + QR)
-      selfcheck   check Nemotron, Kimi K3, Claude Code, Node, Git and Tokkio reachability
-      bench       Kyora Bench (real pipeline runs; costs NVIDIA tokens and Claude usage)
+      selfcheck   check Nemotron, Kimi K3.1 Pro, Claude Code, Node, Git and Tokkio reachability
+      bench       Kyora Bench (real pipeline runs; costs NVIDIA and OpenRouter tokens and Claude usage)
       version     print the Kyora version
 
     Every other argument is passed to Kyora unchanged, e.g.  kyora.ps1 serve --port 9000

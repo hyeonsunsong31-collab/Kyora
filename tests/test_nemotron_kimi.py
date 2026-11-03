@@ -310,7 +310,7 @@ class KimiCoreTests(_MockCase):
         self.assertEqual((req["temperature"], req["top_p"]), (1.0, 1.0))
 
     def test_effort_events_never_claim_extra_body_effort_applied(self):
-        # Kimi K3's template is not documented to read chat_template_kwargs.reasoning_effort: model.request /
+        # Kimi's template is not documented to read chat_template_kwargs.reasoning_effort: model.request /
         # model.metrics name the field sent and mark the extra_body mode best-effort, never "applied".
         self.handler = lambda req: {"content": "ok"}
         conv = KimiConversation()

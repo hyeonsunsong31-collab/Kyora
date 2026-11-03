@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""Live check of every NVIDIA-hosted model role against the real API (no mocks).
+"""Live check of the Nemotron and Kimi model roles against the real APIs (no mocks).
 
-Runs with the keys in config/keys.json (or the config dir given with --config) and calls,
-exactly as the pipeline does:
+Runs with the keys in config/keys.json, config/keys.local.json and the environment
+(OPENROUTER_API_KEY for the Kimi role on OpenRouter, NVIDIA_API_KEY) - or the config dir
+given with --config - and calls, exactly as the pipeline does:
 
-  1. self-check model probes (Nemotron-3-Ultra and Kimi K3: /models, 1-token chat, latency)
-  2. Kimi K3 intake       (game request -> intake record)
-  3. Kimi K3 plan         (intake -> files, tasks, acceptance tests)
+  1. self-check model probes (Nemotron-3-Ultra and the Kimi role: /models, 1-token chat, latency)
+  2. Kimi-role intake     (game request -> intake record)
+  3. Kimi-role plan       (intake -> files, tasks, acceptance tests)
   4. Nemotron design doc  (GDD prose, narrative, dialogue; from a fixed intake/plan if Kimi failed)
   5. Nemotron UI spec     (tokens, screens, copy)
-  6. Kimi K3 judge        (one dangerous and one ordinary tool call)
-  7. Kimi K3 review       (a gate that failed)
+  6. Kimi-role judge      (one dangerous and one ordinary tool call)
+  7. Kimi-role review     (a gate that failed)
   8. Nemotron narration   (one presenter line)
+
+The Kimi role is Kimi K3.1 Pro on OpenRouter. Without an OpenRouter key (or with one that is
+refused or out of credits) its fallback models answer on NVIDIA's endpoint; the first lines say
+which, and every step's metrics name the model that answered.
 
 Each step prints what came back and its measured metrics; nothing is invented when a call
 fails - the step is reported as failed with the error. Exit code 0 only when every step
@@ -102,6 +107,12 @@ def main(argv=None) -> int:
     if app.kimi is None or app.nemotron is None:
         print("Kimi/Nemotron unavailable: " + json.dumps(app.missing))
         return 2
+    from kyora.models.nim_client import url_host
+    kc = app.config.nvidia.kimi
+    report["kimi_role"] = {"model": kc.model, "endpoint": url_host(kc.base_url), "key_set": bool(kc.api_key),
+                           "fallback_endpoint": url_host(kc.fallback_base_url), "fallback_models": kc.fallback_models}
+    print(f"Kimi role: {kc.model} at {url_host(kc.base_url)} (key {'set' if kc.api_key else 'not set'}); "
+          f"fallback models at {url_host(kc.fallback_base_url)}: {', '.join(kc.fallback_models) or 'none'}")
 
     def probes():
         rep = app.selfcheck.run(probe_models=True, probe_claude=False)
@@ -119,11 +130,11 @@ def main(argv=None) -> int:
         return items
 
     step("self-check model probes", probes)
-    intake = step("Kimi K3 intake", lambda: app.kimi.intake(PROMPT, None),
+    intake = step("Kimi-role intake", lambda: app.kimi.intake(PROMPT, None),
                   lambda: app.kimi.last_metrics("intake"))
     plan = None
     if intake:
-        plan = step("Kimi K3 plan", lambda: app.kimi.plan(intake, node_available=False),
+        plan = step("Kimi-role plan", lambda: app.kimi.plan(intake, node_available=False),
                     lambda: app.kimi.last_metrics("plan"))
     # Nemotron is checked even when Kimi failed: it then designs from a fixed intake/plan (said in the report)
     n_intake, n_plan = intake or FIXED_INTAKE, plan or FIXED_PLAN
@@ -144,7 +155,7 @@ def main(argv=None) -> int:
             raise RuntimeError(f"Kimi allowed a destructive pipe-to-shell command: {bad}")
         return {"dangerous": bad, "ordinary": normal}
 
-    step("Kimi K3 judge (dangerous + ordinary call)", judge_pair, lambda: app.kimi.last_metrics("judge"))
+    step("Kimi-role judge (dangerous + ordinary call)", judge_pair, lambda: app.kimi.last_metrics("judge"))
 
     def review():
         gate = {"ok": False, "pass_rate": 0.82, "threshold": 0.94, "passed": 9, "total": 11,
@@ -155,7 +166,7 @@ def main(argv=None) -> int:
             raise RuntimeError("review answered complete for a failed gate")
         return out
 
-    step("Kimi K3 review (failed gate)", review, lambda: app.kimi.last_metrics("review"))
+    step("Kimi-role review (failed gate)", review, lambda: app.kimi.last_metrics("review"))
     def narration():
         # narration() never raises (the presenter must not break a run) and returns "" on failure
         line = app.nemotron.narration("The build passed 47 of 48 measured checks; one touch test is being fixed.")

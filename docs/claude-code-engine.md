@@ -2,7 +2,7 @@
 
 How Kyora drives the Claude Code CLI as its code engine, how its Write, Edit,
 MultiEdit, NotebookEdit and Bash calls are judged (local rules, a per-run cache, then
-Kimi K3; Read, Glob and Grep are not judged), and what the real-CLI smoke test observed. Code:
+the Kimi role - Kimi K3.1 Pro or its fallback; Read, Glob and Grep are not judged), and what the real-CLI smoke test observed. Code:
 `kyora/models/claude_code.py` (`ClaudeCodeEngine`), `kyora/runners/kyora_hook.py`
 (PreToolUse hook), `kyora/pipeline/judge.py` (`JudgeService`). Tests:
 `tests/test_claude_code_parser.py`, `tests/test_hook.py`, `tests/test_judge.py`,
@@ -204,8 +204,9 @@ Decision order in `decide(run_id, call)`:
 
 1. **Rules** (`source: "rule"`, no model):
    * Kyora's secrets (`rule: "kyora_secrets"`) -> deny, for every tool with a path and for `Bash`: the
-     config directory (`keys.json`, `settings.json`), `$KYORA_CONFIG_DIR`, `<KYORA_HOME>/config`, the
-     Hub token, symlinks into them, and a file named `keys.json`, `settings.json` or `hub.token` outside
+     config directory (`keys.json`, `keys.local.json`, `settings.json`), `$KYORA_CONFIG_DIR`,
+     `<KYORA_HOME>/config`, the Hub token, symlinks into them, and a file named `keys.json`,
+     `keys.local.json`, `settings.json` or `hub.token` outside
      the workspace that exists; a `Grep`/`Glob`/`LS` rooted at a directory above the config directory
      (its search would reach the keys). Heredoc bodies are not read as paths. Claude Code also gets
      `Read`/`Edit`/`Write` deny rules for those directories in its `--settings`, so its own permission
@@ -235,7 +236,7 @@ Decision order in `decide(run_id, call)`:
    `sha256(tool_name, normalized input)`; only Kimi verdicts are cached (LRU 512).
 3. **The Kimi role** (`source: "kimi"`): `kimi.judge(ctx, call, run_id)` must return
    `{"decision":"allow|deny","reason","risk"}`; `judge_model` names the model that answered this call
-   (Kimi K3, or the fallback that answers for it), never the chain's next model.
+   (Kimi K3.1 Pro, or the fallback that answers for it), never the chain's next model.
 4. **Fail-open** (`source: "unavailable"`, decision allow, risk `unknown`) when
    Kimi is not configured, raises, or returns no usable verdict; each case
    publishes `judge.unavailable{reason,tool_name,tool_use_id}`.

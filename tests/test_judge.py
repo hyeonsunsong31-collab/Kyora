@@ -279,11 +279,13 @@ class RuleTests(unittest.TestCase):
         other = root / "other-kyora"  # another install's keys: the name counts when the file exists
         other.mkdir()
         (other / "hub.token").write_text("t", encoding="utf-8")
+        (other / "keys.local.json").write_text("{}", encoding="utf-8")  # e.g. an unpacked private release
         for cmd in ("cat ../cfg/keys.json", "cat $KYORA_CONFIG_DIR/keys.json",
                     "cat ${KYORA_HOME}/x", "echo $KYORA_HOOK_TOKEN", "grep -r api_key ~/.kyora", f"grep -r api_key {home}",
                     f"ls {cfg}", "ls ../cfg", f"cat {home}/config/settings.json", "cat $SOMEDIR/keys.json",
                     "cd .. && cat cfg/x", "cat /proc/self/environ", "tr '\\0' '\\n' < /proc/1/environ",
                     f"grep hub.token {other}/hub.token", "cp ../cfg/settings.json src/",
+                    f"cat {other}/keys.local.json", "cat ../cfg/keys.local.json",
                     "grep -f../cfg/keys.json x src", "grep --file=../cfg/x y", "wc -c <../cfg/keys.json",
                     "cat > ../cfg/keys.json <<'EOF'\n{}\nEOF"):
             self.assertEqual(v(bash(cmd, cwd=str(self.ws))), ("deny", "kyora_secrets"), cmd)
@@ -299,7 +301,10 @@ class RuleTests(unittest.TestCase):
                          ("deny", "kyora_secrets"))
         self.assertNotEqual(v({"tool_name": "Read", "tool_input": {"file_path": str(root)}}), ("deny", "kyora_secrets"))
         for tool in ("Write", "Edit", "Read"):
-            self.assertEqual(v({"tool_name": tool, "tool_input": {"file_path": str(cfg / "keys.json")}}),
+            for name in ("keys.json", "keys.local.json"):
+                self.assertEqual(v({"tool_name": tool, "tool_input": {"file_path": str(cfg / name)}}),
+                                 ("deny", "kyora_secrets"), (tool, name))
+            self.assertEqual(v({"tool_name": tool, "tool_input": {"file_path": str(other / "keys.local.json")}}),
                              ("deny", "kyora_secrets"), tool)
         self.assertEqual(v({"tool_name": "Grep", "tool_input": {"pattern": "key", "path": str(home)}}),
                          ("deny", "kyora_secrets"))

@@ -1,7 +1,7 @@
 """Honest labels: UI, docs, deck and engine prompt describe what Kyora really does.
 
 * The judge sees only Write/Edit/MultiEdit/NotebookEdit/Bash; local rules settle most of them and
-  Kimi K3 decides the rest, so no surface may claim that Kimi K3 judges every tool call.
+  the Kimi role's model decides the rest, so no surface may claim that Kimi judges every tool call.
 * Gate, effort and engine labels come from the run's recorded threshold, effort and backend.
 * Claude Code's ``total_cost_usd`` is an API-equivalent list-price estimate, not a measured charge.
 * The Presenter shows the Tokkio frame only for a 2xx/3xx answer of the Tokkio UI.
@@ -33,9 +33,10 @@ EVERY_CALL_CLAIMS = re.compile(
     r"every tool call|judges every|judged by Kimi K3|every action of the code engine|on every tool call|"
     r"judgement of every|every code-engine tool call|Every Write/Edit/Bash of the code engine is judged",
     re.IGNORECASE)
-# Kimi K3 does not judge the finished game: the measured gate decides, Kimi K3 reviews failed gates and
-# judges the writes/shell commands the local rules do not settle.
-JUDGES_OUTPUT_CLAIMS = re.compile(r"Kimi\s+K3\s+judges\s+(?:it\b|the\s+result|the\s+game)", re.IGNORECASE)
+# The Kimi role does not judge the finished game: the measured gate decides, the Kimi role reviews failed
+# gates and judges the writes/shell commands the local rules do not settle. Covers "Kimi K3" and "Kimi K3.1 Pro".
+JUDGES_OUTPUT_CLAIMS = re.compile(r"Kimi\s+K3(?:\.1)?(?:\s+Pro)?\s+judges\s+(?:it\b|the\s+result|the\s+game)",
+                                  re.IGNORECASE)
 
 
 def run_node(files: list[str], expr: str):
@@ -73,6 +74,7 @@ class JudgeWordingTests(unittest.TestCase):
     def test_no_surface_claims_kimi_judges_the_game(self):
         self.assertTrue(JUDGES_OUTPUT_CLAIMS.search("Claude Code implements it, Kimi K3 judges\nit)."))
         self.assertTrue(JUDGES_OUTPUT_CLAIMS.search("Kimi K3 judges the result"))
+        self.assertTrue(JUDGES_OUTPUT_CLAIMS.search("Kimi K3.1 Pro judges the game"))
         self.assertIsNone(JUDGES_OUTPUT_CLAIMS.search("Kimi K3 judges the writes the local rules do not settle"))
         for rel in self.SURFACES + ["tokkio-kyora/README.md", "docs/tokkio-overlay.md",
                                     "tokkio-kyora/configs/config.kyora.yaml"]:
@@ -95,7 +97,9 @@ class JudgeWordingTests(unittest.TestCase):
         self.assertIn("local rules, then the Kimi-role model", deck)
         for rel in ("kyora/web/index.html", "kyora/web/js/app.js", "kyora/pipeline/templates/claude_system.md",
                     "kyora/projects/deck.py"):
-            self.assertNotIn("Kimi K3 decides the rest", (REPO / rel).read_text(encoding="utf-8"), rel)
+            text = (REPO / rel).read_text(encoding="utf-8")
+            self.assertNotIn("Kimi K3 decides the rest", text, rel)
+            self.assertNotIn("Kimi K3.1 Pro decides the rest", text, rel)
 
     def test_judge_card_counts_verdict_sources(self):
         app = (WEB / "js" / "app.js").read_text(encoding="utf-8")

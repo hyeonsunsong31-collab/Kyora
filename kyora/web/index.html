@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#0b0f14" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f4f6f8" media="(prefers-color-scheme: light)">
-<meta name="description" content="Kyora - an honest orchestration studio for AI game development: Nemotron-3-Ultra, Kimi K3, Claude Code and NVIDIA Tokkio, each in its own role.">
+<meta name="description" content="Kyora - an honest orchestration studio for AI game development: Nemotron-3-Ultra, Kimi K3.1 Pro, Claude Code and NVIDIA Tokkio, each in its own role.">
 <title>Kyora Studio</title>
 <link rel="icon" href="/static/assets/logo.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/static/assets/logo.svg">
@@ -39,7 +39,7 @@
   <a href="#/selfcheck" data-view="selfcheck"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg><span>Check</span></a>
   <a href="#/bench" data-view="bench"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16M6 20V10M12 20V4M18 20v-8"/></svg><span>Bench</span></a>
   <a href="#/settings" data-view="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg><span>Settings</span></a>
-  <div class="nav-foot" aria-hidden="true">Orchestration, not a merged model.<br>Nemotron-3-Ultra · Kimi K3 · Claude Code · Tokkio</div>
+  <div class="nav-foot" aria-hidden="true">Orchestration, not a merged model.<br>Nemotron-3-Ultra · Kimi K3.1 Pro · Claude Code · Tokkio</div>
 </nav>
 
 <main id="main" class="main" tabindex="-1">
@@ -71,7 +71,7 @@
           <div class="field">
             <label class="sr-only" for="prompt">Prompt</label>
             <textarea id="prompt" placeholder="e.g. A one-touch endless runner with a day/night cycle, 3 power-ups and a high-score table. Touch controls first." aria-describedby="prompt-help"></textarea>
-            <div class="help" id="prompt-help">The Kimi role (Kimi K3 or its fallback model) plans and judges, the Nemotron role writes design and copy, the code engine builds and tests (effort <span data-setting-label="effort">from Settings</span>). <kbd>Ctrl</kbd>+<kbd>Enter</kbd> runs.</div>
+            <div class="help" id="prompt-help">The Kimi role (Kimi K3.1 Pro or its fallback model) plans and judges, the Nemotron role writes design and copy, the code engine builds and tests (effort <span data-setting-label="effort">from Settings</span>). <kbd>Ctrl</kbd>+<kbd>Enter</kbd> runs.</div>
           </div>
         </section>
 
@@ -137,7 +137,7 @@
           <section class="card" aria-labelledby="h-judge">
             <h2 id="h-judge">Judge <span class="hint">Write/Edit/Bash: local rules, then the Kimi-role model</span></h2>
             <div class="judge-counters" id="judge-counters"></div>
-            <p class="judge-note" id="judge-note">Write, Edit, MultiEdit, NotebookEdit and Bash calls of the code engine pass through the judge. Local rules allow planned files, standard game paths and read-only commands and deny escapes and destructive commands; the Kimi-role model (Kimi K3, or its configured fallback - each verdict names it) decides the rest. Read, Glob and Grep are not judged.</p>
+            <p class="judge-note" id="judge-note">Write, Edit, MultiEdit, NotebookEdit and Bash calls of the code engine pass through the judge. Local rules allow planned files, standard game paths and read-only commands and deny escapes and destructive commands; the Kimi-role model (Kimi K3.1 Pro, or its configured fallback - each verdict names it) decides the rest. Read, Glob and Grep are not judged.</p>
           </section>
         </div>
         <section class="card" aria-labelledby="h-metrics">
@@ -281,7 +281,7 @@
       <div class="stack">
         <section class="card honesty" aria-labelledby="h-honesty">
           <h3 id="h-honesty">Honesty</h3>
-          <p><span class="yes">Kyora is</span> an orchestration application. It calls external systems over their own APIs, each in a fixed role: the Nemotron role (NVIDIA Nemotron-3-Ultra) writes design prose, UI spec and narration; the Kimi role (Kimi K3) plans, judges the code engine's file writes and shell commands that Kyora's local rules do not settle (reads are not judged; rules allow standard game paths and read-only commands) and reviews; the code engine implements and tests - Claude Code through your Claude subscription at the effort set in Settings (now <code>--effort <span data-setting-label="effort">-</span></code>), the Anthropic API with an API key, a Kyora Hub, or the Kyora agent engine on an NVIDIA model (not a Claude model); NVIDIA Tokkio presents. A role whose model is unavailable (NVIDIA retired Kimi K3 on 2026-10-15) is answered by its configured fallback model, and the log, tiles and deck name the model that answered.</p>
+          <p><span class="yes">Kyora is</span> an orchestration application. It calls external systems over their own APIs, each in a fixed role: the Nemotron role (NVIDIA Nemotron-3-Ultra) writes design prose, UI spec and narration; the Kimi role (Kimi K3.1 Pro through OpenRouter) plans, judges the code engine's file writes and shell commands that Kyora's local rules do not settle (reads are not judged; rules allow standard game paths and read-only commands) and reviews; the code engine implements and tests - Claude Code through your Claude subscription at the effort set in Settings (now <code>--effort <span data-setting-label="effort">-</span></code>), the Anthropic API with an API key, a Kyora Hub, or the Kyora agent engine on an NVIDIA model (not a Claude model); NVIDIA Tokkio presents. A role whose model is unavailable - for the Kimi role also when OpenRouter has no key, no credits or cannot be reached - is answered by its configured fallback model, and the log, tiles and deck name the model that answered.</p>
           <p><span class="no">Kyora is not</span> a merged model, a fine-tune or a lighter copy of any of them. Nothing here is generated locally and nothing is simulated: a missing engine shows as <b>BLOCKED</b>, a missing metric shows as <b>-</b>.</p>
           <ul>
             <li><b>The pass rate is a gate, not a score.</b> Each run must pass at least the share of its counted checks (static, Node and in-browser acceptance tests) set in Settings (now <span data-setting-label="gate">-</span>; each run records the threshold it used) and all required checks, or it loops through a review (by the Kimi-role model, or by rules from the failing checks when no model answers) and engine fixes a bounded number of times. Kyora Bench applies the same rule to fixed tasks at each task's own threshold (never below 94 %) and only grants a badge when <i>your</i> measured run clears it.</li>
@@ -294,7 +294,7 @@
   </section>
 </main>
 
-<footer class="attribution" id="attribution">Nemotron-3-Ultra · Kimi K3 · Claude Code · NVIDIA Tokkio</footer>
+<footer class="attribution" id="attribution">Nemotron-3-Ultra · Kimi K3.1 Pro · Claude Code · NVIDIA Tokkio</footer>
 
 <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
 <div id="modal-root"></div>

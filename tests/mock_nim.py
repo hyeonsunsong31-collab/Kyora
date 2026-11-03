@@ -8,6 +8,8 @@ that emulates ``POST /v1/chat/completions`` (stream and non-stream) and
 {"content": str,                       # assistant text
  "reasoning": str,                     # optional; streamed via delta.reasoning_content AND delta.reasoning
  "reasoning_both": bool,               # optional: every reasoning delta carries both keys (vLLM >= 0.11 style)
+ "reasoning_details": [dict],          # optional: OpenRouter-style fragments, one per chunk (with the same text
+                                       #   also in delta.reasoning, as OpenRouter sends it); non-stream: as given
  "tool_calls": [{"id", "name", "arguments" (str or dict)}],   # optional
  "usage": {...} | None,                # optional; None = send no usage block at all
  "finish_reason": str,                 # optional (default stop / tool_calls)
@@ -89,6 +91,8 @@ def build_completion(req: dict, spec: dict) -> dict:
     message: dict = {"role": "assistant", "content": spec.get("content") or ""}
     if spec.get("reasoning"):
         message["reasoning_content"] = spec["reasoning"]
+    if spec.get("reasoning_details"):
+        message["reasoning_details"] = json.loads(json.dumps(spec["reasoning_details"]))
     tcs = _tool_calls(spec)
     if tcs:
         message["tool_calls"] = tcs
@@ -118,6 +122,11 @@ def iter_stream_chunks(req: dict, spec: dict) -> Iterable[dict | str]:
             yield chunk({"reasoning": part, "reasoning_content": part})
         else:
             yield chunk({"reasoning_content": part} if i % 2 == 0 else {"reasoning": part})
+    for frag in spec.get("reasoning_details") or []:  # OpenRouter: the text twice, in reasoning and in the detail
+        delta = {"reasoning_details": [frag]}
+        if isinstance(frag, dict) and (frag.get("text") or frag.get("summary")):
+            delta["reasoning"] = frag.get("text") or frag.get("summary")
+        yield chunk(delta)
     content = spec.get("content") or ""
     for part in _split(content, spec.get("chunks") or _default_chunks(content)):
         yield chunk({"content": part})
@@ -147,7 +156,8 @@ def _is_delta_chunk(item: dict | str) -> bool:
         return False
     for choice in item.get("choices") or []:
         delta = choice.get("delta") or {}
-        if delta.get("content") or delta.get("reasoning") or delta.get("reasoning_content") or delta.get("tool_calls"):
+        if delta.get("content") or delta.get("reasoning") or delta.get("reasoning_content") or delta.get("tool_calls") \
+                or delta.get("reasoning_details"):
             return True
     return False
 

@@ -10,8 +10,8 @@ No score is pre-filled anywhere: not in the README, not in the UI, not in this d
 Every task is one real pipeline run, exactly as a user would start it:
 
 ```
-Kimi K3 intake -> Kimi K3 plan -> Nemotron design + UI spec -> code engine build (Claude Code, --effort max)
--> static checks + Node checks + in-browser tests -> >= 94 % gate -> [Kimi K3 review -> engine fix] x <= 3 -> slide
+Kimi-role intake -> Kimi-role plan -> Nemotron design + UI spec -> code engine build (Claude Code, --effort max)
+-> static checks + Node checks + in-browser tests -> >= 94 % gate -> [Kimi-role review -> engine fix] x <= 3 -> slide
 ```
 
 The difference from a normal run is the test file. At the TEST stage the pipeline keeps the engine's own
@@ -102,8 +102,9 @@ for browser tests. Without a browser the run is BLOCKED after `quality.browser_w
 
 ## Running it
 
-It costs real money and time. **Each task runs the full pipeline: Nemotron + Kimi K3 tokens on your NVIDIA
-keys and code-engine usage (your Claude subscription by default) at the configured `claude_code.effort`
+It costs real money and time. **Each task runs the full pipeline: Nemotron tokens on your NVIDIA key,
+Kimi K3.1 Pro tokens on your OpenRouter key (billed per token) and code-engine usage (your Claude
+subscription by default) at the configured `claude_code.effort`
 (default `max`); typically 10-30 min per task.** The confirm dialog names the engine the server would
 select and the configured effort. A full run is 24 pipeline runs, so expect many hours and a large
 share of your Claude usage limits. Start with one or two tasks.
@@ -187,6 +188,6 @@ be the answers.
 
 Known limits: the tests check behaviour through `window.Game` and real input events, not visual quality;
 an implementation that games the debug hooks could pass tests a player would not enjoy, which is why the
-pipeline's Kimi K3 review and the per-run deck stay part of every task. Timing-sensitive input (long press,
+pipeline's Kimi-role review and the per-run deck stay part of every task. Timing-sensitive input (long press,
 swipes) uses real milliseconds in the browser, so a heavily loaded device can still produce a flaky result;
 re-run a single task with `kyora bench --tasks <id>` before trusting a surprising failure.

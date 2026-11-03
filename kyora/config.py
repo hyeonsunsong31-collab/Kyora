@@ -9,7 +9,13 @@ Search order for the config directory (first hit wins):
    or, when running from a source checkout, from ``<repo>/config``.
 
 The user chose to ship real NVIDIA keys inside ``keys.json``; ``to_public``
-masks them for the UI unless ``reveal=True``.
+masks them for the UI unless ``reveal=True``. ``keys.local.json`` next to it
+(git-ignored, optional) is merged over ``keys.json``: keys that must not reach
+the public repository live there (the OpenRouter key of the Kimi role), and
+Settings saves every key and token there, never into ``keys.json``.
+Environment variables fill a role's empty key and are never saved:
+``ANTHROPIC_API_KEY``, ``NVIDIA_API_KEY`` (roles on an NVIDIA endpoint) and
+``OPENROUTER_API_KEY`` (a Kimi role on OpenRouter).
 """
 from __future__ import annotations
 
@@ -35,7 +41,13 @@ DEFAULT_KEYS: dict = {
         # that still have it (a 404 is skipped for good after one request).
         "nemotron": {"model": "nvidia/nemotron-3-ultra-550b-a55b", "api_key": "", "base_url": "",
                      "fallback_models": ["nvidia/nemotron-3.5-super-vl-120b-a12b", "nvidia/nemotron-3-super-120b-a12b"]},
-        "kimi": {"model": "moonshotai/kimi-k3", "api_key": "", "base_url": "",
+        # The Kimi role: Kimi K3.1 Pro through OpenRouter (the user's choice, 2026-11-03), sent with reasoning on
+        # and the provider routing below (requested model only). Its key goes into keys.local.json or
+        # OPENROUTER_API_KEY - keys.json is public. fallback_models are asked at fallback_base_url (empty =
+        # nvidia.base_url) with that endpoint's keys, so the role keeps answering when OpenRouter cannot (no key,
+        # no credits, an outage).
+        "kimi": {"model": "moonshotai/kimi-k3.1-pro", "api_key": "", "base_url": "https://openrouter.ai/api/v1",
+                 "fallback_base_url": "", "provider": {"only": ["moonshotai/mxfp4"], "allow_fallbacks": False},
                  "fallback_models": ["nvidia/nemotron-3-ultra-550b-a55b", "z-ai/glm-5.3",
                                      "nvidia/nemotron-3.5-super-vl-120b-a12b", "nvidia/nemotron-3-super-120b-a12b"]},
         # a role whose own key is refused (401/403) may use the other role's key on the same endpoint
@@ -112,7 +124,7 @@ DEFAULT_SETTINGS: dict = {
 # would be command execution, so they are edited only in settings.json (FILE_ONLY_SETTINGS).
 PATCHABLE_KEYS = {
     "nvidia.base_url", "nvidia.nemotron.model", "nvidia.nemotron.api_key",
-    "nvidia.kimi.model", "nvidia.kimi.api_key", "anthropic.api_key",
+    "nvidia.kimi.model", "nvidia.kimi.api_key", "anthropic.api_key", "nvidia.kimi.fallback_base_url",
     "nvidia.nemotron.base_url", "nvidia.kimi.base_url", "nvidia.nemotron.fallback_models",
     "nvidia.kimi.fallback_models", "nvidia.share_keys", "agent.base_url", "agent.api_key",
     "hub.url", "hub.token", "tokkio.ui_url", "tokkio.configurator_url",
@@ -131,6 +143,10 @@ PATCHABLE_SETTINGS = {
     "agent_engine.timeout_s", "agent_engine.context_chars", "agent_engine.self_check_tool",
     "engines.order", "engines.failover", "engines.auto_resume_on_limit",
 }
+# Keys and tokens: masked for the UI, saved into keys.local.json (never into keys.json, which may be public)
+SECRET_KEY_PATHS = ("nvidia.nemotron.api_key", "nvidia.kimi.api_key", "anthropic.api_key", "agent.api_key",
+                    "hub.token")
+LOCAL_KEYS_NAME = "keys.local.json"
 ENGINE_NAMES = ("hub", "claude_code", "anthropic_api", "openai_agent")
 FILE_ONLY_SETTINGS = {"claude_code.command", "claude_code.extra_args"}
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
@@ -143,6 +159,14 @@ class NvidiaModelCfg:
     api_key: str
     base_url: str = ""  # resolved: the role's own endpoint, else nvidia.base_url
     fallback_models: list[str] = field(default_factory=list)
+    fallback_base_url: str = ""  # resolved: where fallback_models are asked (Kimi role), else nvidia.base_url
+    provider: dict = field(default_factory=dict)  # OpenRouter provider routing for the requested model
+
+
+def is_openrouter(base_url: str | None) -> bool:
+    """The endpoint is OpenRouter (``openrouter.ai`` or a subdomain): its own request fields apply."""
+    host = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", str(base_url or "")).split("/", 1)[0].split(":", 1)[0]
+    return host.lower().rstrip(".") == "openrouter.ai" or host.lower().endswith(".openrouter.ai")
 
 
 @dataclass
@@ -151,6 +175,19 @@ class NvidiaCfg:
     nemotron: NvidiaModelCfg
     kimi: NvidiaModelCfg
     share_keys: bool = True
+
+    def keys_for(self, base_url: str) -> list[tuple[str, str]]:
+        """The role keys configured for ``base_url`` (labelled, without repeats): who may call that endpoint.
+
+        Used for the Kimi role's fallback endpoint: with the role on OpenRouter, its fallbacks on NVIDIA's
+        endpoint are called with the NVIDIA keys, never with the OpenRouter key (and the reverse).
+        """
+        out: list[tuple[str, str]] = []
+        for name in ("nemotron", "kimi"):
+            r = getattr(self, name)
+            if r.api_key and r.base_url == base_url and r.api_key not in (k for _, k in out):
+                out.append((f"{name} key", r.api_key))
+        return out
 
     def alt_keys(self, role: str) -> list[tuple[str, str]]:
         """Keys a role may fall back to when its own is refused: the other role's, on the same endpoint."""
@@ -266,6 +303,16 @@ def _get(d: dict, dotted: str, default=None):
     return cur
 
 
+def _unset(d: dict, dotted: str) -> None:
+    parts = dotted.split(".")
+    cur = d
+    for p in parts[:-1]:
+        cur = cur.get(p) if isinstance(cur, dict) else None
+        if not isinstance(cur, dict):
+            return
+    cur.pop(parts[-1], None)
+
+
 def _set(d: dict, dotted: str, value) -> None:
     parts = dotted.split(".")
     cur = d
@@ -307,11 +354,21 @@ def _read_packaged_default(name: str):
 class Config:
     """Loaded configuration with typed views and save/patch support."""
 
-    def __init__(self, config_dir: Path, keys: dict, settings: dict):
+    def __init__(self, config_dir: Path, keys: dict, settings: dict, *, local_keys: dict | None = None,
+                 env_keys: dict | None = None):
+        """``keys`` is keys.json, ``local_keys`` keys.local.json (merged over it), ``env_keys`` ``{dotted path:
+        value}`` filled in from the environment (used, never saved)."""
         self.config_dir = Path(config_dir)
         self.keys_path = self.config_dir / "keys.json"
+        self.local_keys_path = self.config_dir / LOCAL_KEYS_NAME
         self.settings_path = self.config_dir / "settings.json"
-        self.raw_keys = _deep_merge(DEFAULT_KEYS, keys)
+        self._file_keys = copy.deepcopy(keys or {})
+        self._local_keys = copy.deepcopy(local_keys or {})
+        self._env_keys = dict(env_keys or {})
+        merged = _deep_merge(self._file_keys, self._local_keys)
+        for dotted, value in self._env_keys.items():
+            _set(merged, dotted, value)
+        self.raw_keys = _deep_merge(DEFAULT_KEYS, merged)
         self.raw_settings = _deep_merge(DEFAULT_SETTINGS, settings)
 
     # ------------------------------------------------------------------ loading
@@ -348,22 +405,59 @@ class Config:
     def load(cls, explicit_dir: Path | str | None = None) -> "Config":
         d = cls.resolve_dir(explicit_dir)
         keys = read_json(d / "keys.json", default={}) or {}
+        local = read_json(d / LOCAL_KEYS_NAME, default={}) or {}
+        local = local if isinstance(local, dict) else {}
         settings = read_json(d / "settings.json", default={}) or {}
-        # Environment overrides for secrets (never written back unless saved from UI)
+        merged = _deep_merge(DEFAULT_KEYS, _deep_merge(keys, local))
+        nv_base = str(_get(merged, "nvidia.base_url") or DEFAULT_KEYS["nvidia"]["base_url"])
+        # An empty key is filled from the environment for this process only (never saved)
+        env: dict[str, str] = {}
         env_anthropic = os.environ.get("ANTHROPIC_API_KEY")
-        if env_anthropic and not _get(keys, "anthropic.api_key"):
-            _set(keys, "anthropic.api_key", env_anthropic)
-        env_nvidia = os.environ.get("NVIDIA_API_KEY")
-        if env_nvidia:
-            if not _get(keys, "nvidia.nemotron.api_key"):
-                _set(keys, "nvidia.nemotron.api_key", env_nvidia)
-            if not _get(keys, "nvidia.kimi.api_key"):
-                _set(keys, "nvidia.kimi.api_key", env_nvidia)
-        return cls(d, keys, settings)
+        if env_anthropic and not _get(merged, "anthropic.api_key"):
+            env["anthropic.api_key"] = env_anthropic
+        for role in ("nemotron", "kimi"):
+            if _get(merged, f"nvidia.{role}.api_key"):
+                continue
+            role_base = str(_get(merged, f"nvidia.{role}.base_url") or nv_base)
+            name = "OPENROUTER_API_KEY" if is_openrouter(role_base) else (
+                "NVIDIA_API_KEY" if ".nvidia.com" in role_base.lower() else "")
+            if name and os.environ.get(name):  # a key only ever goes to the endpoint it was made for
+                env[f"nvidia.{role}.api_key"] = os.environ[name]
+        return cls(d, keys, settings, local_keys=local, env_keys=env)
 
     def save(self) -> None:
-        atomic_write_json(self.keys_path, self.raw_keys)
+        """Write ``settings.json``, ``keys.json`` and - for keys and tokens - ``keys.local.json``.
+
+        ``keys.json`` keeps the keys it was loaded with (it may be public); a key or token that changed,
+        or that came from ``keys.local.json``, is written there; one from the environment is not saved.
+        Any other entry ``keys.local.json`` holds is kept there with its current value.
+        """
+        keys_out = copy.deepcopy(self.raw_keys)
+        local_out = copy.deepcopy(self._local_keys)
+        local_paths = set(_flatten(self._local_keys))
+        for dotted in sorted(local_paths | set(SECRET_KEY_PATHS)):
+            value = _get(self.raw_keys, dotted)
+            file_value = _get(self._file_keys, dotted)
+            secret = dotted in SECRET_KEY_PATHS
+            from_env = dotted in self._env_keys and value == self._env_keys[dotted]
+            if secret and not from_env and dotted not in local_paths and (value or "") == (file_value or ""):
+                continue  # an unchanged key of keys.json stays there
+            if file_value is None:
+                _unset(keys_out, dotted)
+            else:
+                _set(keys_out, dotted, copy.deepcopy(file_value))
+            if not from_env:
+                _set(local_out, dotted, copy.deepcopy(value))
+        atomic_write_json(self.keys_path, keys_out)
+        if local_out or self.local_keys_path.exists():
+            atomic_write_json(self.local_keys_path, local_out)
+        self._file_keys = keys_out
+        self._local_keys = local_out
         atomic_write_json(self.settings_path, self.raw_settings)
+
+    def local_key_paths(self) -> list[str]:
+        """The key and token paths whose value comes from ``keys.local.json`` (not from the public keys.json)."""
+        return sorted(p for p in _flatten(self._local_keys) if p in SECRET_KEY_PATHS)
 
     # ------------------------------------------------------------------ typed views
     @property
@@ -374,10 +468,16 @@ class Config:
         def role(name: str) -> NvidiaModelCfg:
             r = k.get(name) or {}
             fallbacks = r.get("fallback_models", DEFAULT_KEYS["nvidia"][name]["fallback_models"])
+            own = str(r.get("base_url") or base).rstrip("/")
+            provider = r.get("provider")
             return NvidiaModelCfg(model=r.get("model") or DEFAULT_KEYS["nvidia"][name]["model"],
                                   api_key=r.get("api_key", "") or "",
-                                  base_url=str(r.get("base_url") or base).rstrip("/"),
-                                  fallback_models=[str(m) for m in (fallbacks or []) if m])
+                                  base_url=own,
+                                  fallback_models=[str(m) for m in (fallbacks or []) if m],
+                                  # the Nemotron role keeps its fallbacks at its own endpoint
+                                  fallback_base_url=(str(r.get("fallback_base_url") or base).rstrip("/")
+                                                     if name == "kimi" else own),
+                                  provider=copy.deepcopy(provider) if isinstance(provider, dict) else {})
         return NvidiaCfg(base_url=base, nemotron=role("nemotron"), kimi=role("kimi"),
                          share_keys=bool(k.get("share_keys", DEFAULT_KEYS["nvidia"]["share_keys"])))
 
@@ -414,7 +514,7 @@ class Config:
             key, label, alts = own_key, "agent key", []
         else:
             # the role keys, each tried in turn when one is refused - but only a role's key whose endpoint IS the
-            # agent endpoint: with the Kimi role moved to Moonshot, its sk- key is never sent to NVIDIA
+            # agent endpoint: with the Kimi role on OpenRouter (or Moonshot), its sk- key is never sent to NVIDIA
             cands: list[tuple[str, str]] = []
             for name in ("kimi", "nemotron"):
                 r = getattr(nv, name)
@@ -493,10 +593,12 @@ class Config:
     def to_public(self, reveal: bool = False) -> dict:
         keys = copy.deepcopy(self.raw_keys)
         if not reveal:
-            for path in ("nvidia.nemotron.api_key", "nvidia.kimi.api_key", "anthropic.api_key", "hub.token", "agent.api_key"):
+            for path in SECRET_KEY_PATHS:
                 _set(keys, path, _mask(_get(keys, path, "") or ""))
         return {
             "config_dir": str(self.config_dir),
+            "local_keys_file": str(self.local_keys_path),
+            "local_keys": self.local_key_paths(),
             "keys": keys,
             "settings": copy.deepcopy(self.raw_settings),
             "patchable": sorted(PATCHABLE_KEYS | PATCHABLE_SETTINGS),
@@ -562,7 +664,7 @@ def _validate(section: str, dotted: str, value) -> None:
     if dotted == "engines.order" and (not isinstance(value, list) or not value
                                       or any(v not in ENGINE_NAMES for v in value) or len(set(value)) != len(value)):
         raise ValueError(f"engines.order must list engines from {ENGINE_NAMES} without repeats")
-    if dotted in ("nvidia.base_url", "nvidia.nemotron.base_url", "nvidia.kimi.base_url"):
+    if dotted in ("nvidia.base_url", "nvidia.nemotron.base_url", "nvidia.kimi.base_url", "nvidia.kimi.fallback_base_url"):
         if not isinstance(value, str) or (value and not re.match(r"^https?://[^\s/]+", value)):
             raise ValueError(f"{dotted} must be an http(s) URL" + ("" if dotted == "nvidia.base_url" else " or empty"))
         if dotted == "nvidia.base_url" and not value:

@@ -2,15 +2,16 @@
 
 Kyora is an **orchestration application** for making browser games with AI. It calls external systems
 over their own APIs, each in a fixed role: **NVIDIA Nemotron-3-Ultra** writes the design (game design
-document, narrative, UI spec, copy, narration), **Moonshot Kimi K3** plans the work, judges the code
-engine's file writes and shell commands that Kyora's local rules do not settle (rules allow standard game
+document, narrative, UI spec, copy, narration), **Moonshot Kimi K3.1 Pro** (through OpenRouter) plans the
+work, judges the code engine's file writes and shell commands that Kyora's local rules do not settle (rules allow standard game
 paths and read-only commands; reads are not judged) and reviews failed results, a **code engine** writes,
 tests and fixes the game - **Claude Code** (CLI, `--effort max` by default, your Claude subscription), or
 the same Claude models through an Anthropic API key, or the **Kyora agent engine** on your NVIDIA keys
 (a different, non-Claude model) - and **NVIDIA Tokkio** (optional, on your own GPU cluster) presents the
-run as a talking avatar. On NVIDIA's free endpoint Kimi K3 was retired on 2026-10-15, so the Kimi role
-runs on configured fallback models there and Kyora shows which model answered
-([NVIDIA status](#nvidia-status-measured-2026-10-18)). Kyora runs the real tests in a real browser and
+run as a talking avatar. Kimi K3.1 Pro needs your OpenRouter key, which is never committed to this
+public repository ([Kimi K3.1 Pro on OpenRouter](#kimi-k31-pro-on-openrouter)); without it, or when
+OpenRouter cannot answer, the Kimi role's fallback models answer on NVIDIA's endpoint and Kyora shows
+which model answered ([NVIDIA status](#nvidia-status-measured-2026-10-18)). Kyora runs the real tests in a real browser and
 only calls a project finished when at least **the configured pass rate (default 94 %,
 `quality.min_pass_rate`) of that project's measured checks pass**, whichever engine built it. It is not a
 merged model, it never fakes output, metrics or verdicts, and when a piece is missing it says
@@ -22,6 +23,7 @@ merged model, it never fakes output, metrics or verdicts, and when a piece is mi
 - [Quick start](#quick-start)
 - [First run](#first-run)
 - [Without a Claude subscription](#without-a-claude-subscription)
+- [Kimi K3.1 Pro on OpenRouter](#kimi-k31-pro-on-openrouter)
 - [NVIDIA status (measured 2026-10-18)](#nvidia-status-measured-2026-10-18)
 - [Hub mode (phones and tablets)](#hub-mode-phones-and-tablets)
 - [Tokkio presenter](#tokkio-presenter)
@@ -36,7 +38,7 @@ merged model, it never fakes output, metrics or verdicts, and when a piece is mi
 
 | Kyora is | Kyora is not |
 |---|---|
-| An app that chains Nemotron-3-Ultra, Kimi K3, a code engine (Claude Code, the Anthropic API or the Kyora agent engine) and (optionally) Tokkio through their APIs, with real tool execution, builds and tests | A new or merged model. The weights cannot be combined: Nemotron-3-Ultra is 550B parameters, Kimi K3 2.8T, Claude is closed, Tokkio is a GPU Kubernetes workflow |
+| An app that chains Nemotron-3-Ultra, Kimi K3.1 Pro, a code engine (Claude Code, the Anthropic API or the Kyora agent engine) and (optionally) Tokkio through their APIs, with real tool execution, builds and tests | A new or merged model. The weights cannot be combined: Nemotron-3-Ultra is 550B parameters, Kimi K3.1 Pro is served by its provider through OpenRouter, Claude is closed, Tokkio is a GPU Kubernetes workflow |
 | A studio with projects, attachments, live progress, previews on your phone, per-project "slides" (every generation or modification is a git commit + tag you can preview, branch from, stack on and download as a ZIP) and an auto-built presentation deck | A system that invents results: no canned games, no simulated avatar, no estimated benchmark scores |
 | A **measured 94 % quality gate** per project, the same for every code engine, and a **Kyora Bench** whose 94 % threshold is the certification rule | A claim that any model scores 94 % (published: Nemotron-3-Ultra SWE-Bench Verified 71.9, Kimi K3 Terminal-Bench 2.1 88.3), or that the Kyora agent engine's model is as capable as Claude |
 | A display of **measured** time to first token, latency, token counts and tokens/s per model call, and of the model and key that actually answered | A TOPS number: TOPS describes data-centre chips and cannot be set or measured over an API |
@@ -64,9 +66,9 @@ Full statement: [`docs/honesty.md`](docs/honesty.md).
 +---------+------------------------+---------------------------+-------------------------+------------+
           |                        |                           |                         |
    Nemotron role         Kimi role                code engine (engines.order)    NVIDIA Tokkio 5.0.0-ga
-   Nemotron-3-Ultra      Kimi K3; on NVIDIA's     Claude Code CLI (subscription, (your GPU k8s cluster;
-   (NVIDIA API Catalog;  free endpoint retired    --effort max) | Anthropic API  overlay processor
-   fallback when busy)   2026-10-15: fallbacks    key | Kyora agent engine       reads Kyora's
+   Nemotron-3-Ultra      Kimi K3.1 Pro            Claude Code CLI (subscription, (your GPU k8s cluster;
+   (NVIDIA API Catalog;  (OpenRouter, your key;   --effort max) | Anthropic API  overlay processor
+   fallback when busy)   fallbacks on NVIDIA)     key | Kyora agent engine       reads Kyora's
    design, UI spec,      intake, plan, tests,     (NVIDIA models, not Claude)    event stream)
    copy, narration       judge, review            code, tests, fixes
 ```
@@ -131,8 +133,9 @@ in a source checkout).
    (the full check sends it one tool-call request), the selected code engine, Tokkio and Hub
    reachability, and the LAN URLs. Fix anything marked FAIL first; WARN says what was substituted.
 2. **Create a project** - *New*, give it a name. Optionally drop attachments: reference images (sent
-   as images only to a model that takes images - Kimi K3 or a vision model; a text-only fallback is told
-   they were left out), design notes, code, or a game ZIP to import as the base.
+   as images only to a model that takes images - Kimi K3.1 Pro or a vision model; when OpenRouter has no
+   provider for images it is asked again without them, and a text-only fallback is told they were left
+   out), design notes, code, or a game ZIP to import as the base.
 3. **Run** - write the prompt ("a one-button endless runner with a day/night cycle, touch controls")
    and press *Run pipeline*. The pipeline chart shows each stage with measured times; the live log
    streams model output, the code engine's tool calls, every judge verdict and every model, key or
@@ -225,37 +228,92 @@ of three routes, which differ in what changes:
   "Continue the task from where you stopped."; if that session no longer exists, a fresh session starts
   and is told about the kept partial work.
 
+## Kimi K3.1 Pro on OpenRouter
+
+Since 2026-11-03 the Kimi role (intake, plan, judge, review) runs **Kimi K3.1 Pro**
+(`moonshotai/kimi-k3.1-pro`) through OpenRouter's OpenAI-compatible API
+(`https://openrouter.ai/api/v1/chat/completions`), with the request you specified:
+
+* `reasoning: {"enabled": true}` at effort `max`, the default for planning, judging and reviewing
+  (`high` and `low` send `reasoning: {"enabled": true, "effort": "high"}` or `"low"`);
+* `provider: {"only": ["moonshotai/mxfp4"], "allow_fallbacks": false}` (`nvidia.kimi.provider` in
+  `keys.json`), sent only with Kimi K3.1 Pro, so OpenRouter routes the request to that provider and to
+  no other;
+* the assistant message's `reasoning_details` go back unmodified in the next turn of the same
+  conversation (for example the repair request after an answer that could not be used). Streamed fragments are put back together into the
+  blocks OpenRouter sent. A fallback model on NVIDIA's endpoint gets `reasoning_content` instead, never
+  `reasoning_details`.
+
+**Your OpenRouter key is not in this repository.** The repository is public: anyone who can read it
+could spend your OpenRouter credits with a committed key, and GitHub's secret scanning has a pattern for
+OpenRouter keys. Kyora takes the key from, in order:
+
+1. `config/keys.local.json`, next to `keys.json` - git-ignored and never packed into `kyora.pyz` or the
+   public release ZIP: `{"nvidia": {"kimi": {"api_key": "sk-or-v1-..."}}}`. The private release ZIP
+   (`Kyora-AGI-Studio-<version>-private.zip`, sent to you, not published) already contains this file.
+2. Settings -> *Model endpoints* -> *Kimi API key (OpenRouter)*, which is saved to `keys.local.json`,
+   never to `keys.json`. Every secret entered in Settings (the Nemotron, Kimi, Anthropic and agent keys
+   and the hub token) is saved there.
+3. The `OPENROUTER_API_KEY` environment variable, used only for a Kimi role on OpenRouter and never saved.
+
+`python3 scripts/build_release.py --local-keys config/keys.local.json` builds the public ZIP without the
+key and a private one with it in `dist/private/` (git-ignored; owner-readable only on Linux/macOS).
+
+**Without the key, or when OpenRouter cannot serve the role** - key refused (401/403), no credits (402),
+unreachable, or no allowed provider (404 "No endpoints found") - the role continues on its fallback models
+at `nvidia.kimi.fallback_base_url` (empty = NVIDIA's endpoint) with the NVIDIA key, never with the
+OpenRouter key: `nvidia/nemotron-3-ultra-550b-a55b`, `z-ai/glm-5.3`,
+`nvidia/nemotron-3.5-super-vl-120b-a12b`, `nvidia/nemotron-3-super-120b-a12b`. Kyora asks OpenRouter again
+after a wait (unreachable 5 minutes, no provider 10 minutes, key or credits 30 minutes). The log
+(`model.fallback`), the Kimi tile, every `model.*` event, the judge journal and self-check (WARN, naming
+the model and host that answered) say so. When OpenRouter refuses only tool calls or images for this
+provider, the role stays on Kimi K3.1 Pro and asks without a forced tool call (then without tools) or
+without the images.
+
+**Cost and data.** OpenRouter bills your key per token: listed at about $2 per million input and $10 per
+million output tokens for this model on 2026-11-03, with reasoning tokens billed as output; see
+[openrouter.ai/moonshotai/kimi-k3.1-pro](https://openrouter.ai/moonshotai/kimi-k3.1-pro) for today's
+price. A run asks the Kimi role for intake, plan, judge verdicts and reviews; set
+`kimi.judge_reasoning_effort` to `low` for fewer reasoning tokens per verdict. What you send to the role
+(prompt, plan, attachments, screenshots) goes to OpenRouter and the pinned provider under their terms.
+
+**Not measured from here.** The sandbox this change was made in cannot reach openrouter.ai, so Kyora's
+tests use a local mock that speaks OpenRouter's request and streaming format, and no live OpenRouter call
+has been measured yet. `kyora selfcheck` makes the first one on your device and shows the model that
+answered, the `reasoning` object and provider routing sent, and the latency. CI makes it as well once the
+repository secret `OPENROUTER_API_KEY` is set (job *live model APIs*; only that job gets the key).
+
 ## NVIDIA status (measured 2026-10-18)
 
 Measured on 2026-10-18 against NVIDIA's API Catalog (`https://integrate.api.nvidia.com/v1`) with the keys
-in `config/keys.json`. NVIDIA can change any of this; self-check and
+then in `config/keys.json`. NVIDIA can change any of this; self-check and
 `python3 scripts/nvidia_diagnose.py --all-models` (which reports what each key can call, never the key)
 show the current state.
 
 * **Kimi K3 is retired on NVIDIA's free endpoint.** `moonshotai/kimi-k3` answers HTTP 410 (end of life
-  2026-10-15) and `moonshotai/kimi-k2.6` answers HTTP 404 ("Not found for account"). The Kimi role
-  (intake, plan, judge, review) therefore runs on its fallback models, in order
-  `nvidia/nemotron-3-ultra-550b-a55b`, `z-ai/glm-5.3`, `nvidia/nemotron-3.5-super-vl-120b-a12b`,
-  `nvidia/nemotron-3-super-120b-a12b` (`nvidia.kimi.fallback_models`), and sends each model its own controls (a Nemotron model gets its
-  thinking switch, not Kimi's `reasoning_effort`). This is shown in the log (`model.fallback`), on the
-  Kimi K3 tile (the model that answered and "fallback from moonshotai/kimi-k3"), in every `model.*`
-  event (`requested_model`, `fallback: true`), in the judge journal (`judge_model`) and in self-check
-  (WARN). The role keeps its name "Kimi K3" in static labels (navigation, prompt help, the deck's
-  architecture slide).
-  **To get the real Kimi K3 back**, point `nvidia.kimi.base_url` at an endpoint that serves it, for
-  example Moonshot's API `https://api.moonshot.ai/v1`, with a key for that endpoint in
-  `nvidia.kimi.api_key` and that endpoint's model id in `nvidia.kimi.model` (the role's fallback models
-  are then asked there too, so list ids it serves, or none). Keys are shared between the roles only on
-  the same endpoint, so the Nemotron slot then needs its own working NVIDIA key; and set `agent.api_key`
-  to a working NVIDIA key, because the agent engine otherwise sends the Kimi-slot key to the NVIDIA
-  endpoint.
-* **The key in the Nemotron slot is refused for inference**: HTTP 403 "Authorization failed" for every
-  model, which means its account lacks inference access. Kyora uses the Kimi-slot key for the Nemotron
-  role (`nvidia.share_keys`, on) and shows it: `model.fallback` with `kind: key` in the log, "nemotron
-  key refused (HTTP 403), using kimi key" on the Nemotron tile, WARN in self-check. To fix it, create a
-  key at [build.nvidia.com](https://build.nvidia.com) on an account with inference access (or ask NVIDIA
-  to enable it) and enter it in Settings.
-* **The key in the Kimi slot answers 14 models**, among them `z-ai/glm-5.3`,
+  2026-10-15) and `moonshotai/kimi-k2.6` answers HTTP 404 ("Not found for account"). Since 2026-11-03 the
+  Kimi role runs Kimi K3.1 Pro on OpenRouter ([Kimi K3.1 Pro on OpenRouter](#kimi-k31-pro-on-openrouter));
+  NVIDIA's endpoint serves its fallback models, in order `nvidia/nemotron-3-ultra-550b-a55b`,
+  `z-ai/glm-5.3`, `nvidia/nemotron-3.5-super-vl-120b-a12b`, `nvidia/nemotron-3-super-120b-a12b`
+  (`nvidia.kimi.fallback_models`), and Kyora sends each model its own controls (a Nemotron model gets its
+  thinking switch, not Kimi's reasoning settings). A fallback is shown in the log (`model.fallback`), on
+  the Kimi tile (the model that answered and "fallback from moonshotai/kimi-k3.1-pro"), in every
+  `model.*` event (`requested_model`, `fallback: true`), in the judge journal (`judge_model`) and in
+  self-check (WARN). Static labels (navigation, prompt help, the deck's architecture slide) name the
+  role's model, Kimi K3.1 Pro. The role's model and endpoint are settings: another OpenAI-compatible
+  endpoint (for example Moonshot's API `https://api.moonshot.ai/v1`) works with its own key in
+  `nvidia.kimi.api_key` and its model id in `nvidia.kimi.model`. A key is only ever sent to the endpoint
+  it is configured for: the Nemotron role and the Kyora agent engine use the NVIDIA key, never the
+  OpenRouter key.
+* **The keys changed on 2026-11-03.** On 2026-10-18 the key in the Nemotron slot was refused for
+  inference (HTTP 403 "Authorization failed" for every model: its account lacked inference access) and
+  the key in the Kimi slot answered. With the Kimi role on OpenRouter, the answering NVIDIA key moved to
+  the Nemotron slot and the refused one was removed, so the Nemotron role, the Kimi role's fallbacks and
+  the Kyora agent engine all use the key that answers. With two keys on the same endpoint, a refused one
+  falls back to the other (`nvidia.share_keys`, on) and Kyora shows it (`model.fallback` with
+  `kind: key`, WARN in self-check); a new key from [build.nvidia.com](https://build.nvidia.com) goes in
+  Settings.
+* **The NVIDIA key (then in the Kimi slot) answered 14 models**, among them `z-ai/glm-5.3`,
   `nvidia/nemotron-3-ultra-550b-a55b`, `nvidia/nemotron-3-super-120b-a12b` and `poolside/laguna-xs-2.1`.
   On 2026-10-24 it answered 13: `nvidia/nemotron-3-super-120b-a12b` answered HTTP 404 ("not found for
   account") although `/models` still lists it, so the default fallback lists now put
@@ -314,9 +372,9 @@ UI. Guide: [`docs/tokkio-overlay.md`](docs/tokkio-overlay.md) and
 ## Kyora Bench
 
 `kyora bench --list`, `kyora bench --tasks <ids> --dry-run` (estimate) and `kyora bench --tasks <ids>`
-run the **real** pipeline on fixed game tasks with bench-owned browser tests. It costs NVIDIA tokens
-and code-engine usage (Claude subscription, Anthropic API tokens, or the Kyora agent engine's NVIDIA
-tokens), so it asks for confirmation (`--yes` to skip). A task passes when >= 94 % of the bench's own
+run the **real** pipeline on fixed game tasks with bench-owned browser tests. It costs NVIDIA tokens,
+OpenRouter tokens (the Kimi role, billed to your key) and code-engine usage (Claude subscription,
+Anthropic API tokens, or the Kyora agent engine's NVIDIA tokens), so it asks for confirmation (`--yes` to skip). A task passes when >= 94 % of the bench's own
 tests pass and every required check passes (the threshold is fixed, whatever Settings say); the
 "certified" badge appears only from a measured run on your setup in which one engine/model served every
 engine call, shown with date, engine and model. This README contains no bench number on purpose. Rules:
@@ -324,26 +382,29 @@ engine call, shown with date, engine and model. This README contains no bench nu
 
 ## Settings and keys
 
-Kyora reads `keys.json` (endpoints, secrets) and `settings.json` (behaviour) from the first of:
-`--config DIR`, `$KYORA_CONFIG_DIR`, `./config`, the `config/` folder next to `kyora.pyz`, and
-`KYORA_HOME/config` (seeded from the copy packaged inside `kyora.pyz`). Runtime data lives in
-`KYORA_HOME` (default `~/.kyora`). The *Settings* tab edits both files; secrets are masked in the UI.
-`NVIDIA_API_KEY` and `ANTHROPIC_API_KEY` from the environment fill empty key slots. NVIDIA endpoints,
-keys, models and fallbacks and the agent engine's settings apply without a restart; `server.*` needs one.
+Kyora reads `keys.json` (endpoints, secrets), `keys.local.json` (your private keys, merged over
+`keys.json`; git-ignored) and `settings.json` (behaviour) from the first of: `--config DIR`,
+`$KYORA_CONFIG_DIR`, `./config`, the `config/` folder next to `kyora.pyz`, and `KYORA_HOME/config`
+(seeded from the copy packaged inside `kyora.pyz`). Runtime data lives in `KYORA_HOME` (default
+`~/.kyora`). The *Settings* tab edits them; secrets are masked in the UI and saved to `keys.local.json`.
+From the environment, `OPENROUTER_API_KEY` fills an empty key of a role on OpenRouter, `NVIDIA_API_KEY`
+one of a role on an NVIDIA endpoint, and `ANTHROPIC_API_KEY` the Anthropic key; they are never saved.
+Model endpoints, keys, models and fallbacks and the agent engine's settings apply without a restart;
+`server.*` needs one.
 
-> **Warning - the NVIDIA keys are committed.** By your explicit decision, `config/keys.json` contains
-> real NVIDIA API Catalog keys and is committed to this repository and packaged into `kyora.pyz` and
-> the release ZIP. **Anyone with the repository, the ZIP or `kyora.pyz` can use those keys and spend
-> that quota.** If they leak, revoke and rotate them at [build.nvidia.com](https://build.nvidia.com)
-> and enter the new key in Settings. These are NVIDIA keys: they work for NVIDIA-hosted models (the
-> Nemotron and Kimi roles and the Kyora agent engine), not for Claude. As measured on 2026-10-18 only the
-> Kimi-slot key may run inference ([NVIDIA status](#nvidia-status-measured-2026-10-18)).
+> **Warning - the NVIDIA key is committed.** By your explicit decision, `config/keys.json` contains a
+> real NVIDIA API Catalog key and is committed to this repository and packaged into `kyora.pyz` and
+> the release ZIP. **Anyone with the repository, the ZIP or `kyora.pyz` can use that key and spend
+> that quota.** If it leaks, revoke and rotate it at [build.nvidia.com](https://build.nvidia.com)
+> and enter the new key in Settings. It is an NVIDIA key: it works for NVIDIA-hosted models (the
+> Nemotron role, the Kimi role's fallbacks and the Kyora agent engine), not for Claude or OpenRouter.
+> Your OpenRouter key is **not** committed ([Kimi K3.1 Pro on OpenRouter](#kimi-k31-pro-on-openrouter)).
 
 Claude Code uses your **Claude subscription login** (`claude auth login`); Kyora needs no Anthropic
 API key. The optional Messages-API engine activates only if you set `ANTHROPIC_API_KEY` (or
 `anthropic.api_key`) **and** `pip install anthropic`. The Kyora agent engine needs neither: it uses the
-NVIDIA keys, or `agent.base_url` / `agent.api_key` for another OpenAI-compatible endpoint (a key set
-there is sent only to that endpoint).
+NVIDIA key of the roles on its endpoint (never the OpenRouter key), or `agent.base_url` / `agent.api_key`
+for another OpenAI-compatible endpoint (a key set there is sent only to that endpoint).
 
 Important settings (`config/settings.json`): `server.port` (8765), `server.preview_port` (`null` =
 port + 1, i.e. 8766; `kyora serve --preview-port N`), `server.allowed_hosts` (`[]`), `claude_code.model`,
@@ -355,15 +416,18 @@ change), `engines.order` (`["hub", "claude_code", "anthropic_api", "openai_agent
 (`z-ai/glm-5.3`), `agent_engine.fallback_models`, `agent_engine.max_turns` (80), `agent_engine.timeout_s`
 (5400; all agent settings: [`docs/agent-engine.md`](docs/agent-engine.md#settings)),
 `kimi.reasoning_effort` / `kimi.judge_reasoning_effort` (`max`),
-`kimi.effort_field` (`top_level` sends `reasoning_effort`, Kimi K3's documented control; `extra_body` sends
+`kimi.effort_field` (for a Kimi model on an NVIDIA-style endpoint; OpenRouter gets its `reasoning`
+object instead: `top_level` sends `reasoning_effort`, Kimi's documented control there; `extra_body` sends
 `chat_template_kwargs.reasoning_effort`, the top-level field an OpenAI SDK `extra_body` would carry, which
-Kimi K3's template is not documented to read: best-effort, the model may ignore it),
+Kimi's template is not documented to read: best-effort, the model may ignore it),
 `nemotron.thinking_for_design`,
 `quality.min_pass_rate` (0.94), `quality.max_fix_iterations` (3), `quality.browser_wait_s` (1800),
 `quality.require_plan_approval`, `hub.expose_ui`.
 In `config/keys.json`, per role: `nvidia.<role>.model`, `.api_key`, `.base_url` (empty = `nvidia.base_url`)
-and `.fallback_models`, plus `nvidia.share_keys` (`true`: a role whose own key is refused with 401/403
-uses the other role's key on the same endpoint).
+and `.fallback_models`; for the Kimi role also `nvidia.kimi.fallback_base_url` (where its fallback models
+are asked, with that endpoint's keys; empty = `nvidia.base_url`) and `nvidia.kimi.provider` (OpenRouter
+provider routing, sent with the role's own model only); plus `nvidia.share_keys` (`true`: a role whose own
+key is refused with 401/403 uses the other role's key on the same endpoint).
 
 ## Security model
 
@@ -418,9 +482,10 @@ decides who counts as "the same machine" carefully.
   (default off: in one live comparison on 2026-10-18 GLM-5.3 without thinking passed the gate 28/28,
   with thinking it had not finished BUILD after 85 minutes) is sent to the models that read a thinking
   switch (Nemotron, and GLM's switch-off). Details: [`docs/agent-engine.md`](docs/agent-engine.md).
-* **Kimi K3** (`moonshotai/kimi-k3`; retired on NVIDIA's free endpoint, see
-  [NVIDIA status](#nvidia-status-measured-2026-10-18)): temperature 1.0, top_p 1.0, `reasoning_effort` max
-  for planning, judging and reviewing. A fallback model gets its own controls instead: a Nemotron model
+* **Kimi K3.1 Pro** (`moonshotai/kimi-k3.1-pro` on OpenRouter, see
+  [Kimi K3.1 Pro on OpenRouter](#kimi-k31-pro-on-openrouter)): temperature 1.0, top_p 1.0,
+  `reasoning: {"enabled": true}` (effort max) and the provider routing `nvidia.kimi.provider` for
+  planning, judging and reviewing. A fallback model gets its own controls instead: a Nemotron model
   `chat_template_kwargs.enable_thinking` (off for effort `low`), other families no effort field. Only
   Write, Edit, MultiEdit, NotebookEdit and Bash calls pass through the judge (Read, Glob and Grep are not
   judged). Local rules answer the obvious ones instantly (planned files, standard game paths such as
@@ -446,12 +511,15 @@ decides who counts as "the same machine" carefully.
 | Model restricted / not available (e.g. `claude-fable-5-1`) | Your account cannot use that model. Kyora falls back to `claude-opus-5-5`, then `claude-sonnet-5-5`, and shows which one served. Change `claude_code.model` / `fallback_models` in Settings to match your plan. |
 | `engine.compat_retry` in the log, `unknown option '--max-turns'` | Your CLI version hides or lacks `--max-turns` / `--append-system-prompt-file`. Kyora retried once without them (own turn watchdog, inline system prompt). Nothing to do; updating Claude Code (`claude update`) removes the retry. |
 | NVIDIA **401** in self-check | The key is missing, mistyped, expired or revoked. Create a new one at build.nvidia.com and enter it in Settings. |
-| NVIDIA **403** "Authorization failed" | The key's account lacks inference access (measured for the committed Nemotron-slot key on 2026-10-18). With `nvidia.share_keys` on, the role uses the other slot's key and self-check says WARN. Create a key at build.nvidia.com -> Get API Key on an account with inference access (or ask NVIDIA to enable it) and enter it in Settings. |
+| NVIDIA **403** "Authorization failed" | The key's account lacks inference access (measured on 2026-10-18 for the key then in the Nemotron slot, since removed). With two keys on the same endpoint and `nvidia.share_keys` on, the role uses the other one and self-check says WARN. Create a key at build.nvidia.com -> Get API Key on an account with inference access (or ask NVIDIA to enable it) and enter it in Settings. |
 | NVIDIA **410** / **404** for a model | The model is retired (410, e.g. `moonshotai/kimi-k3` since 2026-10-15) or not served for this account (404). The role continues on its fallback models (WARN in self-check, `model.fallback` in the log). Change the model or `fallback_models`, or point the role at another endpoint. |
 | NVIDIA **503** "Service temporarily overloaded" | The free tier is busy for that model. Kyora retried, then uses the next fallback model for 120 s and returns afterwards (`model.fallback`, `temporary: true`). If every model stays busy, the stage blocks with the reason; press *Resume* later. |
 | Kyora agent engine: "model did not call the tool" | The full self-check's tool-call request was answered without a tool call. Choose another `agent_engine.model` or add fallback models that support function calling. |
-| Kimi K3 **400** mentioning `reasoning_effort` | The gateway rejected the top-level field. Set Settings -> `kimi.effort_field` to `extra_body` (the effort is then sent as `chat_template_kwargs.reasoning_effort`) and re-run self-check, which names the field it sent and shows the provider's error body. "Accepted" means the gateway answered 200 to that body; a 1-token probe cannot show that the effort was applied. The `extra_body` mode is best-effort: Kimi K3's documented control is the top-level `reasoning_effort`, its template is not documented to read the keyword, so the model may ignore it and run at its default effort (self-check and the `model.request` / `model.metrics` events say so). |
-| `judge.unavailable` events | The judge could not be reached or the Kimi role failed; the tool ran (fail-open) and the run records it. Check the NVIDIA key and network. |
+| OpenRouter **402** / "Insufficient credits" | Your OpenRouter key has no credits left. Add credits at openrouter.ai/credits. Meanwhile the Kimi role answers with its fallback models on NVIDIA (WARN in self-check, `model.fallback` in the log) and Kyora asks OpenRouter again after 30 minutes. |
+| OpenRouter **401** / **403**, or self-check: Kimi role "answered by the fallback model ..." | The OpenRouter key is missing, mistyped or revoked. Enter it in Settings -> *Kimi API key (OpenRouter)* (saved to `keys.local.json`), put it in `config/keys.local.json`, or set `OPENROUTER_API_KEY`; then re-run self-check. |
+| OpenRouter **404** "No endpoints found ..." | The pinned provider (`nvidia.kimi.provider`, `allow_fallbacks: false`) cannot serve this request: the model is not available there right now, or the request needs a feature it lacks. For tool calls Kyora retries without a forced tool call, for images without the images; otherwise the role answers with its fallback models and asks OpenRouter again after 10 minutes. To let OpenRouter choose the provider, set `"provider": null` under `nvidia.kimi` in `keys.json` (an empty `{}` keeps the default routing); do the same when you change `nvidia.kimi.model` to a model that provider does not serve. |
+| Kimi role **400** mentioning `reasoning_effort` (NVIDIA-style endpoint) | The gateway rejected the top-level field. Set Settings -> `kimi.effort_field` to `extra_body` (the effort is then sent as `chat_template_kwargs.reasoning_effort`) and re-run self-check, which names the field it sent and shows the provider's error body. "Accepted" means the gateway answered 200 to that body; a 1-token probe cannot show that the effort was applied. The `extra_body` mode is best-effort: Kimi's documented control there is the top-level `reasoning_effort`, its template is not documented to read the keyword, so the model may ignore it and run at its default effort (self-check and the `model.request` / `model.metrics` events say so). |
+| `judge.unavailable` events | The judge could not be reached or the Kimi role failed; the tool ran (fail-open) and the run records it. Check the OpenRouter and NVIDIA keys and the network. |
 | Tests wait for the browser / run BLOCKED after `quality.browser_wait_s` | The harness page needs an open browser tab on a device that can reach Kyora. Keep the Kyora tab open in Safari. |
 | iSH: Safari does not load `http://127.0.0.1:8765` | iOS paused iSH (it pauses an app a few seconds after Safari comes to the front) and a paused iSH cannot answer. Kyora prevents that by holding iSH's location stream open: allow location access for iSH (*Allow While Using App*; Settings > Privacy & Security > Location Services > iSH if you refused) and restart Kyora. Wait for Kyora's `Open:` line before opening Safari, and type the whole address with `http://`. If iOS took the port away while iSH was paused, Kyora listens again within about ten seconds of running again; reload the page. Without location access, use Split View on an iPad (iSH and Safari side by side). |
 | iSH is very slow | Expected: iSH emulates x86 in software. Let the first start finish, expect a local BUILD with the Kyora agent engine to be slow too (or build through a Hub), skip Bench there. |
@@ -464,10 +532,10 @@ decides who counts as "the same machine" carefully.
 ## Licences and attribution
 
 * **Kyora's own code**: MIT ([`LICENSE`](LICENSE)).
-* **Kimi K3** (Moonshot AI): used through NVIDIA's hosted API until NVIDIA retired it there on
-  2026-10-15; reachable again through an endpoint that serves it (for example Moonshot's API) under that
-  provider's terms. The name "Kimi K3" is displayed in the UI, as the Kimi K3 License asks of large
-  commercial products (Kyora shows it always).
+* **Kimi K3.1 Pro** (Moonshot AI): used through OpenRouter with your key, under OpenRouter's and the
+  serving provider's terms; nothing of it is vendored. The model's name is displayed in the UI. Kimi K3
+  was used through NVIDIA's hosted API until NVIDIA retired it there on 2026-10-15 (its licence asks
+  large commercial products to show the name "Kimi K3"; Kyora showed it while it used that model).
 * **NVIDIA Nemotron-3-Ultra** and the other NVIDIA-hosted models Kyora calls (the fallback models and the
   Kyora agent engine's models, e.g. `z-ai/glm-5.3`, `poolside/laguna-xs-2.1`,
   `nvidia/nemotron-3.5-super-vl-120b-a12b`, `nvidia/nemotron-3-super-120b-a12b`): used through NVIDIA's API Catalog under NVIDIA's terms and the

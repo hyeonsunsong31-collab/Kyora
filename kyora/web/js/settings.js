@@ -13,16 +13,17 @@
 
   /* section: 'keys' (keys.json) or 'settings' (settings.json); path: dotted path inside it. */
   const GROUPS = [
-    { title: 'NVIDIA API Catalog', hint: 'Nemotron-3-Ultra + Kimi K3', fields: [
+    { title: 'Model endpoints', hint: 'Nemotron-3-Ultra on NVIDIA, Kimi K3.1 Pro on OpenRouter', fields: [
       { s: 'keys', p: 'nvidia.base_url', label: 'Base URL', type: 'url', help: 'OpenAI-compatible endpoint, default https://integrate.api.nvidia.com/v1' },
       { s: 'keys', p: 'nvidia.nemotron.model', label: 'Nemotron model', type: 'text' },
       { s: 'keys', p: 'nvidia.nemotron.api_key', label: 'Nemotron API key', type: 'secret' },
-      { s: 'keys', p: 'nvidia.kimi.model', label: 'Kimi K3 model', type: 'text' },
-      { s: 'keys', p: 'nvidia.kimi.api_key', label: 'Kimi K3 API key', type: 'secret' },
+      { s: 'keys', p: 'nvidia.kimi.model', label: 'Kimi model', type: 'text', help: 'Default moonshotai/kimi-k3.1-pro (Kimi K3.1 Pro) at OpenRouter, sent with reasoning on and the provider routing in keys.json (nvidia.kimi.provider).' },
+      { s: 'keys', p: 'nvidia.kimi.api_key', label: 'Kimi API key (OpenRouter)', type: 'secret', help: 'Saved in keys.local.json next to keys.json, never in keys.json (which may be public); OPENROUTER_API_KEY works too. Without it the Kimi role answers with its fallback models on NVIDIA.' },
       { s: 'keys', p: 'nvidia.nemotron.base_url', label: 'Nemotron base URL', type: 'url', help: 'Empty = the base URL above.' },
-      { s: 'keys', p: 'nvidia.kimi.base_url', label: 'Kimi K3 base URL', type: 'url', help: 'Empty = the base URL above. Another OpenAI-compatible endpoint works with its own key, e.g. https://api.moonshot.ai/v1 with a Moonshot API key for the real Kimi K3 (set the model id that endpoint uses).' },
+      { s: 'keys', p: 'nvidia.kimi.base_url', label: 'Kimi base URL', type: 'url', help: 'Default https://openrouter.ai/api/v1. Empty = the base URL above. Another OpenAI-compatible endpoint works with its own key (set the model id that endpoint uses).' },
+      { s: 'keys', p: 'nvidia.kimi.fallback_base_url', label: 'Kimi fallback base URL', type: 'url', help: 'Where the Kimi fallback models are asked, with that endpoint\'s keys. Empty = the base URL above (NVIDIA).' },
       { s: 'keys', p: 'nvidia.nemotron.fallback_models', label: 'Nemotron fallback models (comma separated)', type: 'csv', help: 'Tried in order when the model is gone (HTTP 404/410) or stays overloaded (503); every substitution is shown in the log and in Self-check.' },
-      { s: 'keys', p: 'nvidia.kimi.fallback_models', label: 'Kimi K3 fallback models (comma separated)', type: 'csv', help: 'Tried in order when the model is gone (HTTP 404/410) or stays overloaded (503). NVIDIA retired moonshotai/kimi-k3 on 2026-10-15 (HTTP 410), so these answer the Kimi role there.' },
+      { s: 'keys', p: 'nvidia.kimi.fallback_models', label: 'Kimi fallback models (comma separated)', type: 'csv', help: 'Asked at the fallback base URL when the Kimi model cannot answer: gone (404/410), overloaded (503), or its endpoint has no key, refuses it, has no credits or cannot be reached. Every substitution is shown.' },
       { s: 'keys', p: 'nvidia.share_keys', label: 'Share keys between the roles', type: 'bool', help: 'A role whose own key is refused (HTTP 401/403) uses the other role\'s key on the same endpoint. A key is never sent to another endpoint.' }
     ] },
     { title: 'Anthropic', hint: 'Claude without a subscription', fields: [
@@ -60,10 +61,10 @@
       { s: 'settings', p: 'claude_code.extra_args', label: 'Extra CLI arguments (JSON array)', type: 'json', help: 'Appended to every invocation, e.g. ["--verbose"].', ro: FILE_ONLY_NOTE },
       { s: 'settings', p: 'claude_code.judge_tools', label: 'Judged tools', type: 'json' }
     ] },
-    { title: 'Kimi K3', hint: 'planner + judge', fields: [
+    { title: 'Kimi K3.1 Pro', hint: 'planner + judge', fields: [
       { s: 'settings', p: 'kimi.reasoning_effort', label: 'Reasoning effort', type: 'select', options: KIMI_EFFORTS },
       { s: 'settings', p: 'kimi.judge_reasoning_effort', label: 'Judge reasoning effort', type: 'select', options: KIMI_EFFORTS },
-      { s: 'settings', p: 'kimi.effort_field', label: 'Effort field', type: 'select', options: ['top_level', 'extra_body'], help: 'Switch to extra_body if the gateway rejects a top-level reasoning_effort (Self-check shows the error). extra_body sends chat_template_kwargs.reasoning_effort, which Kimi K3 is not documented to read: best-effort, the model may ignore it.' }
+      { s: 'settings', p: 'kimi.effort_field', label: 'Effort field', type: 'select', options: ['top_level', 'extra_body'], help: 'For a Kimi model on an NVIDIA-style endpoint only (OpenRouter gets its reasoning object: max sends reasoning.enabled=true, high/low add reasoning.effort). Switch to extra_body if the gateway rejects a top-level reasoning_effort (Self-check shows the error); extra_body sends chat_template_kwargs.reasoning_effort, which Kimi models are not documented to read: best-effort, the model may ignore it.' }
     ] },
     { title: 'Nemotron-3-Ultra', hint: 'design director', fields: [
       { s: 'settings', p: 'nemotron.thinking_for_design', label: 'Thinking mode for design documents', type: 'bool' }
@@ -159,7 +160,10 @@
       root.innerHTML = '<section class="card"><div class="empty"><strong>Settings unavailable</strong><span class="why">GET /api/settings did not answer. Is the Kyora server running?</span></div></section>';
       return;
     }
-    if (sub) sub.innerHTML = 'Keys are masked; typing a new value replaces the stored one. Masked values are never sent back.' + (data.config_dir ? ' Config folder: <code>' + U().esc(data.config_dir) + '</code>' : '');
+    const fromLocal = Array.isArray(data.local_keys) ? data.local_keys : [];
+    if (sub) sub.innerHTML = 'Keys are masked; typing a new value replaces the stored one. Masked values are never sent back. Keys are saved in <code>keys.local.json</code> (not in keys.json, which may be public).' +
+      (fromLocal.length ? ' From keys.local.json now: ' + fromLocal.map((k) => '<code>' + U().esc(k) + '</code>').join(', ') + '.' : '') +
+      (data.config_dir ? ' Config folder: <code>' + U().esc(data.config_dir) + '</code>' : '');
     let html = '<div id="settings-notice"' + (notice ? '' : ' hidden') + '>' + (notice ? '<div class="notice" data-tone="' + notice.tone + '" role="status">' + notice.html + '</div>' : '') + '</div>';
     html += GROUPS.map((g, gi) => '<section class="card settings-group" aria-labelledby="sg-' + gi + '"><h2 id="sg-' + gi + '">' + U().esc(g.title) + (g.hint ? ' <span class="hint">' + U().esc(g.hint) + '</span>' : '') + '</h2>' +
       g.fields.filter((f) => getPath(data[f.s], f.p) !== undefined || editable(f)).map(fieldHtml).join('') + '</section>').join('');

@@ -900,6 +900,17 @@ def _record_nemotron(ctx: StageContext, nemo: Any, purpose: str) -> None:
                                           "fallback": bool(chain) and model != chain.requested})
 
 
+def planner_label(run) -> str:
+    """Who planned ``run``: the Kimi role and the model that answered its plan stage (``extra.role_models``)."""
+    rec = ((getattr(run, "extra", None) or {}).get("role_models") or {}).get("plan")
+    if not isinstance(rec, dict) or not rec.get("model"):
+        return "the Kimi role"
+    requested = rec.get("requested_model")
+    if rec.get("fallback") and requested and requested != rec["model"]:
+        return f"the Kimi role ({rec['model']}, fallback for {requested})"
+    return f"the Kimi role ({rec['model']})"
+
+
 def write_build_files(ctx: StageContext) -> None:
     """Write CLAUDE.md, KYORA_PLAN.md, KYORA_TESTSPEC.md, DESIGN.md and the manifest skeleton into the work tree."""
     plan = ctx.read_artifact("plan") or {}
@@ -928,6 +939,7 @@ def write_build_files(ctx: StageContext) -> None:
                                                          files_list=_bullets(files), contract_list=_bullets(contract),
                                                          constraints_list=_bullets(constraints)))
     atomic_write_text(ws / "KYORA_PLAN.md", render_template("KYORA_PLAN.md.tmpl", title=title, engine=engine,
+                                                             planner=planner_label(ctx.run),
                                                              preview=plan.get("preview", True),
                                                              summary=plan.get("summary") or "", files_list=_bullets(files),
                                                              tasks_list=_bullets(tasks), constraints_list=_bullets(constraints)))

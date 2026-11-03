@@ -158,7 +158,7 @@ These are deliberate, visible design rules rather than copy choices:
 - **`-` for unknown.** Metric tiles, the gauge, judge counters, the iteration counter and
   bench scores show `-` until a measurement exists; nothing is estimated in the browser. When
   the backend says token counts were not reported by the API, the tile says so.
-- **Configured is not reachable.** The capability strip shows Nemotron and Kimi K3 as
+- **Configured is not reachable.** The capability strip shows Nemotron and Kimi K3.1 Pro as
   "configured" in the info colour, not green: reachability and latency are only claimed after
   Self-check measured them.
 - **Resolved model, not requested model.** The Claude tile and run chips show the model the

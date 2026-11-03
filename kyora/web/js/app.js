@@ -429,7 +429,7 @@
     };
     model('Nemotron role', 'nemotron');
     model('Kimi role', 'kimi');
-    if (comp.judge && comp.kimi) out.push(chipHtml('Judge: rules + Kimi-role model', 'info', 'Write, Edit, MultiEdit, NotebookEdit and Bash calls of the code engine pass through the judge before they run: local rules allow planned files, standard game paths and read-only commands; the Kimi role\'s model (Kimi K3, or the fallback model that answers for it - the log names it) decides the rest. Read, Glob and Grep are not judged.'));
+    if (comp.judge && comp.kimi) out.push(chipHtml('Judge: rules + Kimi-role model', 'info', 'Write, Edit, MultiEdit, NotebookEdit and Bash calls of the code engine pass through the judge before they run: local rules allow planned files, standard game paths and read-only commands; the Kimi role\'s model (Kimi K3.1 Pro, or the fallback model that answers for it - the log names it) decides the rest. Read, Glob and Grep are not judged.'));
     else if (comp.judge) out.push(chipHtml('Judge: rules only', 'warn', 'The Kimi role is not configured: only built-in rules judge Write/Edit/Bash calls; calls the rules do not settle are allowed unjudged and counted as unavailable.'));
     else out.push(chipHtml('Judge: missing', 'danger', missing.judge || 'not loaded'));
     // a missing Claude Code is only a danger when no other engine can run BUILD/FIX
@@ -1473,7 +1473,7 @@
     const j = ctx ? ctx.judge : emptyJudge();
     const cell = (tone, n, key, label) => '<div class="counter" data-tone="' + tone + '" data-counter="' + key + '"><b>' + (ctx ? esc(n) : '-') + '</b><span>' + esc(label || key) + '</span></div>';
     // verdict sources: local rules and the per-run cache answer without a model call; only "by model" asked the
-    // Kimi role's model (Kimi K3 or its fallback; each verdict in the log names the model that judged)
+    // Kimi role's model (Kimi K3.1 Pro or its fallback; each verdict in the log names the model that judged)
     host.innerHTML = cell('ok', j.allowed, 'allowed') + cell('danger', j.denied, 'denied') + cell('warn', j.unavailable, 'unavailable') +
       cell('', j.rule, 'rule', 'by rule') + cell('', j.cached, 'cached') + cell('', j.kimi, 'kimi', 'by model');
   }

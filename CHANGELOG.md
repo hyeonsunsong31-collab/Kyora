@@ -4,6 +4,46 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 
 ## Unreleased
 
+### Changed - 2026-11-03: the Kimi role runs Kimi K3.1 Pro through OpenRouter
+
+- **The Kimi role (intake, plan, judge, review) asks `moonshotai/kimi-k3.1-pro` at
+  `https://openrouter.ai/api/v1`**, with the request the user specified: `reasoning: {"enabled": true}`
+  (effort `max`; `high`/`low` add `reasoning.effort`), `provider: {"only": ["moonshotai/mxfp4"],
+  "allow_fallbacks": false}` (`nvidia.kimi.provider`, sent only with the role's own model), and the
+  assistant message's `reasoning_details` passed back unmodified in the next turn. Streamed
+  `reasoning_details` fragments are merged into the blocks OpenRouter sent (by index and type; text,
+  summary and data concatenated, a new id starts a new block); visible reasoning text is counted once. A
+  model on another endpoint gets `reasoning_content` and never `reasoning_details`.
+- **The OpenRouter key is not committed** (the repository is public). New `config/keys.local.json`,
+  merged over `keys.json`, git-ignored and excluded from `kyora.pyz` and the public release ZIP; Settings
+  now saves every secret (Nemotron, Kimi, Anthropic and agent keys, hub token) there and never into
+  `keys.json`, and lists which keys come from it. `OPENROUTER_API_KEY` fills the key of a Kimi role on
+  OpenRouter (and `NVIDIA_API_KEY` only roles on an NVIDIA endpoint); environment keys are never saved.
+  `scripts/build_release.py --local-keys FILE` also writes a private ZIP with the key
+  (`dist/private/`, git-ignored, owner-readable only). The judge denies `keys.local.json` like
+  `keys.json`.
+- **Fallbacks on another endpoint.** When OpenRouter cannot serve the role - no key (nothing is sent),
+  key refused (401/403), no credits (402 or a credit 429), unreachable, or no allowed provider (404 "No
+  endpoints found") - the role continues on its fallback models at the new
+  `nvidia.kimi.fallback_base_url` (empty = NVIDIA's endpoint) with that endpoint's keys only, and asks
+  OpenRouter again after 30 min (key, credits), 10 min (no provider) or 5 min (unreachable)
+  (`model.fallback`, `temporary: true`). A 404 that refuses only tools or images keeps the role on
+  OpenRouter: the request is repeated without a forced tool call, or without the images.
+- **Keys.** The NVIDIA key that answers moved from the Kimi slot to the Nemotron slot; the key that
+  NVIDIA refused for inference (HTTP 403 since 2026-10-18) was removed from `keys.json`.
+- **Self-check** probes the role on OpenRouter (no request without a key), says when a fallback answered
+  and at which host, and reports the `reasoning` object and provider routing it sent.
+- **Labels and docs** name Kimi K3.1 Pro (navigation, prompt help, judge note, deck, engine prompt,
+  Tokkio persona, launcher help, bench warnings now mention OpenRouter tokens). Each project's
+  `KYORA_PLAN.md` now names the model that answered the plan stage instead of a fixed
+  "Kimi K3 (moonshotai/kimi-k3)".
+- **CI**: the live model job passes the repository secret `OPENROUTER_API_KEY` to the live check (only
+  that job; without the secret the role's NVIDIA fallbacks answer and the report says so);
+  `scripts/nvidia_diagnose.py` skips slots whose role runs on another endpoint.
+- **Not measured yet**: this environment cannot reach openrouter.ai, so no live OpenRouter call has been
+  made; the tests use a mock that speaks OpenRouter's request and streaming format. The first live call
+  is self-check on the user's device, or the CI job once the secret is set.
+
 ### Fixed - 2026-10-24: Safari on iPhone/iPad reaches Kyora running in iSH
 
 - **Kyora keeps answering while Safari is in front.** iOS pauses an app a few seconds after another app

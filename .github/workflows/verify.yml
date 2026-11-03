@@ -228,7 +228,7 @@ jobs:
         run: python scripts/vendor_tokkio.py --verify
 
   nvidia-live:
-    name: live NVIDIA API (Kimi K3, Nemotron-3-Ultra)
+    name: live model APIs (Kimi role, Nemotron-3-Ultra)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -238,7 +238,13 @@ jobs:
           python-version: "3.12"
       - name: what the configured keys can call (models listed, per-model status)
         run: python scripts/nvidia_diagnose.py --all-models --tool-probe --out nvidia-diagnose.json
-      - name: every model role against integrate.api.nvidia.com
+      # The Kimi role is Kimi K3.1 Pro on OpenRouter. Its key is never committed (the repository is public):
+      # with the repository secret OPENROUTER_API_KEY set this step calls OpenRouter; without it the variable
+      # is empty, Kyora ignores it and the role's fallback models answer on NVIDIA's endpoint (the report says
+      # which). Only this job gets the key: it costs a few thousand tokens per run.
+      - name: every model role against its endpoint (Kimi role on OpenRouter when the secret is set)
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: python scripts/live_nvidia_check.py --out nvidia-live-report.json
       - uses: actions/upload-artifact@v4
         if: always()

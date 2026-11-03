@@ -13,19 +13,20 @@ An orchestration application. External systems in fixed roles over their own API
 | Role | System | Access |
 |---|---|---|
 | Text/design director: GDD prose, narrative, dialogue, UI/UX spec + design tokens + copy, presenter narration | NVIDIA Nemotron-3-Ultra (role `nemotron`) | `https://integrate.api.nvidia.com/v1` (or `nvidia.nemotron.base_url`), model `nvidia/nemotron-3-ultra-550b-a55b`, fallbacks `nvidia.nemotron.fallback_models`, OpenAI-compatible chat completions |
-| Planner + judge: intake (vision), plan + task graph + acceptance tests, judgement of the code engine's Write/Edit/Bash calls that local rules do not settle, final review | Moonshot Kimi-K3 (role `kimi`) | same endpoint (or `nvidia.kimi.base_url`), model `moonshotai/kimi-k3`, fallbacks `nvidia.kimi.fallback_models` (on NVIDIA's free endpoint Kimi K3 answers 410 since 2026-10-15, so the fallbacks answer there) |
+| Planner + judge: intake (vision), plan + task graph + acceptance tests, judgement of the code engine's Write/Edit/Bash calls that local rules do not settle, final review | Moonshot Kimi K3.1 Pro (role `kimi`) | `https://openrouter.ai/api/v1` (`nvidia.kimi.base_url`), model `moonshotai/kimi-k3.1-pro`, `reasoning: {"enabled": true}`, provider routing `nvidia.kimi.provider` (`only: ["moonshotai/mxfp4"]`, `allow_fallbacks: false`), `reasoning_details` echoed back unmodified; key from `keys.local.json` or `OPENROUTER_API_KEY` (never committed). Fallbacks `nvidia.kimi.fallback_models` at `nvidia.kimi.fallback_base_url` (empty = NVIDIA's endpoint, NVIDIA keys) when OpenRouter has no key, refuses it, has no credits, cannot be reached or has no provider. Kimi K3 on NVIDIA's endpoint answers 410 since 2026-10-15 |
 | Code engine: implement, debug, test, build | Claude Code CLI at `--effort max` (subscription login) ; optional Messages-API engine (same Claude models, API key) ; Kyora agent engine (non-Claude model, OpenAI-compatible endpoint) ; remote Kyora Hub | subprocess / official `anthropic` SDK / `/chat/completions` with Kyora's tool loop / HTTP |
 | Presenter + custom-view output channel | NVIDIA Tokkio 5.0.0-ga (vendored, unmodified) + Kyora overlay processor | deployed by the user on an NVIDIA-GPU Kubernetes cluster |
 
 Honesty rules: never fabricate model output, metrics or verdicts. A missing engine =
 BLOCKED. Measured numbers only. Every substitution (fallback model, shared key, engine failover,
-automatic resume) is published as an event. "Kimi K3" is displayed in the UI (licence).
+automatic resume) is published as an event. The role's model, Kimi K3.1 Pro, is named in the UI.
 
 ## Runtime layout (`KYORA_HOME`, default `~/.kyora`)
 
 ```
 KYORA_HOME/kyora.db                         events + project index (sqlite)
 KYORA_HOME/config/{keys.json,settings.json} seeded config when none found elsewhere
+<config dir>/keys.local.json                 private keys merged over keys.json (git-ignored; Settings saves secrets here)
 KYORA_HOME/bin/kyora_hook.py                extracted PreToolUse hook
 KYORA_HOME/logs/
 KYORA_HOME/projects/<pid>/project.json
@@ -45,15 +46,18 @@ KYORA_HOME/bench/<timestamp>/
 
 ## Foundation APIs (exist)
 
-- `kyora.config.Config`: `.nvidia` (base_url, share_keys, `alt_keys(role)`, nemotron/kimi {model, api_key, base_url
-  (resolved: the role's own or `nvidia.base_url`), fallback_models}), `.anthropic_api_key`, `.agent_engine`
+- `kyora.config.Config`: `.nvidia` (base_url, share_keys, `alt_keys(role)`, `keys_for(base_url)`, nemotron/kimi
+  {model, api_key, base_url (resolved: the role's own or `nvidia.base_url`), fallback_models, fallback_base_url
+  (Kimi: where its fallbacks are asked; Nemotron: its own endpoint), provider (OpenRouter routing)}),
+  `.anthropic_api_key`, `.agent_engine`
   (`AgentEngineCfg`: the `agent_engine` settings plus the resolved endpoint base_url, api_key, key_label, alt_keys),
   `.engines` (order, failover, auto_resume_on_limit),
   `.claude_code` (command, model, fallback_models, effort, max_turns, timeout_s, idle_timeout_s, resume_for_fixes,
   judge_tools, extra_args), `.kimi` (reasoning_effort, judge_reasoning_effort, effort_field), `.nemotron`
   (thinking_for_design), `.quality` (min_pass_rate, max_fix_iterations, browser_wait_s, require_plan_approval,
   auto_run_browser_tests), `.hub` (url, token, expose_ui), `.tokkio` (ui_url, configurator_url), `.server`
-  (host, port, workers, preview_port, allowed_hosts); `to_public(reveal)`, `apply_patch(patch)`, `save()`.
+  (host, port, workers, preview_port, allowed_hosts); `to_public(reveal)`, `apply_patch(patch)`, `save()` (secrets
+  and paths present in `keys.local.json` are written there, never to `keys.json`; environment keys are never saved).
 - `kyora.pipeline.events.EventBus`: `publish(type, data, run_id=, project_id=, persist=)`, `subscribe(run_id=,
   project_id=, types=[...,'engine.*'])` -> Subscription(.queue, .close()), `replay(since_id, ...)`, `last_id()`,
   `wait_for(type, pred, timeout, run_id=)`. `DeltaCoalescer(bus, run_id=, project_id=, role=, model=)` for token deltas.
@@ -219,8 +223,8 @@ Keys the code keeps in `run.extra` are written as top-level keys of `run.json` (
 `ui_spec.json`: `{tokens:{color:{},type:{},spacing:{},radius:{}}, screens:[{id,name,purpose,components:[...]}], copy:{}}`.
 
 Judge request (hook -> `POST /api/judge`): `{"hook_token","run_id","session_id","cwd","hook_event_name":"PreToolUse","tool_name","tool_use_id","tool_input":{...},"deadline_ms":278000}`
-Verdict: `{"decision":"allow|deny","reason":"...","risk":"low|medium|high","source":"kimi|rule|cache|timeout","judge_model":"moonshotai/kimi-k3","latency_ms":2210}`
-(`deadline_ms` = the hook's wait budget, a little under `KYORA_HOOK_TIMEOUT_S`; a Kimi verdict slower than it is journaled `late`, never governs, and the route answers `source:"timeout"` allow. `judge_model` is the model that answered the call: Kimi K3 or the Kimi role's fallback.)
+Verdict: `{"decision":"allow|deny","reason":"...","risk":"low|medium|high","source":"kimi|rule|cache|timeout","judge_model":"moonshotai/kimi-k3.1-pro","latency_ms":2210}`
+(`deadline_ms` = the hook's wait budget, a little under `KYORA_HOOK_TIMEOUT_S`; a Kimi verdict slower than it is journaled `late`, never governs, and the route answers `source:"timeout"` allow. `judge_model` is the model that answered the call: Kimi K3.1 Pro or the Kimi role's fallback.)
 Rule verdicts carry `rule`: `kyora_secrets` (a path or command that reaches Kyora's config directory, key files or Hub token: deny), `read_only_tool`, read-only command chains whose every path argument lies inside the workspace (`env`/`printenv`, variable assignments and paths elsewhere defer), and the escape/destructive-command denials; the full list is in [`claude-code-engine.md`](claude-code-engine.md#6-judge-judgeservice).
 
 Review (`review-<n>.json`, `review.decision{iteration,decision,reasons,source,model,images_sent,screenshots}`): `source:"model"` with the answering `model` and how many of the `screenshots` reached it (`images_sent`: 0 for a model that takes no images, which gets a note and a system prompt without them), or `source:"rules"` with `model:null` when no review model could answer: a `fix` decision whose instructions are the gate's failing checks (required first). `run.extra.role_models` records the model that answered intake, plan, design, ui_spec and each review.

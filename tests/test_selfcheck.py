@@ -273,10 +273,10 @@ class ReportTests(_Base):
         self.assertEqual(nim.chats[0]["extra"], {"chat_template_kwargs": {"reasoning_effort": "high"}})
         self.assertNotIn("extra_body", nim.chats[0]["extra"])
         self.assertEqual(it["measured"]["effort_sent"], "chat_template_kwargs.reasoning_effort=high")
-        # Kimi K3's template is not documented to read this keyword: the detail says best-effort and never
+        # Kimi's template is not documented to read this keyword: the detail says best-effort and never
         # claims that the level was applied.
         self.assertIn("request with chat_template_kwargs.reasoning_effort=high accepted (extra_body; best-effort: "
-                      "Kimi K3 documents only the top-level reasoning_effort, so the model may ignore "
+                      "Kimi documents only the top-level reasoning_effort, so the model may ignore "
                       "chat_template_kwargs.reasoning_effort)", it["detail"])
         self.assertIn(KIMI_EFFORT_BEST_EFFORT, it["detail"])
         self.assertTrue(it["measured"]["effort_best_effort"])

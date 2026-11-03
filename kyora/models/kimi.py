@@ -1,8 +1,14 @@
-"""Moonshot Kimi-K3 wrapper: Kyora's planner, instant judge and reviewer (role ``kimi``).
+"""Moonshot Kimi wrapper: Kyora's planner, instant judge and reviewer (role ``kimi``).
 
-Kimi-K3 is reached through the NVIDIA API Catalog (OpenAI-compatible, model
-``moonshotai/kimi-k3``) with :class:`~kyora.models.nim_client.NIMClient`. It
-does four jobs in the pipeline:
+The role's model is Kimi K3.1 Pro (``moonshotai/kimi-k3.1-pro``) through OpenRouter,
+reached with :class:`~kyora.models.nim_client.NIMClient` like every model here
+(Kimi K3 on NVIDIA's endpoint was retired on 2026-10-15). On OpenRouter each request
+carries ``reasoning: {"enabled": true}`` and the configured provider routing
+(``nvidia.kimi.provider``), and the answer's ``reasoning_details`` go back unmodified
+in later turns. The fallback models are asked at their own endpoint (by default
+NVIDIA's, with the NVIDIA keys): when OpenRouter cannot serve the role - no key,
+key refused, no credits, unreachable, no provider - the role continues there and
+says so (``model.fallback``). It does four jobs in the pipeline:
 
 * :meth:`Kimi.intake` - turns the user's prompt and attachments (reference
   images are sent as ``image_url`` data URLs, documents as excerpts, ZIPs as
@@ -17,9 +23,9 @@ does four jobs in the pipeline:
 Sampling is fixed at ``temperature 1.0, top_p 1.0``; the reasoning effort is
 sent as the top-level ``reasoning_effort`` field or, with
 ``settings.kimi.effort_field = extra_body``, as the chat-template keyword
-``chat_template_kwargs.reasoning_effort`` (see :meth:`Kimi.effort_extra`). Kimi K3's documented control is
-the top-level field; its template is not documented to read that keyword, so the ``extra_body`` mode is
-best-effort and the model may ignore it (:meth:`Kimi.effort_report` says so in ``model.request`` /
+``chat_template_kwargs.reasoning_effort`` (see :meth:`Kimi.effort_extra`). Kimi's documented control on
+those endpoints is the top-level field; its template is not documented to read that keyword, so the
+``extra_body`` mode is best-effort and the model may ignore it (:meth:`Kimi.effort_report` says so in ``model.request`` /
 ``model.metrics`` events, self-check in its detail line). Kimi's preserved thinking requires the
 COMPLETE assistant message (``reasoning_content`` and ``tool_calls``) to be
 echoed back on the next turn; :class:`KimiConversation` stores exactly what
@@ -42,8 +48,9 @@ import time
 from typing import Any, Callable, Mapping, Sequence
 
 from .nim_client import (
-    ChatResult, ModelChain, NIMClient, NIMError, call_with_model_fallback, chat_with_events, extract_structured,
-    force_tool, function_tool, is_tool_rejection, json_for_prompt, render_prompt, tool_call_arguments,
+    _CREDIT_WORDING_RE, _NO_ENDPOINT_RE, ChatResult, ModelChain, NIMCancelled, NIMClient, NIMEndpointDown, NIMError,
+    NIMTimeout, NIMUnreachable, call_with_model_fallback, chat_with_events, explain_http_failure, extract_structured,
+    force_tool, function_tool, is_tool_rejection, json_for_prompt, render_prompt, tool_call_arguments, url_host,
 )
 
 log = logging.getLogger("kyora.models.kimi")
@@ -97,9 +104,20 @@ def without_images(messages: list[dict], model: str, system: str | None = None) 
 
 
 def _image_refused(exc: BaseException) -> bool:
-    """A request with images that the endpoint refused or broke on before any output (400/422, a 5xx)."""
+    """A request with images that the endpoint refused or broke on before any output (400/422, a 5xx, or
+    OpenRouter's 404 "No endpoints found that support image input")."""
     status = getattr(exc, "status", None)
-    return isinstance(exc, NIMError) and isinstance(status, int) and (status in IMAGE_REFUSAL_STATUSES or status >= 500)
+    if not isinstance(exc, NIMError) or not isinstance(status, int):
+        return False
+    if status == 404:
+        body = f"{exc} {exc.body or ''}".lower()
+        return bool(_NO_ENDPOINT_RE.search(body)) and "image" in body
+    return status in IMAGE_REFUSAL_STATUSES or status >= 500
+
+
+# How long the role's own endpoint waits after it could not serve the requested model while the fallback models
+# answer elsewhere: unreachable / no provider soon retried, a refused key or no credits after half an hour.
+ENDPOINT_RETRY_S = {"unreachable": 300.0, "no_provider": 600.0, "key": 1800.0, "credits": 1800.0}
 JUDGE_STRING_LIMIT = 4000
 MAX_IMAGE_DATA_URL_CHARS = 12_000_000
 EXCERPT_CHARS = 3000
@@ -107,7 +125,7 @@ EXCERPT_BUDGET = 24_000
 LISTING_ITEMS = 80
 GATE_NOT_PASSED_REASON = "gate not passed; complete is not allowed"
 # kimi.effort_field = extra_body: what may be said about the effort it sends. Never that it was applied.
-EXTRA_BODY_EFFORT_NOTE = ("best-effort: Kimi K3 documents only the top-level reasoning_effort, so the model "
+EXTRA_BODY_EFFORT_NOTE = ("best-effort: Kimi documents only the top-level reasoning_effort, so the model "
                           "may ignore chat_template_kwargs.reasoning_effort")
 
 # Request shapes tried for structured output, most specific first. A gateway that
@@ -830,12 +848,17 @@ class Kimi:
     MAX_TOKENS: dict[str, int] = {"intake": 16384, "plan": 32768, "judge": 8192, "review": 16384}
     TIMEOUT_S: dict[str, float] = {"judge": 240.0}
 
-    def __init__(self, client: NIMClient, model: str, kimi_cfg, bus, fallback_models: Sequence[str] = ()):
+    def __init__(self, client: NIMClient, model: str, kimi_cfg, bus, fallback_models: Sequence[str] = (), *,
+                 fallback_client: NIMClient | None = None, provider: Mapping | None = None):
+        """``client`` serves ``model``; ``fallback_client`` (``None``: the same client) serves ``fallback_models``.
+        ``provider`` is the OpenRouter provider routing sent with requests for ``model`` on OpenRouter."""
         if client is None:
             raise ValueError("Kimi needs a NIMClient")
         if not model:
             raise ValueError("Kimi needs a model id")
         self.client = client
+        self.fallback_client = fallback_client
+        self.provider: dict = copy.deepcopy(dict(provider or {}))
         self.chain = ModelChain(model, fallback_models)
         self.cfg = kimi_cfg  # a KimiCfg, or a callable returning the current one (Settings apply without a restart)
         self.bus = bus
@@ -849,9 +872,28 @@ class Kimi:
         """The model the next call starts with: the requested one, or the fallback that replaced it."""
         return self.chain.active
 
-    def configure(self, model: str, fallback_models: Sequence[str] = ()) -> None:
-        """Settings changed: a new requested model / fallback list (forgets skipped models)."""
+    def configure(self, model: str, fallback_models: Sequence[str] = (), *, provider: Mapping | None = None,
+                  fallback_client: NIMClient | None | bool = False) -> None:
+        """Settings changed: a new requested model / fallback list (forgets skipped models), provider routing and
+        fallback client (``False``: unchanged)."""
         self.chain = ModelChain(model, fallback_models)
+        if provider is not None:
+            self.provider = copy.deepcopy(dict(provider))
+        if fallback_client is not False:
+            self.fallback_client = fallback_client
+
+    def client_for(self, model: str) -> NIMClient:
+        """The client of the endpoint that serves ``model``: the requested model's own, or the fallbacks'."""
+        if self.fallback_client is not None and model != self.chain.requested:
+            return self.fallback_client
+        return self.client
+
+    def on_openrouter(self, model: str | None = None) -> bool:
+        """``model`` (default: the requested one) is asked at OpenRouter."""
+        return bool(getattr(self.client_for(model or self.chain.requested), "openrouter", False))
+
+    def _two_endpoints(self) -> bool:
+        return self.fallback_client is not None and bool(self.chain.fallbacks)
 
     # ------------------------------------------------------------------ settings
     def _cfg(self):
@@ -879,14 +921,19 @@ class Kimi:
     def effort_extra(self, effort: str | None, model: str | None = None) -> dict:
         """Body fields carrying the reasoning effort, placed per ``kimi.effort_field``.
 
-        For a fallback model that is not a Kimi model (``model``), Kimi's ``reasoning_effort`` is not
-        sent: a Nemotron fallback gets its own thinking switch (``chat_template_kwargs.enable_thinking``),
+        On OpenRouter (the requested Kimi K3.1 Pro by default) the field is OpenRouter's ``reasoning``
+        object: ``{"enabled": true}`` for ``max`` - the request the user specified - and
+        ``{"enabled": true, "effort": "high"|"low"}`` for the lower settings; ``kimi.effort_field`` does
+        not apply there. For a fallback model that is not a Kimi model (``model``), Kimi's ``reasoning_effort``
+        is not sent: a Nemotron fallback gets its own thinking switch (``chat_template_kwargs.enable_thinking``),
         any other model no effort field.
         """
         if effort is None:
             effort = self.reasoning_effort
         if not effort:
             return {}
+        if self.on_openrouter(model):
+            return {"reasoning": {"enabled": True} if effort == "max" else {"enabled": True, "effort": effort}}
         family = model_family(model or self.chain.requested)
         if family == "nemotron":  # Nemotron has an on/off switch only: "low" turns thinking off
             return {"chat_template_kwargs": {"enable_thinking": effort != "low"}}
@@ -902,13 +949,29 @@ class Kimi:
             log.warning("kimi: unknown effort_field %r; sending reasoning_effort top-level", field)
         return {"reasoning_effort": effort}
 
+    def request_extra(self, effort: str | None, model: str | None = None) -> dict:
+        """Every extra body field of a request for ``model``: the effort (:meth:`effort_extra`) and, for the
+        requested model on OpenRouter, the provider routing (``nvidia.kimi.provider``)."""
+        extra = self.effort_extra(effort, model)
+        model = model or self.chain.requested
+        if self.provider and model == self.chain.requested and self.on_openrouter(model):
+            extra["provider"] = copy.deepcopy(self.provider)
+        return extra
+
     def effort_report(self, effort: str | None, model: str | None = None) -> dict:
         """Event fields naming the effort field and value sent (``effort_sent``), never that it was applied.
 
         In the ``extra_body`` mode they add ``effort_best_effort: true`` and :data:`EXTRA_BODY_EFFORT_NOTE`:
-        Kimi K3's template is not documented to read ``chat_template_kwargs.reasoning_effort``.
+        Kimi's template is not documented to read ``chat_template_kwargs.reasoning_effort``. On OpenRouter
+        they name the ``reasoning`` object and the provider routing sent (``provider_sent``).
         """
-        extra = self.effort_extra(effort, model)
+        extra = self.request_extra(effort, model)
+        if isinstance(extra.get("reasoning"), dict):
+            out = {"effort_sent": "reasoning=" + json.dumps(extra["reasoning"], separators=(",", ":"))
+                                  + " (OpenRouter)"}
+            if extra.get("provider"):
+                out["provider_sent"] = json.dumps(extra["provider"], separators=(",", ":"))
+            return out
         kwargs = extra.get("chat_template_kwargs")
         if isinstance(kwargs, dict) and "enable_thinking" in kwargs:
             on = "true" if kwargs["enable_thinking"] else "false"
@@ -975,6 +1038,14 @@ class Kimi:
         choice = tool_choice
         while True:
             def call(model: str, choice=choice) -> ChatResult:
+                client = self.client_for(model)
+                own_endpoint = self._two_endpoints() and client is self.client
+                if own_endpoint and not getattr(client, "api_key", ""):
+                    host = url_host(getattr(client, "base_url", "")) or "the role's endpoint"
+                    raise NIMEndpointDown(
+                        f"no API key for {host} is configured (config/keys.local.json, Settings or "
+                        f"{'OPENROUTER_API_KEY' if getattr(client, 'openrouter', False) else 'the role key'})",
+                        status=401, cooldown_s=ENDPOINT_RETRY_S["key"])
                 msgs = conv.messages()
                 images = had_images = count_images(msgs)
                 if images and not accepts_images(model):
@@ -984,22 +1055,28 @@ class Kimi:
                     fields = {**self.effort_report(effort, model), **self._fallback_fields(model)}
                     if had_images:
                         fields["images_sent"] = n_images
-                    r = chat_with_events(self.client, self.bus, role=ROLE, model=model, run_id=run_id,
+                    r = chat_with_events(client, self.bus, role=ROLE, model=model, run_id=run_id,
                                          project_id=project_id, purpose=label, publish_deltas=publish_deltas,
                                          event_fields=fields, messages=messages, tools=tools,
                                          tool_choice=choice if tools else None, max_tokens=max_tokens,
-                                         extra=self.effort_extra(effort, model) or None, cancel=cancel,
+                                         extra=self.request_extra(effort, model) or None, cancel=cancel,
                                          timeout_s=timeout_s, temperature=1.0, top_p=1.0)
                     r.model, r.images_sent = model, n_images
                     return r
                 try:
-                    return send(msgs, images)
+                    try:
+                        return send(msgs, images)
+                    except NIMError as exc:
+                        if not images or not _image_refused(exc):
+                            raise
+                        log.warning("kimi %s: %s refused the request with %d image(s) (%s); sending it once more "
+                                    "without them", label, model, images, str(exc)[:200])
+                    return send(without_images(msgs, model, text_only_system), 0)
                 except NIMError as exc:
-                    if not images or not _image_refused(exc):
+                    err = self._endpoint_failure(exc, client, model) if own_endpoint else exc
+                    if err is exc:
                         raise
-                    log.warning("kimi %s: %s refused the request with %d image(s) (%s); sending it once more "
-                                "without them", label, model, images, str(exc)[:200])
-                return send(without_images(msgs, model, text_only_system), 0)
+                    raise err from exc
             res = call_with_model_fallback(self.chain, self.bus, call, role=ROLE, run_id=run_id,
                                            project_id=project_id, purpose=label)
             self._remember(label, res)
@@ -1026,6 +1103,32 @@ class Kimi:
             rounds += 1
             if isinstance(choice, Mapping) or choice == "required":
                 choice = "auto"
+
+    @staticmethod
+    def _endpoint_failure(exc: NIMError, client: NIMClient, model: str) -> NIMError:
+        """What a failure of the role's own endpoint means while the fallback models live on another one.
+
+        No key, a refused key (401/403), no credits (402, or a 429 that says so), an unreachable endpoint
+        and OpenRouter's "no provider" 404 cannot be fixed by retrying here, but the fallbacks' endpoint
+        may answer: they become :class:`NIMEndpointDown` (the requested model waits
+        :data:`ENDPOINT_RETRY_S`). Everything else is returned unchanged (cancel, timeout, 429/5xx, gone,
+        a tool or image refusal the caller handles).
+        """
+        if isinstance(exc, (NIMCancelled, NIMEndpointDown, NIMTimeout)) or is_tool_rejection(exc):
+            return exc
+        host = url_host(getattr(client, "base_url", "")) or "the role's endpoint"
+        text = f"{exc} {exc.body or ''}"
+        if isinstance(exc, NIMUnreachable):
+            return NIMEndpointDown(f"{host} unreachable ({str(exc)[:200]})", cooldown_s=ENDPOINT_RETRY_S["unreachable"])
+        status = exc.status
+        kind = ("key" if status in (401, 403) else
+                "credits" if status == 402 or (status == 429 and _CREDIT_WORDING_RE.search(text)) else
+                "no_provider" if status == 404 and _NO_ENDPOINT_RE.search(text) else "")
+        if not kind:
+            return exc
+        why = explain_http_failure(status, exc.body or str(exc), model) or str(exc)[:200]
+        return NIMEndpointDown(f"{host} answered HTTP {status} for {model}: {why}", status=status, body=exc.body,
+                               cooldown_s=ENDPOINT_RETRY_S[kind])
 
     # ------------------------------------------------------------------ structured output
     def _think_tool(self, conv: KimiConversation, tool: dict, **kw: Any) -> ChatResult:

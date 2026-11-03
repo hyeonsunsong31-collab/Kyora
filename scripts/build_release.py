@@ -3,7 +3,7 @@
 
 Usage
 -----
-  python scripts/build_release.py [--build-dir build] [--dist-dir dist] [--check]
+  python scripts/build_release.py [--build-dir build] [--dist-dir dist] [--check] [--local-keys FILE]
 
 Steps
 -----
@@ -22,7 +22,10 @@ Steps
    sorted, every timestamp is 1980-01-01 00:00:00, compression is ZIP_DEFLATED. The six vendored
    Tokkio symlinks are stored as symlink entries exactly like the NVIDIA source archive stores them
    (``external_attr = 0o120777 << 16``, link text as the stored payload). Shell scripts get mode 0o755;
-   other files keep the git index mode (0o755 or 0o644).
+   other files keep the git index mode (0o755 or 0o644). A ``keys.local.json`` is never part of it:
+   that file holds keys that must not reach the public repository (the Kimi role's OpenRouter key).
+4. ``--local-keys FILE`` also writes ``<dist>/private/Kyora-AGI-Studio-<version>-private.zip`` (git-ignored):
+   the same entries plus ``FILE`` as ``config/keys.local.json`` (mode 0o600), for the user's own devices.
 
 ``--check`` then verifies the result for real (exit status 1 on any failure):
 
@@ -35,7 +38,7 @@ Steps
 * inside the ZIP: ``kyora.pyz`` equals the built file, ``config/keys.json`` equals the repository file,
   the expected top-level entries exist, the ``vendor/tokkio-5.0.0-ga`` entry count equals the
   ``vendor/VENDOR.md`` manifest and every entry's sha256 matches it, and the symlink entries are
-  preserved with mode 0o120000.
+  preserved with mode 0o120000; no ``keys.local.json`` is in it.
 """
 from __future__ import annotations
 
@@ -73,7 +76,9 @@ EXCLUDE_DIR_NAMES = frozenset({".git", "__pycache__", "node_modules", ".pytest_c
 EXCLUDE_DIR_SUFFIXES: tuple[str, ...] = (".egg-info",)
 EXCLUDE_REL_DIRS = frozenset({"tests/.tmp", "kyora/defaults", "build", "dist"})
 EXCLUDE_FILE_SUFFIXES: tuple[str, ...] = (".pyc", ".pyo")
-EXCLUDE_FILE_NAMES = frozenset({".DS_Store", "Thumbs.db"})
+EXCLUDE_FILE_NAMES = frozenset({".DS_Store", "Thumbs.db", "keys.local.json"})  # local keys: never in a public ZIP
+LOCAL_KEYS_ARCNAME = "config/keys.local.json"
+MODE_SECRET = 0o100600
 SHELL_SUFFIXES: tuple[str, ...] = (".sh",)
 VENDOR_REL = "vendor/tokkio-5.0.0-ga"
 MODE_FILE = 0o100644
@@ -316,13 +321,23 @@ def _zipinfo(arcname: str, mode: int, compress: int) -> zipfile.ZipInfo:
     return info
 
 
-def build_zip(repo: Path, pyz: Path, dist_dir: Path, version: str, skip_roots: list[Path]) -> tuple[Path, int, int]:
-    """Write the release ZIP; returns ``(path, entry_count, symlink_count)``."""
+def build_zip(repo: Path, pyz: Path, dist_dir: Path, version: str, skip_roots: list[Path],
+              local_keys: Path | None = None) -> tuple[Path, int, int]:
+    """Write the release ZIP; returns ``(path, entry_count, symlink_count)``.
+
+    With ``local_keys`` the ZIP is the private one (``<dist>/private/...-private.zip``) and carries that file as
+    ``config/keys.local.json``.
+    """
     entries = collect_entries(repo, skip_roots)
     entries.append(Entry(PYZ_NAME, pyz, MODE_EXEC))
+    if local_keys is not None:
+        json.loads(local_keys.read_text(encoding="utf-8"))  # refuse to ship invalid JSON
+        entries.append(Entry(LOCAL_KEYS_ARCNAME, local_keys, MODE_SECRET))
+        dist_dir = dist_dir / "private"
     entries.sort(key=lambda e: e.arcname)
     dist_dir.mkdir(parents=True, exist_ok=True)
-    target = dist_dir / f"{RELEASE_NAME}-{version}.zip"
+    target = dist_dir / (f"{RELEASE_NAME}-{version}-private.zip" if local_keys is not None
+                         else f"{RELEASE_NAME}-{version}.zip")
     tmp = target.with_suffix(".zip.tmp")
     links = 0
     with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
@@ -334,6 +349,11 @@ def build_zip(repo: Path, pyz: Path, dist_dir: Path, version: str, skip_roots: l
             else:
                 zf.writestr(_zipinfo(e.arcname, e.mode, zipfile.ZIP_DEFLATED), e.source.read_bytes())
     os.replace(tmp, target)
+    if local_keys is not None:
+        try:
+            os.chmod(target, 0o600)  # it carries a key: readable by its owner only (POSIX; ignored elsewhere)
+        except OSError:
+            pass
     return target, len(entries), links
 
 
@@ -522,6 +542,9 @@ def check_zip(report: CheckReport, zip_path: Path, pyz: Path, repo: Path) -> Non
         bad = [n for n in names if "__pycache__/" in n or n.endswith((".pyc", ".pyo")) or n.startswith("tests/.tmp/")
                or "/node_modules/" in n or n.startswith((".git/", "build/", "dist/"))]
         report.expect(not bad, "no caches, .git, build/, dist/ or tests/.tmp", f"excluded paths present: {bad[:5]}")
+        local = [n for n in names if n.rsplit("/", 1)[-1] == "keys.local.json"]
+        report.expect(not local, "no keys.local.json (local keys stay out of the public ZIP)",
+                      f"local key files present: {local}")
         report.expect(zf.read(PYZ_NAME) == pyz.read_bytes(), f"{PYZ_NAME} in the ZIP equals {pyz}",
                       f"{PYZ_NAME} in the ZIP differs from {pyz}")
         report.expect(zf.read("config/keys.json") == (repo / "config" / "keys.json").read_bytes(),
@@ -585,6 +608,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--check", action="store_true", help="run the built kyora.pyz and verify the ZIP; exit 1 on failure")
     ap.add_argument("--python", default=sys.executable, help="interpreter used by --check (default: this one)")
     ap.add_argument("--check-timeout", type=float, default=15.0, help="seconds to wait for /api/status (default 15)")
+    ap.add_argument("--local-keys", help="also write <dist>/private/...-private.zip with this file as "
+                                         "config/keys.local.json (keys that must not be in the public ZIP)")
     args = ap.parse_args(argv)
 
     repo = REPO
@@ -600,6 +625,10 @@ def main(argv: list[str] | None = None) -> int:
     log(f"  size:  {size} bytes ({human_size(size)})")
     log(f"  files: {count} entries ({links} symlinks)")
     log(f"  sha256: {sha256_bytes(zip_path.read_bytes())}")
+    if args.local_keys:
+        private, pcount, _ = build_zip(repo, pyz, dist_dir, version, [build_dir, dist_dir],
+                                       local_keys=Path(args.local_keys).expanduser().resolve())
+        log(f"wrote {private} ({pcount} entries: the release plus {LOCAL_KEYS_ARCNAME}; keep it private)")
     if args.check:
         return run_checks(args.python, pyz, zip_path, repo, version, args.check_timeout)
     return 0

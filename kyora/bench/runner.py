@@ -1,6 +1,6 @@
 """Kyora Bench runner: runs the real pipeline once per bench task and scores the run.
 
-Each task is a full Kyora pipeline run (Kimi K3 intake/plan/judge/review,
+Each task is a full Kyora pipeline run (Kimi-role intake/plan/judge/review,
 Nemotron design, the selected code engine, static + Node + in-browser tests and
 the >= 94 % gate). The TEST stage replaces the generated ``tests/browser-tests.js``
 with the bench's own test file for the task (``options.bench.tests_file``), so the
@@ -35,8 +35,8 @@ from .scoring import SUITE_SIZE, TaskResult
 
 log = logging.getLogger("kyora.bench")
 
-WARNING = ("Each task runs the full pipeline: Nemotron + Kimi K3 tokens on your NVIDIA keys and code-engine usage "
-           "(your Claude subscription by default) at the configured claude_code.effort; typically 10-30 min per task.")
+WARNING = ("Each task runs the full pipeline: Nemotron tokens on your NVIDIA keys, Kimi K3.1 Pro tokens on your "
+           "OpenRouter key (billed per token) and code-engine usage (your Claude subscription by default) at the configured claude_code.effort; typically 10-30 min per task.")
 NO_ENGINE = ("no code engine available (BLOCKED): install Claude Code and run claude login, link a Kyora Hub, "
              "or add an Anthropic API key")
 TERMINAL_EVENTS = ("run.completed", "run.failed", "run.blocked", "run.cancelled")

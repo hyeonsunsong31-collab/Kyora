@@ -1,6 +1,6 @@
 """OpenAI-compatible chat client for the NVIDIA API Catalog (``integrate.api.nvidia.com/v1``).
 
-Both NVIDIA Nemotron-3-Ultra and Moonshot Kimi-K3 are reached through this
+NVIDIA Nemotron-3-Ultra and Moonshot Kimi K3.1 Pro (via OpenRouter) are reached through this
 client. It is standard-library only (``urllib``), streams Server-Sent Events,
 accumulates tool calls across chunks and measures honest metrics: time to
 first token, total latency and tokens per second taken from the server's
@@ -10,6 +10,12 @@ as such (``tokens_source='estimated_chunks'``).
 Nothing in this module fabricates output. Every failure surfaces as
 :class:`NIMError` (HTTP status, malformed payload, cancellation) or
 :class:`NIMUnreachable` (network / timeout). The API key is never logged.
+
+OpenRouter (``openrouter.ai/api/v1``) is spoken too: its answers carry
+``reasoning_details`` (blocks merged across stream chunks, see
+:class:`_ReasoningDetails`) that must be sent back unmodified in later turns;
+assistant messages are adapted per endpoint in :meth:`NIMClient.build_body`
+(``reasoning_details`` only to OpenRouter, ``reasoning_content`` only elsewhere).
 
 Besides the client, this module hosts the small helpers shared by the two
 model wrappers (``nemotron.py``, ``kimi.py``): function-tool builders,
@@ -83,6 +89,20 @@ class NIMTimeout(NIMUnreachable):
 
 def _is_timeout(reason: Any) -> bool:
     return isinstance(reason, (TimeoutError, socket.timeout)) or "timed out" in str(reason).lower()
+
+
+class NIMEndpointDown(NIMError):
+    """The endpoint of a model cannot serve it now - no key, key refused, no credits, unreachable, no provider -
+    while the role's other models live on another endpoint and may answer.
+
+    :func:`call_with_model_fallback` moves to the next model and lets this one wait ``cooldown_s`` seconds
+    (it is not gone: a key added in Settings or new credits make it answer again).
+    """
+
+    def __init__(self, message: str, *, status: int | None = None, body: str | None = None,
+                 cooldown_s: float = 600.0):
+        super().__init__(message, status=status, body=body)
+        self.cooldown_s = float(cooldown_s)
 
 
 class NIMCancelled(NIMError):
@@ -192,7 +212,8 @@ class ChatResult:
 
     ``message`` is the COMPLETE assistant message dict to echo back in a
     multi-turn conversation (``reasoning_content`` only when non-empty,
-    ``tool_calls`` only when any). ``tool_calls`` keep the OpenAI shape
+    ``reasoning_details`` only when the endpoint sent them (OpenRouter), ``tool_calls``
+    only when any). ``tool_calls`` keep the OpenAI shape
     ``{"id", "type": "function", "function": {"name", "arguments": "<json str>"}}``.
     """
 
@@ -205,20 +226,46 @@ class ChatResult:
     message: dict
     model: str | None = None  # the model that answered (set by the role that made the call)
     images_sent: int = 0      # image parts in the request as sent (0: none, or the model takes no images)
+    reasoning_details: list = field(default_factory=list)  # OpenRouter's reasoning blocks, as merged
 
     def to_dict(self) -> dict:
         return {"content": self.content, "reasoning": self.reasoning, "tool_calls": self.tool_calls,
                 "finish_reason": self.finish_reason, "usage": self.usage, "metrics": self.metrics.to_dict()}
 
 
-def build_assistant_message(content: str, reasoning: str, tool_calls: list[dict]) -> dict:
+def build_assistant_message(content: str, reasoning: str, tool_calls: list[dict],
+                            reasoning_details: list | None = None) -> dict:
     """Return the complete assistant message to store in a conversation."""
     msg: dict = {"role": "assistant", "content": content or ""}
     if reasoning:
         msg["reasoning_content"] = reasoning
+    if reasoning_details:
+        msg["reasoning_details"] = json.loads(json.dumps(reasoning_details))
     if tool_calls:
         msg["tool_calls"] = [json.loads(json.dumps(tc)) for tc in tool_calls]
     return msg
+
+
+def adapt_messages(messages: Sequence[Mapping], *, openrouter: bool) -> list:
+    """``messages`` as one endpoint takes them: OpenRouter gets an assistant message's ``reasoning_details``
+    (unmodified, as its docs require) and no ``reasoning_content``; any other endpoint the reverse.
+
+    The conversation keeps both, so a Kimi conversation that moves between OpenRouter and an NVIDIA fallback
+    model sends each endpoint only the fields it reads. The caller's messages are not changed.
+    """
+    drop = "reasoning_content" if openrouter else "reasoning_details"
+    out: list = []
+    for msg in messages:
+        if isinstance(msg, Mapping) and msg.get("role") == "assistant" and drop in msg:
+            msg = {k: v for k, v in msg.items() if k != drop}
+        out.append(msg)
+    return out
+
+
+def is_openrouter(base_url: str | None) -> bool:
+    """The endpoint is OpenRouter (``openrouter.ai`` or a subdomain of it)."""
+    host = url_host(base_url).split(":", 1)[0].lower().rstrip(".")
+    return host == "openrouter.ai" or host.endswith(".openrouter.ai")
 
 
 def tool_call_arguments(tool_call: Mapping) -> dict:
@@ -249,12 +296,64 @@ def force_tool(name: str) -> dict:
 
 
 # ----------------------------------------------------------------------------- accumulation
+class _ReasoningDetails:
+    """Merges OpenRouter's streamed ``reasoning_details`` fragments into the blocks it expects back.
+
+    One block arrives as several fragments sharing an ``index`` (text in pieces, a signature in a last
+    fragment without text). Fragments are grouped by ``index`` and ``type`` (an encrypted block may share
+    the index of a text block); an ``id`` that differs from the block's starts a new block, a missing one
+    does not; ``text``, ``summary`` and ``data`` strings are concatenated, every other non-null field takes
+    its latest value. Fragments without an ``index`` pass through in order.
+    """
+
+    _CONCAT = ("text", "summary", "data")
+
+    def __init__(self) -> None:
+        self.blocks: list[dict] = []
+        self._open: dict[tuple, int] = {}
+
+    def add(self, frag: Any) -> str:
+        """Merge one fragment; returns the readable text it added (``text`` or ``summary``)."""
+        if not isinstance(frag, Mapping):
+            return ""
+        idx, typ = frag.get("index"), frag.get("type")
+        if idx is None:
+            self.blocks.append(json.loads(json.dumps(frag)))
+            return str(frag.get("text") or frag.get("summary") or "")
+        pos = self._open.get((idx, typ))
+        if pos is None and typ is None:  # a typeless fragment continues the latest block of its index
+            pos = max((p for (i, _t), p in self._open.items() if i == idx), default=None)
+        if pos is not None:
+            fid, bid = frag.get("id"), self.blocks[pos].get("id")
+            if fid and bid and fid != bid:
+                pos = None
+        if pos is None:
+            self.blocks.append({})
+            pos = len(self.blocks) - 1
+            self._open[(idx, typ)] = pos
+        block = self.blocks[pos]
+        added = ""
+        for key, value in frag.items():
+            if value is None:
+                continue
+            if key in self._CONCAT and isinstance(value, str):
+                block[key] = (block.get(key) if isinstance(block.get(key), str) else "") + value
+                if key != "data":
+                    added += value
+            else:
+                block[key] = json.loads(json.dumps(value))
+        if typ is not None:
+            self._open[(idx, typ)] = pos
+        return added
+
+
 class _Accumulator:
     """Collects content, reasoning and tool-call fragments of one streamed answer."""
 
     def __init__(self) -> None:
         self.content: list[str] = []
         self.reasoning: list[str] = []
+        self.details = _ReasoningDetails()
         self._tools: dict[Any, dict] = {}
         self._order: list[Any] = []
 
@@ -447,11 +546,14 @@ class NIMClient:
     def __init__(self, base_url: str, api_key: str, *, user_agent: str = "kyora",
                  timeout_s: float = DEFAULT_TIMEOUT_S, max_attempts: int = DEFAULT_MAX_ATTEMPTS,
                  backoff_s: Sequence[float] = DEFAULT_BACKOFF_S, opener: urllib.request.OpenerDirector | None = None,
-                 key_label: str = "own key", alt_keys: Sequence[tuple[str, str]] = ()):
+                 key_label: str = "own key", alt_keys: Sequence[tuple[str, str]] = (), openrouter: bool | None = None):
+        """``openrouter``: speak OpenRouter's dialect (``None``: when the host is openrouter.ai; ``True`` for an
+        OpenRouter-compatible gateway on another host)."""
         base = (base_url or "").strip().rstrip("/")
         if not base:
             raise ValueError("NIMClient: base_url is required")
         self.base_url = base
+        self._openrouter = openrouter
         self.api_key = api_key or ""
         self._key_lock = threading.Lock()
         self.set_keys(self.api_key, key_label, alt_keys)
@@ -544,6 +646,11 @@ class NIMClient:
     def _host(self) -> str:
         return url_host(self.base_url) or "the endpoint"
 
+    @property
+    def openrouter(self) -> bool:
+        """This client talks to OpenRouter (``reasoning_details``, ``reasoning`` and ``provider`` apply)."""
+        return is_openrouter(self.base_url) if self._openrouter is None else bool(self._openrouter)
+
     def _headers(self, *, stream: bool, json_body: bool, key: str | None = None) -> dict[str, str]:
         h = {"User-Agent": self.user_agent, "Accept": "text/event-stream" if stream else "application/json"}
         if json_body:
@@ -556,8 +663,11 @@ class NIMClient:
     def build_body(self, model: str, messages: list[dict], *, stream: bool = True, tools: list[dict] | None = None,
                    tool_choice: Any = None, temperature: float | None = None, top_p: float | None = None,
                    max_tokens: int | None = None, extra: Mapping | None = None) -> dict:
-        """Assemble the JSON body exactly as it is sent (useful for tests and logs)."""
-        body: dict = {"model": model, "messages": list(messages)}
+        """Assemble the JSON body exactly as it is sent (useful for tests and logs).
+
+        Assistant messages are adapted to this endpoint (:func:`adapt_messages`).
+        """
+        body: dict = {"model": model, "messages": adapt_messages(messages, openrouter=self.openrouter)}
         if temperature is not None:
             body["temperature"] = float(temperature)
         if top_p is not None:
@@ -743,6 +853,12 @@ class NIMClient:
                     reasoning = delta.get("reasoning_content")
                     if not isinstance(reasoning, str) or not reasoning:
                         reasoning = delta.get("reasoning")
+                    # OpenRouter repeats the same text in reasoning_details (kept for the echo); its readable
+                    # text counts only when no reasoning string came with it
+                    rd = delta.get("reasoning_details")
+                    detail_text = "".join(acc.details.add(d) for d in rd) if isinstance(rd, list) else ""
+                    if (not isinstance(reasoning, str) or not reasoning) and detail_text:
+                        reasoning = detail_text
                     if isinstance(reasoning, str) and reasoning:
                         acc.reasoning.append(reasoning)
                         got_text = True
@@ -769,11 +885,13 @@ class NIMClient:
         content = "".join(acc.content)
         reasoning = "".join(acc.reasoning)
         tool_calls = acc.tool_calls()
+        details = acc.details.blocks
         if not finish_reason:
             finish_reason = "tool_calls" if tool_calls else "stop"
         return ChatResult(content=content, reasoning=reasoning, tool_calls=tool_calls, finish_reason=finish_reason,
                           usage=usage, metrics=_metrics(t0, t_first, t_end, usage, text_chunks),
-                          message=build_assistant_message(content, reasoning, tool_calls))
+                          message=build_assistant_message(content, reasoning, tool_calls, details),
+                          reasoning_details=details)
 
     def _consume_json(self, resp, t0: float, on_delta) -> ChatResult:
         try:
@@ -800,6 +918,10 @@ class NIMClient:
         content = _message_text(msg.get("content"))
         reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
         reasoning = reasoning if isinstance(reasoning, str) else _message_text(reasoning)
+        details = msg.get("reasoning_details") if isinstance(msg.get("reasoning_details"), list) else []
+        details = json.loads(json.dumps(details))  # kept unmodified for the next turn (OpenRouter)
+        if not reasoning and details:
+            reasoning = "".join(str(d.get("text") or d.get("summary") or "") for d in details if isinstance(d, Mapping))
         tool_calls = _normalize_tool_calls(msg.get("tool_calls"))
         finish_reason = str(choice.get("finish_reason") or ("tool_calls" if tool_calls else "stop"))
         usage = dict(data.get("usage") or {}) if isinstance(data.get("usage"), Mapping) else {}
@@ -812,7 +934,8 @@ class NIMClient:
                                   tool_call={"index": None, "id": tc["id"], "name": tc["function"]["name"]}))
         return ChatResult(content=content, reasoning=reasoning, tool_calls=tool_calls, finish_reason=finish_reason,
                           usage=usage, metrics=_metrics(t0, None, t_end, usage, 0),
-                          message=build_assistant_message(content, reasoning, tool_calls))
+                          message=build_assistant_message(content, reasoning, tool_calls, details),
+                          reasoning_details=details)
 
     # ------------------------------------------------------------------ discovery
     def _get_json(self, url: str, timeout: float, key: str | None = None) -> Any:
@@ -1006,15 +1129,23 @@ def extract_structured(result: ChatResult, tool_name: str) -> dict | None:
 
 
 def is_tool_rejection(exc: NIMError) -> bool:
-    """True when a 4xx error says the gateway refused ``tools``/``tool_choice`` (fallback to plain JSON)."""
+    """True when a 4xx error says the gateway refused ``tools``/``tool_choice`` (fallback to plain JSON).
+
+    OpenRouter answers 404 "No endpoints found that support tool use" when no allowed provider takes the
+    request's tools or tool_choice: that is a tool refusal too, not a gone model.
+    """
+    body = (exc.body or str(exc)).lower()
+    if exc.status == 404:
+        return bool(_NO_ENDPOINT_RE.search(body)) and "tool" in body
     if exc.status not in (400, 422):
         return False
-    body = (exc.body or str(exc)).lower()
     return any(word in body for word in ("tool", "function", "tool_choice"))
 
 
 # The model itself is gone at this endpoint: the next model of a role's fallback list may answer.
 MODEL_GONE_STATUSES = (404, 410)
+# OpenRouter: no allowed provider takes this request (routing, tools, images, an outage) - not a gone model
+_NO_ENDPOINT_RE = re.compile(r"no endpoints? found|no allowed providers|no providers? (?:are )?available", re.IGNORECASE)
 _EOL_RE = re.compile(r"end of life on (\d{4}-\d{2}-\d{2})", re.IGNORECASE)
 
 
@@ -1057,6 +1188,10 @@ def explain_http_failure(status: int | None, body: str | None, model: str, *, fa
         when = f" on {m.group(1)}" if m else ""
         return (f"{model} was retired by the provider{when}: choose another model for this role in Settings, add "
                 "fallback models, or point the role at another endpoint that still serves it")
+    if status == 404 and _NO_ENDPOINT_RE.search(text):
+        return (f"OpenRouter has no provider for {model} that takes this request now ({_excerpt(body, 160)}): the "
+                "provider routing (nvidia.kimi.provider: only/allow_fallbacks) or a request feature such as tools "
+                "or images excludes every endpoint, or the pinned provider is down")
     if status == 404:
         return f"{model} is not served at this endpoint: check the model id in Settings (self-check lists what /models offers)"
     if status == 402:
@@ -1304,6 +1439,8 @@ def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any],
     ``skip_sidelined`` puts the models under a sticky cooldown (:meth:`ModelChain.sidelined`) last
     and does not hand them a call that another model failed only temporarily: that failure is
     re-raised, so the caller waits for that model and retries. A gone model still moves on to them.
+    :class:`NIMEndpointDown` (a role whose models live on two endpoints: the model's endpoint cannot
+    serve it now) moves on too; the model waits the exception's ``cooldown_s``.
     """
     from ..pipeline.events import MODEL_FALLBACK
     cooldown = BUSY_COOLDOWN_S if busy_cooldown_s is None else float(busy_cooldown_s)
@@ -1320,7 +1457,13 @@ def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any],
             has_next = i + 1 < len(candidates)
             # only sidelined models are left after this one: a temporary failure is waited out instead
             wait = model not in sidelined and has_next and all(m in sidelined for m in candidates[i + 1:])
-            if isinstance(exc, NIMTimeout):  # nothing arrived in time: overloaded, like a 503
+            wait_s = cooldown
+            if isinstance(exc, NIMEndpointDown):  # the model's endpoint cannot serve it; another endpoint may
+                if not has_next:
+                    raise
+                temporary, reason, wait_s = True, str(exc), exc.cooldown_s
+                chain.mark_busy(model, wait_s, reason)
+            elif isinstance(exc, NIMTimeout):  # nothing arrived in time: overloaded, like a 503
                 temporary = True
                 reason = f"{model} did not answer in time: slow or overloaded now"
                 chain.mark_busy(model, cooldown, reason)
@@ -1328,6 +1471,15 @@ def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any],
                     raise
             elif isinstance(exc, NIMUnreachable):
                 raise  # the endpoint itself: no other model is any closer
+            elif exc.status == 404 and is_tool_rejection(exc):
+                raise  # the caller changes the request's tool mode; the model is not gone
+            elif exc.status == 404 and _NO_ENDPOINT_RE.search(_error_text(exc)):
+                # OpenRouter: no allowed provider takes the request now (routing, an outage): wait, not gone
+                temporary = True
+                reason = explain_http_failure(exc.status, exc.body or str(exc), model)
+                chain.mark_busy(model, cooldown, reason)
+                if not has_next or wait:
+                    raise
             elif exc.status in MODEL_GONE_STATUSES:
                 if not has_next:
                     raise
@@ -1344,13 +1496,14 @@ def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any],
             else:
                 raise
             what = (f"HTTP {exc.status}" if exc.status is not None else
-                    "nothing in time" if isinstance(exc, NIMTimeout) else "a temporary error")
+                    "nothing in time" if isinstance(exc, NIMTimeout) else
+                    "an endpoint failure" if isinstance(exc, NIMEndpointDown) else "a temporary error")
             log.warning("%s: %s answered %s%s; falling back to %s", role, model, what,
-                        f" (busy for {cooldown:.0f}s)" if temporary else "", candidates[i + 1])
+                        f" (busy for {wait_s:.0f}s)" if temporary else "", candidates[i + 1])
             if bus is not None:
                 data = {"kind": "model", "role": role, "requested": chain.requested, "from_model": model,
                         "to_model": candidates[i + 1], "status": exc.status, "reason": reason,
-                        "temporary": temporary, **({"cooldown_s": cooldown} if temporary else {}),
+                        "temporary": temporary, **({"cooldown_s": wait_s} if temporary else {}),
                         **({"purpose": purpose} if purpose else {})}
                 try:
                     bus.publish(MODEL_FALLBACK, data, run_id=run_id, project_id=project_id)
@@ -1364,8 +1517,9 @@ def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any],
 
 __all__ = [
     "ModelChain", "call_with_model_fallback", "explain_http_failure", "MODEL_GONE_STATUSES",
-    "BUSY_COOLDOWN_S", "TEMPORARY_STATUSES", "is_temporary_failure",
-    "NIMError", "NIMUnreachable", "NIMTimeout", "NIMCancelled", "NIMBodyError", "Delta", "ChatResult", "NIMClient",
+    "BUSY_COOLDOWN_S", "TEMPORARY_STATUSES", "is_temporary_failure", "is_openrouter", "adapt_messages",
+    "NIMError", "NIMUnreachable", "NIMTimeout", "NIMCancelled", "NIMBodyError", "NIMEndpointDown", "Delta",
+    "ChatResult", "NIMClient",
     "build_assistant_message", "tool_call_arguments", "function_tool", "force_tool", "url_host",
     "strip_think", "extract_json_object", "extract_structured", "is_tool_rejection",
     "load_prompt", "render_prompt", "json_for_prompt", "chat_with_events",

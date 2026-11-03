@@ -61,6 +61,9 @@ class _AppBase(unittest.TestCase):
         keys["nvidia"]["base_url"] = self.mock.url
         keys["nvidia"]["nemotron"]["api_key"] = OTHER
         keys["nvidia"]["kimi"]["api_key"] = GOOD
+        # these tests are about the NVIDIA endpoint: the Kimi role answers there too (not at OpenRouter)
+        keys["nvidia"]["kimi"]["base_url"] = keys["nvidia"]["kimi"]["fallback_base_url"] = ""
+        keys["nvidia"]["kimi"]["model"] = "moonshotai/kimi-k3"
         keys["anthropic"] = {"api_key": ""}
         keys["agent"] = {"base_url": "", "api_key": ""}
         keys["hub"] = {"url": "", "token": ""}
@@ -215,7 +218,10 @@ class SettingsRoundTripTests(_AppBase):
         self.assertEqual(len(res["changed"]), len(self.PATCH["keys"]) + len(self.PATCH["settings"]) - 2, res)
         self.assertFalse(res["restart_required"])
         on_disk = json.loads((self.cfg_dir / "keys.json").read_text(encoding="utf-8"))
-        self.assertEqual(on_disk["agent"], {"base_url": "https://llm.example.test/v1", "api_key": "sk-agent-secret-0123456789"})
+        self.assertEqual(on_disk["agent"], {"base_url": "https://llm.example.test/v1", "api_key": ""},
+                         "a key never goes into keys.json, which may be public")
+        local = json.loads((self.cfg_dir / "keys.local.json").read_text(encoding="utf-8"))
+        self.assertEqual(local, {"agent": {"api_key": "sk-agent-secret-0123456789"}})
         settings = json.loads((self.cfg_dir / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(settings["agent_engine"]["model"], "openai/gpt-oss-20b")
         self.assertEqual(settings["engines"]["order"], ["openai_agent", "claude_code"])
@@ -308,15 +314,22 @@ class AgentKeyScopeTests(unittest.TestCase):
         self.assertNotIn("sk-moonshot", json.dumps([c.api_key, c.alt_keys]))
 
     def test_both_role_keys_on_the_agent_endpoint_and_an_own_key_alone(self):
-        c = self.cfg({"nvidia": {"kimi": {"api_key": GOOD}, "nemotron": {"api_key": OTHER}}})
+        on_nvidia = {"api_key": GOOD, "base_url": ""}  # the Kimi role on NVIDIA's endpoint (default: OpenRouter)
+        c = self.cfg({"nvidia": {"kimi": on_nvidia, "nemotron": {"api_key": OTHER}}})
         self.assertEqual((c.api_key, c.key_label, c.alt_keys), (GOOD, "kimi key", [("nemotron key", OTHER)]))
-        c = self.cfg({"nvidia": {"kimi": {"api_key": GOOD}, "nemotron": {"api_key": GOOD}}})
+        c = self.cfg({"nvidia": {"kimi": on_nvidia, "nemotron": {"api_key": GOOD}}})
         self.assertEqual(c.alt_keys, [], "one key is not tried twice")
         c = self.cfg({"agent": {"base_url": "https://llm.example.test/v1"},
-                      "nvidia": {"kimi": {"api_key": GOOD}, "nemotron": {"api_key": OTHER}}})
+                      "nvidia": {"kimi": on_nvidia, "nemotron": {"api_key": OTHER}}})
         self.assertEqual((c.base_url, c.api_key, c.alt_keys), ("https://llm.example.test/v1", "", []))
-        c = self.cfg({"agent": {"api_key": "sk-own-0123456789"}, "nvidia": {"kimi": {"api_key": GOOD}}})
+        c = self.cfg({"agent": {"api_key": "sk-own-0123456789"}, "nvidia": {"kimi": on_nvidia}})
         self.assertEqual((c.api_key, c.key_label, c.alt_keys), ("sk-own-0123456789", "agent key", []))
+
+    def test_the_default_kimi_role_on_openrouter_keeps_its_key_away_from_nvidia(self):
+        c = self.cfg({"nvidia": {"kimi": {"api_key": "sk-or-v1-SECRET-0123456789abcdef"},
+                                 "nemotron": {"api_key": OTHER}}})
+        self.assertEqual((c.base_url, c.api_key, c.key_label, c.alt_keys),
+                         ("https://integrate.api.nvidia.com/v1", OTHER, "nemotron key", []))
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
@@ -361,8 +374,9 @@ class SettingsViewTests(unittest.TestCase):
         engines = {p: (s, t) for s, p, t in groups["Code engines"]["fields"]}
         self.assertEqual(engines, {"engines.order": ("settings", "csv"), "engines.failover": ("settings", "bool"),
                                    "engines.auto_resume_on_limit": ("settings", "bool")})
-        nv = {p: (s, t) for s, p, t in groups["NVIDIA API Catalog"]["fields"]}
+        nv = {p: (s, t) for s, p, t in groups["Model endpoints"]["fields"]}
         for p, t in (("nvidia.nemotron.base_url", "url"), ("nvidia.kimi.base_url", "url"),
+                     ("nvidia.kimi.fallback_base_url", "url"), ("nvidia.kimi.api_key", "secret"),
                      ("nvidia.nemotron.fallback_models", "csv"), ("nvidia.kimi.fallback_models", "csv"),
                      ("nvidia.share_keys", "bool")):
             self.assertEqual(nv[p], ("keys", t), p)

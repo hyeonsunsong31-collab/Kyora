@@ -45,6 +45,7 @@ class App:
         self.store = None
         self.nim_nemotron = None
         self.nim_kimi = None
+        self.nim_kimi_fallback = None  # the Kimi role's fallback endpoint (NVIDIA) when its own is another (OpenRouter)
         self.nemotron = None
         self.kimi = None
         self.judge = None
@@ -99,8 +100,11 @@ class App:
 
         def _kimi():
             from .models.kimi import Kimi
-            return Kimi(self.nim_kimi, cfg.nvidia.kimi.model, lambda: self.config.kimi, self.bus,
-                        fallback_models=cfg.nvidia.kimi.fallback_models)
+            nv = cfg.nvidia
+            self.nim_kimi_fallback = self._kimi_fallback_client(nv)
+            return Kimi(self.nim_kimi, nv.kimi.model, lambda: self.config.kimi, self.bus,
+                        fallback_models=nv.kimi.fallback_models, fallback_client=self.nim_kimi_fallback,
+                        provider=nv.kimi.provider)
         if self.nim_kimi:
             self.kimi = self._try("kimi", _kimi)
 
@@ -213,6 +217,20 @@ class App:
         except Exception as exc:  # noqa: BLE001 - redaction is defence in depth; never block the app
             log.warning("cannot register configured secrets for redaction: %s", exc)
 
+    def _kimi_fallback_client(self, nv, existing=None):
+        """The client of the Kimi role's fallback endpoint (``nvidia.kimi.fallback_base_url``, by default NVIDIA's),
+        called with that endpoint's keys - ``None`` when the fallbacks share the role's own endpoint."""
+        base = nv.kimi.fallback_base_url
+        if not base or base == nv.kimi.base_url:
+            return None
+        keys = nv.keys_for(base)
+        (label, key), alts = (keys[0], keys[1:]) if keys else (("nvidia key", ""), [])
+        if existing is not None:  # endpoint and keys in one step
+            existing.set_endpoint(base, key, label, alts)
+            return existing
+        from .models.nim_client import NIMClient
+        return NIMClient(base, key, user_agent=f"kyora/{__version__}", key_label=label, alt_keys=alts)
+
     def apply_model_settings(self) -> None:
         """Endpoints, keys, models and fallbacks changed in Settings take effect without a restart."""
         self.register_secrets()
@@ -223,7 +241,9 @@ class App:
         if self.nemotron is not None:
             self.nemotron.configure(nv.nemotron.model, nv.nemotron.fallback_models)
         if self.kimi is not None:
-            self.kimi.configure(nv.kimi.model, nv.kimi.fallback_models)
+            self.nim_kimi_fallback = self._kimi_fallback_client(nv, self.nim_kimi_fallback)
+            self.kimi.configure(nv.kimi.model, nv.kimi.fallback_models, provider=nv.kimi.provider,
+                                fallback_client=self.nim_kimi_fallback)
 
     def stop(self) -> None:
         for comp in (self.run_manager, self.hub_worker):
@@ -276,7 +296,8 @@ class App:
             "selected_engine": engine,
             "engines": engines,
             "runs": self.run_manager.status() if self.run_manager else None,
-            "attribution": ["NVIDIA Nemotron-3-Ultra", "Kimi K3 (Moonshot AI)", "Claude Code (Anthropic)", "NVIDIA ACE / Tokkio"],
+            "attribution": ["NVIDIA Nemotron-3-Ultra", "Kimi K3.1 Pro (Moonshot AI, via OpenRouter)",
+                            "Claude Code (Anthropic)", "NVIDIA ACE / Tokkio"],
         }
 
     # ------------------------------------------------------------------ routes

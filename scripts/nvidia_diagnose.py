@@ -2,7 +2,8 @@
 """Diagnose what the configured NVIDIA keys can actually call (no Kyora code involved).
 
 For each key in config/keys.json (the Nemotron and the Kimi slot) this prints, without ever
-printing the key itself (only a sha256 fingerprint):
+printing the key itself (only a sha256 fingerprint). A slot without a key, or whose role runs on
+another endpoint (the Kimi role on OpenRouter), is skipped and said so: its key is not an NVIDIA key.
 
   * ``GET /models`` with and without the key (status, how many models, the Kimi/Moonshot and
     Nemotron ids that are listed)
@@ -90,10 +91,20 @@ def main(argv=None) -> int:
         print(f"    {m}")
 
     controls = [m for m in CONTROL_MODELS if m in listed][:2] or list(CONTROL_MODELS[:2])
+    slots = []  # the slots whose key is for this endpoint
     for slot in ("nemotron", "kimi"):
+        own_base = str(nv.get(slot, {}).get("base_url") or base).rstrip("/")
+        if own_base != base or not nv.get(slot, {}).get("api_key"):
+            why = f"its role runs on {own_base.split('://')[-1].split('/')[0]}" if own_base != base else "no key"
+            print(f"\n== slot {slot}: {why} - skipped (this script checks {base} only)")
+            report["slots"][slot] = {"skipped": why}
+            continue
+        slots.append(slot)
+    for slot in slots:
         key = str(nv.get(slot, {}).get("api_key") or "")
         own = str(nv.get(slot, {}).get("model") or "")
-        other = str(nv.get("kimi" if slot == "nemotron" else "nemotron", {}).get("model") or "")
+        other_cfg = nv.get("kimi" if slot == "nemotron" else "nemotron", {})  # its model, when served here
+        other = str(other_cfg.get("model") or "") if str(other_cfg.get("base_url") or base).rstrip("/") == base else ""
         fp = hashlib.sha256(key.encode()).hexdigest()[:10] if key else "(none)"
         print(f"\n== slot {slot}: key sha256:{fp} (length {len(key)}), configured model {own}")
         entry: dict = {"key_sha256_10": fp, "key_length": len(key), "model": own, "calls": []}
@@ -125,7 +136,7 @@ def main(argv=None) -> int:
         chat_models = [m for m in listed if not any(k in m.lower() for k in skip)]
         print(f"\n== every listed chat model ({len(chat_models)} of {len(listed)}), 1-token chat with each key")
         report["all_models"] = {}
-        for slot in ("nemotron", "kimi"):
+        for slot in slots:
             key = str(nv.get(slot, {}).get("api_key") or "")
             ok, refused, missing = [], [], []
             for model in chat_models:
@@ -146,8 +157,9 @@ def main(argv=None) -> int:
             key = str(nv.get(slot, {}).get("api_key") or "")
             for model, _status, _ms in (report.get("all_models", {}).get(slot, {}).get("ok") or []):
                 answered.setdefault(model, key)
+        first_key = str(nv.get(slots[0], {}).get("api_key") or "") if slots else ""
         for model in [m.strip() for m in (args.models or "").split(",") if m.strip()]:
-            answered.setdefault(model, str(nv.get("kimi", {}).get("api_key") or ""))
+            answered.setdefault(model, first_key)
         tool = {"type": "function", "function": {"name": "add", "description": "Add two integers.", "parameters": {
             "type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}, "required": ["a", "b"]}}}
         rows = []

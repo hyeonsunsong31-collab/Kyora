@@ -13,6 +13,7 @@ not requested). Standard library only.
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 import os
 import shutil
@@ -54,7 +55,7 @@ KIMI_EFFORT_BEST_EFFORT = EXTRA_BODY_EFFORT_NOTE  # kimi.effort_field = extra_bo
 LABELS: dict[str, str] = {
     "python": "Python", "platform": "Platform", "git": "git", "node": "Node.js", "playwright": "Playwright (optional)",
     "claude_cli": "Claude Code CLI", "claude_auth": "Claude Code login", "claude_model": "Claude Code model",
-    "nemotron": "NVIDIA Nemotron-3-Ultra", "kimi": "Kimi K3 (Moonshot AI)", "anthropic_api": "Anthropic Messages API (optional)",
+    "nemotron": "NVIDIA Nemotron-3-Ultra", "kimi": "Kimi K3.1 Pro (Moonshot AI, via OpenRouter)", "anthropic_api": "Anthropic Messages API (optional)",
     "agent_engine": AGENT_LABEL, "engine_selected": "Selected code engine", "hub": "Kyora Hub", "tokkio_ui": "Tokkio UI",
     "tokkio_configurator": "Tokkio ACE Configurator", "disk": "Disk space", "lan": "LAN",
 }
@@ -86,12 +87,15 @@ def _gb(n: float) -> str:
 
 
 def _effort_sent(extra: Any, prefix: str = "") -> str:
-    """The body field that carries the reasoning effort, as sent: ``reasoning_effort=max`` or
-    ``chat_template_kwargs.reasoning_effort=low``; the whole ``extra`` when no such field is in it."""
+    """The body field that carries the reasoning effort, as sent: ``reasoning_effort=max``,
+    ``chat_template_kwargs.reasoning_effort=low`` or OpenRouter's ``reasoning={"enabled":true}``; the whole
+    ``extra`` when no such field is in it."""
     if isinstance(extra, dict):
         for key, value in extra.items():
             if key == "reasoning_effort" and not isinstance(value, dict):
                 return f"{prefix}{key}={value}"
+            if key == "reasoning" and not prefix and isinstance(value, dict):
+                return "reasoning=" + json.dumps(value, separators=(",", ":"))
             found = _effort_sent(value, f"{prefix}{key}.") if isinstance(value, dict) else ""
             if found:
                 return found
@@ -431,34 +435,50 @@ class SelfCheck:
 
     # ------------------------------------------------------------------ NVIDIA models
     def _model_probe(self, client, model: str, name: str, key_present: bool, chain=None,
-                     own_key: str = "") -> tuple[str, str, dict, dict]:
+                     own_key: str = "", fallback_client=None) -> tuple[str, str, dict, dict]:
         """Probe a role's model (and, when the endpoint says it is gone, its fallbacks) -> ``(status, detail, measured, raw)``.
 
         ``fail`` when the role cannot answer at all (key refused, model gone with no working fallback,
         endpoint unreachable); ``warn`` when it answers only through a fallback model or the other
-        role's key, or the failure may be temporary (429/5xx); ``ok`` otherwise.
+        role's key, or the failure may be temporary (429/5xx); ``ok`` otherwise. With a ``fallback_client``
+        (the fallbacks live on another endpoint, the Kimi role on OpenRouter), the fallbacks are also probed
+        there when the role's own endpoint cannot serve it at all: no key, key refused, no credits, unreachable.
         """
-        from .models.nim_client import MODEL_GONE_STATUSES, explain_http_failure
-        res = client.probe(model, timeout_s=self.model_timeout_s)
+        from .models.nim_client import MODEL_GONE_STATUSES, explain_http_failure, url_host
+        fb_client = fallback_client or client
+        own_down = fallback_client is not None and not getattr(client, "api_key", "")
+        if own_down:  # no key for the role's own endpoint: nothing is sent there
+            res = {"reachable": True, "chat_ok": False, "status": 401, "latency_ms": None, "model_listed": None,
+                   "error": f"no API key for {url_host(getattr(client, 'base_url', ''))} is configured "
+                            "(config/keys.local.json, Settings or OPENROUTER_API_KEY)"}
+        else:
+            res = client.probe(model, timeout_s=self.model_timeout_s)
         notes = client.pop_key_notes() if callable(getattr(client, "pop_key_notes", None)) else []
         measured = {"model": model, "latency_ms": res.get("latency_ms"), "model_listed": res.get("model_listed"),
-                    "status": res.get("status"), "chat_ok": bool(res.get("chat_ok"))}
+                    "status": res.get("status"), "chat_ok": bool(res.get("chat_ok")),
+                    "endpoint": url_host(getattr(client, "base_url", ""))}
         err = str(res.get("error") or "")
-        if not res.get("reachable"):
-            return "fail", f"{name} endpoint unreachable: {_excerpt(err or 'no answer', 400)}", measured, res
         status_code = res.get("status")
+        cross = fallback_client is not None and not res.get("chat_ok") and (
+            not res.get("reachable") or status_code in (401, 402, 403) or own_down)
+        if not res.get("reachable") and not cross:
+            return "fail", f"{name} endpoint unreachable: {_excerpt(err or 'no answer', 400)}", measured, res
         answered_by, fallback_note = model, ""
-        if not res.get("chat_ok") and status_code in MODEL_GONE_STATUSES and chain is not None:
-            why = explain_http_failure(status_code, err, model)
+        if not res.get("chat_ok") and (status_code in MODEL_GONE_STATUSES or cross) and chain is not None:
+            why = (_excerpt(err, 200) if own_down or not res.get("reachable")
+                   else explain_http_failure(status_code, err, model))
             for fb in [m for m in chain.candidates() if m != model]:
-                fres = client.probe(fb, timeout_s=self.model_timeout_s)
-                notes += client.pop_key_notes() if callable(getattr(client, "pop_key_notes", None)) else []
+                fres = fb_client.probe(fb, timeout_s=self.model_timeout_s)
+                notes += fb_client.pop_key_notes() if callable(getattr(fb_client, "pop_key_notes", None)) else []
                 if fres.get("chat_ok"):
-                    chain.mark_gone(model, why)  # runs start with the fallback instead of re-asking every call
+                    if not cross:
+                        chain.mark_gone(model, why)  # runs start with the fallback instead of re-asking every call
                     answered_by, res = fb, {**fres, "requested_status": status_code}
-                    fallback_note = (f"{model}: HTTP {status_code} - {why}. The role is answered by the fallback "
-                                     f"model {fb}")
-                    measured.update(fallback_model=fb, latency_ms=fres.get("latency_ms"), chat_ok=True)
+                    where = (f" at {url_host(getattr(fb_client, 'base_url', ''))}" if fb_client is not client else "")
+                    head = f"{model}: HTTP {status_code} - {why}" if status_code and not own_down else f"{model}: {why}"
+                    fallback_note = f"{head}. The role is answered by the fallback model {fb}{where}"
+                    measured.update(fallback_model=fb, latency_ms=fres.get("latency_ms"), chat_ok=True,
+                                    fallback_endpoint=url_host(getattr(fb_client, "base_url", "")))
                     break
         key_label = res.get("key_label") or ""
         if key_label:
@@ -519,12 +539,17 @@ class SelfCheck:
         nv = self.app.config.nvidia
         model = nv.kimi.model
         role = getattr(self.app, "kimi", None)
+        fb_client = getattr(role, "fallback_client", None)
         status, detail, measured, res = self._model_probe(client, model, "Kimi", bool(nv.kimi.api_key),
-                                                          chain=getattr(role, "chain", None), own_key="kimi key")
+                                                          chain=getattr(role, "chain", None), own_key="kimi key",
+                                                          fallback_client=fb_client)
         measured["reasoning_seen"] = res.get("reasoning_seen")
         errors = [str(res.get("error") or "")]
         if status in ("ok", "warn") and measured.get("chat_ok"):
-            check = self._kimi_effort_check(client, measured.get("fallback_model") or model)
+            answered = measured.get("fallback_model") or model
+            # a fallback model that answered on the fallbacks' own endpoint is checked there
+            check_client = fb_client if fb_client is not None and answered != model else client
+            check = self._kimi_effort_check(check_client, answered)
             if check is not None:
                 measured["effort_check"] = check["status"]
                 measured["effort_sent"] = check["sent"]
@@ -556,16 +581,22 @@ class SelfCheck:
         chat = getattr(client, "chat", None)
         if kimi is None or not callable(chat) or not callable(getattr(kimi, "effort_extra", None)):
             return None
-        extra = kimi.effort_extra(None, model)
+        request_extra = getattr(kimi, "request_extra", None)
+        extra = request_extra(None, model) if callable(request_extra) else kimi.effort_extra(None, model)
         if not extra:
             return None
         field = getattr(kimi, "effort_field", "top_level")
         if "chat_template_kwargs" in extra and "enable_thinking" in extra["chat_template_kwargs"]:
             field = "fallback model"
+        openrouter = isinstance(extra.get("reasoning"), dict)
+        if openrouter:
+            field = "OpenRouter" + (f", provider {json.dumps(extra['provider'], separators=(',', ':'))}"
+                                    if extra.get("provider") else "")
         sent = _effort_sent(extra)
         try:
-            res = chat(model, [{"role": "user", "content": "ping"}], stream=False, max_tokens=1, extra=extra,
-                       timeout_s=self.model_timeout_s)
+            # a reasoning model on OpenRouter gets a few tokens: some providers refuse max_tokens=1 with reasoning on
+            res = chat(model, [{"role": "user", "content": "ping"}], stream=False, max_tokens=16 if openrouter else 1,
+                       extra=extra, timeout_s=self.model_timeout_s)
         except Exception as exc:  # noqa: BLE001 - reported in the item, never raised
             status = getattr(exc, "status", None)
             msg = str(exc)
@@ -573,7 +604,7 @@ class SelfCheck:
                     "note": f"chat with {sent} ({field}) failed"
                             f"{f' (HTTP {status})' if status else ''}: {_excerpt(msg, 300)}"}
         # Accepted means the gateway answered 200 to a body carrying exactly ``sent``; a 1-token reply
-        # cannot show whether the effort was applied. Kimi K3's template is not documented to read the
+        # cannot show whether the effort was applied. Kimi's template is not documented to read the
         # extra_body mode's chat_template_kwargs.reasoning_effort at all, so that mode is labelled best-effort.
         mode = f"{field}; {KIMI_EFFORT_BEST_EFFORT}" if field == "extra_body" else field
         return {"status": "ok", "error": "", "field": field, "sent": sent,

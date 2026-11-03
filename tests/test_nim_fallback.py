@@ -229,26 +229,30 @@ class ModelFallbackTests(_Base):
 
 
 class AppWiringTests(unittest.TestCase):
+    """Both roles on NVIDIA's endpoint, as shipped until 2026-11-03: the Nemotron slot's key is refused and the
+    Kimi slot's key answers for both roles (nvidia.share_keys), Kimi K3 answers 410 and its fallback answers."""
+
     def setUp(self):
         self.api = NvidiaLike()
         self.addCleanup(self.api.mock.stop)
         self.tmp = Path(tempfile.mkdtemp(prefix="kyora-fallback-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
-        cfg = self.tmp / "config"
-        shutil.copytree(REPO / "config", cfg)
-        keys = json.loads((cfg / "keys.json").read_text(encoding="utf-8"))
+        self.cfg_dir = self.tmp / "config"
+        shutil.copytree(REPO / "config", self.cfg_dir)
+        keys = json.loads((self.cfg_dir / "keys.json").read_text(encoding="utf-8"))
         keys["nvidia"]["base_url"] = self.api.mock.url
-        keys["nvidia"]["nemotron"]["api_key"] = BAD   # refused, like the Nemotron slot's key
-        keys["nvidia"]["kimi"]["api_key"] = GOOD      # works for Nemotron-3-Ultra, like the Kimi slot's key
-        (cfg / "keys.json").write_text(json.dumps(keys), encoding="utf-8")
+        keys["nvidia"]["nemotron"]["api_key"] = BAD   # refused, like the Nemotron slot's old key
+        keys["nvidia"]["kimi"].update(api_key=GOOD, base_url="", model=K3)  # the Kimi role on NVIDIA, its key works
+        (self.cfg_dir / "keys.json").write_text(json.dumps(keys), encoding="utf-8")
         from kyora.app import App
-        self.app = App(Config.load(cfg), home=self.tmp / "home")
+        self.app = App(Config.load(self.cfg_dir), home=self.tmp / "home")
         self.addCleanup(self.app.stop)
 
-    def test_shipped_config_keeps_both_roles_answering(self):
+    def test_both_roles_keep_answering_through_the_shared_key_and_the_fallback(self):
         nv = self.app.config.nvidia
         self.assertEqual(nv.kimi.fallback_models[0], ULTRA)
         self.assertTrue(nv.share_keys)
+        self.assertIsNone(self.app.kimi.fallback_client, "fallbacks on the role's own endpoint: one client")
         self.assertEqual(self.app.nemotron.narration("Build passed."), "ok")
         self.assertEqual(self.app.nim_nemotron.key_label, "kimi key")
         self.app.kimi.think(KimiConversation("sys"), purpose="intake", publish_deltas=False)
@@ -265,6 +269,7 @@ class AppWiringTests(unittest.TestCase):
         self.assertIn(f"{K3}: HTTP 410", kimi["detail"])
         self.assertIn(f"answered by the fallback model {ULTRA}", kimi["detail"])
         self.assertEqual(kimi["measured"]["fallback_model"], ULTRA)
+
 
     def test_share_keys_off_and_settings_apply_without_restart(self):
         changed = self.app.config.apply_patch({"keys": {"nvidia": {"share_keys": False}}})
@@ -288,6 +293,48 @@ class AppWiringTests(unittest.TestCase):
         self.app.config.apply_patch({"keys": {"nvidia": {"kimi": {"base_url": "https://api.moonshot.ai/v1"}}}})
         self.assertEqual(self.app.config.nvidia.kimi.base_url, "https://api.moonshot.ai/v1")
         self.assertEqual(self.app.config.nvidia.alt_keys("kimi"), [])  # another endpoint: never send it the NVIDIA key
+
+
+class ShippedConfigTests(unittest.TestCase):
+    """The configuration as shipped since 2026-11-03: the working NVIDIA key in the Nemotron slot, the Kimi role on
+    OpenRouter (Kimi K3.1 Pro) whose key is not in the repository. Without that key the role answers on NVIDIA."""
+
+    def setUp(self):
+        self.api = NvidiaLike()
+        self.addCleanup(self.api.mock.stop)
+        self.tmp = Path(tempfile.mkdtemp(prefix="kyora-shipped-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        cfg = self.tmp / "config"
+        shutil.copytree(REPO / "config", cfg)
+        keys = json.loads((cfg / "keys.json").read_text(encoding="utf-8"))
+        self.assertEqual(keys["nvidia"]["kimi"]["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(keys["nvidia"]["kimi"]["api_key"], "", "the OpenRouter key is never committed")
+        keys["nvidia"]["base_url"] = self.api.mock.url
+        keys["nvidia"]["nemotron"]["api_key"] = GOOD  # the working NVIDIA key now sits in the Nemotron slot
+        (cfg / "keys.json").write_text(json.dumps(keys), encoding="utf-8")
+        from kyora.app import App
+        self.app = App(Config.load(cfg), home=self.tmp / "home")
+        self.addCleanup(self.app.stop)
+
+    def test_both_roles_answer_and_the_kimi_role_says_where(self):
+        self.assertEqual(self.app.nemotron.narration("Build passed."), "ok")
+        self.assertEqual(self.app.nim_nemotron.key_label, "nemotron key")
+        res = self.app.kimi.think(KimiConversation("sys"), purpose="intake", publish_deltas=False)
+        self.assertEqual(res.model, ULTRA)
+        self.assertEqual(self.api.keys_sent(), [GOOD, GOOD], "only the NVIDIA key, only to NVIDIA")
+        fb = [e.data for e in self.app.bus.replay(0) if e.type == "model.fallback"]
+        self.assertTrue(any("no API key for openrouter.ai" in f["reason"] for f in fb), fb)
+
+    def test_self_check_says_the_openrouter_key_is_missing_and_who_answers(self):
+        from kyora.selfcheck import SelfCheck
+        items = {it["id"]: it for it in SelfCheck(self.app).run(probe_models=True)["items"]}
+        nem, kimi = items["nemotron"], items["kimi"]
+        self.assertEqual(nem["status"], "ok", nem)
+        self.assertEqual(kimi["status"], "warn", kimi)
+        self.assertIn("no API key for openrouter.ai is configured", kimi["detail"])
+        self.assertIn(f"answered by the fallback model {ULTRA} at 127.0.0.1", kimi["detail"])
+        self.assertEqual(kimi["measured"]["fallback_endpoint"].split(":")[0], "127.0.0.1")
+        self.assertTrue(kimi["measured"]["chat_ok"])
 
 
 if __name__ == "__main__":

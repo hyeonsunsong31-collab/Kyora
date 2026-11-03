@@ -25,7 +25,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 log = logging.getLogger("kyora.projects.deck")
 
-HONESTY_TEXT = ("Kyora orchestrates NVIDIA Nemotron-3-Ultra, Kimi K3, a code engine (Claude Code, the Anthropic API, "
+HONESTY_TEXT = ("Kyora orchestrates NVIDIA Nemotron-3-Ultra, Kimi K3.1 Pro, a code engine (Claude Code, the Anthropic API, "
                 "a Kyora Hub or the Kyora agent engine) and NVIDIA Tokkio over their APIs; a role whose model is "
                 "unavailable is answered by its configured fallback model, named in this deck where it was recorded. "
                 "Every number in this deck was measured by this project's own runs.")
@@ -543,7 +543,7 @@ class DeckBuilder:
                  "design": _role_model(run, "design", "ui_spec")}
         answered = "; ".join(f"{k} by {v}" for k, v in roles.items() if v)
         return ("<section id=\"architecture\" class=\"slide\"><h2>Architecture</h2>" + "".join(svg) +
-                "<p class=\"muted\">Fixed roles over their own APIs: the Kimi role (Kimi K3, or its configured "
+                "<p class=\"muted\">Fixed roles over their own APIs: the Kimi role (Kimi K3.1 Pro, or its configured "
                 "fallback model) plans, judges and reviews; the Nemotron role (Nemotron-3-Ultra or its fallback) "
                 "writes the design; the code engine implements; tests run in a real browser and Node; the gate "
                 "decides from measured results."

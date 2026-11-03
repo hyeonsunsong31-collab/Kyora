@@ -9,3 +9,8 @@ tests/.tmp/
 .pytest_cache/
 # release zips ARE committed (dist/*.zip); intermediate pyz is rebuilt
 build/kyora.pyz
+# keys that must not reach the (public) repository: Settings writes keys here; build_release --local-keys
+# puts it into a private ZIP only
+config/keys.local.json
+keys.local.json
+dist/private/

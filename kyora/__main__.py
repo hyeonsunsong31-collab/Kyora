@@ -149,7 +149,7 @@ def cmd_bench(args) -> int:
     if args.dry_run:
         return 0
     if not args.yes:
-        answer = input("This runs the full pipeline per task and spends NVIDIA tokens and Claude usage. Continue? [y/N] ")
+        answer = input("This runs the full pipeline per task and spends NVIDIA and OpenRouter tokens and Claude usage. Continue? [y/N] ")
         if answer.strip().lower() not in ("y", "yes"):
             print("aborted")
             return 1

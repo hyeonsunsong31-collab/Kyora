@@ -38,7 +38,7 @@ Tokkio is **not** a UI generator and is not part of the code path. Game UI is pr
 pipeline: the Nemotron role (Nemotron-3-Ultra or its fallback) writes the UI spec, tokens and copy; the
 code engine (Claude Code by default, or the Anthropic API, a Kyora Hub or the Kyora agent engine)
 implements real HTML5/Canvas/WebGL; tests and the measured quality gate (default 94 %,
-`quality.min_pass_rate`) decide whether it is complete; the Kimi role (Kimi K3 or its fallback) reviews
+`quality.min_pass_rate`) decide whether it is complete; the Kimi role (Kimi K3.1 Pro or its fallback) reviews
 failed gates and judges the writes and shell commands the local rules do not settle. When no Tokkio is deployed, the Presenter
 panel shows **"Tokkio not deployed"** and every other feature works.
 

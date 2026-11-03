@@ -1,4 +1,4 @@
-"""Instant judgement of every code-engine tool call: rules -> cache -> Kimi-K3.
+"""Instant judgement of every code-engine tool call: rules -> cache -> the Kimi role.
 
 The Claude Code PreToolUse hook (``kyora/runners/kyora_hook.py``) POSTs each
 matched tool call to ``POST /api/judge`` (loopback only); the route handler
@@ -12,12 +12,12 @@ Decision order (documented in ``docs/architecture.md``):
    workspace-internal writes to plan/standard paths, deny path escapes, writes
    to ``.git/``/``.claude/``, destructive or privilege-escalating shell
    commands, network installs when the plan forbids external dependencies,
-   and any reach for Kyora's own secrets (its config directory, ``keys.json``,
+   and any reach for Kyora's own secrets (its config directory, ``keys.json``, ``keys.local.json``,
    ``settings.json``, ``hub.token`` outside the workspace, ``KYORA_HOME``,
    ``/proc/*/environ``);
 2. a per-run verdict cache keyed by ``(tool_name, normalized-input hash)`` for
    verdicts that came from Kimi;
-3. Kimi-K3 (``kimi.judge(ctx, call, run_id)``) when configured.
+3. The Kimi role (``kimi.judge(ctx, call, run_id)``; Kimi K3.1 Pro or its fallback) when configured.
 
 When Kimi is missing or fails the service **fails open** with
 ``{"decision": "allow", "source": "unavailable"}`` and publishes
@@ -63,7 +63,8 @@ DEFAULT_WRITE_PREFIXES = ("src/", "assets/", "tests/", ".kyora/")
 DEFAULT_WRITE_FILES = ("index.html",)
 DEFAULT_WRITE_FILE_PREFIXES = ("README",)
 PROTECTED_PREFIXES = (".git/", ".claude/")
-SECRET_FILE_NAMES = ("keys.json", "settings.json", "hub.token")  # Kyora's own; denied outside the workspace
+# Kyora's own (keys.local.json holds the private keys, e.g. the OpenRouter key); denied outside the workspace
+SECRET_FILE_NAMES = ("keys.json", "keys.local.json", "settings.json", "hub.token")
 SEARCH_TOOLS = frozenset({"Grep", "Glob", "LS"})  # start a recursive search at their path
 MAX_GLOB_CHECK = 500
 CACHE_MAX = 512
