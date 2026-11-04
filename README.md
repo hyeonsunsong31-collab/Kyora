@@ -560,6 +560,12 @@ python3 scripts/ps1_lint.py                        # PowerShell launcher lint (n
 python3 scripts/nvidia_diagnose.py --all-models    # live: what each configured NVIDIA key can call (never prints keys)
 ```
 
+Run the unit tests in a git checkout of this repository. In an unpacked release folder about ten of them
+fail because the release leaves out files they read (`.gitattributes`, the test fixtures' `.kyora/`
+folders, the release builder's inputs). Either way the tests never use your own keys: they drop
+`OPENROUTER_API_KEY`, `NVIDIA_API_KEY` and `ANTHROPIC_API_KEY` from their environment and never copy
+`keys.local.json`.
+
 `.github/workflows/verify.yml` runs the unit tests on Windows, macOS and Linux, the PowerShell
 launchers, Android Termux and 32-bit Alpine (the iSH userland), the browser e2e tests, the release
 build, the live NVIDIA API, the live pipeline without Claude and the Tokkio overlay in the real

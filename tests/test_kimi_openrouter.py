@@ -335,8 +335,11 @@ class KeyStorageTests(unittest.TestCase):
         self.assertTrue(nv.nemotron.api_key.startswith("nvapi-"))
         self.assertEqual(nv.alt_keys("kimi"), [], "the NVIDIA key never goes to OpenRouter")
         # a checkout or an unpacked private release may hold the user's keys.local.json: git must ignore it
-        ignored = [ln.strip() for ln in (REPO / ".gitignore").read_text(encoding="utf-8").splitlines()]
-        self.assertTrue({"keys.local.json", "config/keys.local.json"} & set(ignored), ".gitignore keeps it out")
+        # (a release folder ships no .gitignore and is no git checkout)
+        gitignore = REPO / ".gitignore"
+        if gitignore.is_file():
+            ignored = {ln.strip() for ln in gitignore.read_text(encoding="utf-8").splitlines()}
+            self.assertTrue({"keys.local.json", "config/keys.local.json"} & ignored, ".gitignore keeps it out")
 
     def test_provider_routing_is_turned_off_with_null_and_kept_with_an_empty_object(self):
         # README: "provider": null lets OpenRouter choose; {} merges with the default and keeps the pin
