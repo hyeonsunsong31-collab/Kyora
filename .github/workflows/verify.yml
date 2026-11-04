@@ -204,7 +204,9 @@ jobs:
 
   e2e-release:
     name: browser e2e, release build, vendored Tokkio
-    runs-on: ubuntu-latest
+    # ubuntu-latest became Ubuntu 26.04 (2026-11), on which Playwright 1.56.1 refuses to install Chromium
+    # ("Playwright does not support chromium on ubuntu26.04-x64"); the Playwright jobs stay on 24.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -257,7 +259,7 @@ jobs:
 
   live-pipeline-no-claude:
     name: live pipeline without Claude (${{ matrix.id }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # Playwright 1.56.1 has no Chromium for Ubuntu 26.04 (see e2e-release)
     timeout-minutes: 100
     # one live pipeline per branch at a time: every push of a series used to start its own, and all of them shared
     # one free-tier key (HTTP 429 for minutes, 2026-10-23); a new push cancels the older live run

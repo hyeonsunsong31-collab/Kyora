@@ -15,6 +15,7 @@ from kyora.config import Config
 from kyora.projects.deck import HONESTY_TEXT
 from kyora.projects.routes import preview_content_type
 from kyora.server import KyoraServer, Router
+from tests import copy_config  # never the developer's keys.local.json
 
 REPO = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -66,7 +67,7 @@ class ProjectRoutesTests(unittest.TestCase):
         base = Path(cls.tmp.name)
         cls.home = base / "home"
         cls.config_dir = base / "config"
-        shutil.copytree(REPO / "config", cls.config_dir)
+        copy_config(REPO / "config", cls.config_dir)
         cls._old_env = {k: os.environ.get(k) for k in ("KYORA_HOME", "KYORA_CONFIG_DIR")}
         os.environ["KYORA_HOME"] = str(cls.home)
         os.environ["KYORA_CONFIG_DIR"] = str(cls.config_dir)

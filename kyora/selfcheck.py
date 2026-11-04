@@ -447,10 +447,11 @@ class SelfCheck:
         from .models.nim_client import MODEL_GONE_STATUSES, explain_http_failure, url_host
         fb_client = fallback_client or client
         own_down = fallback_client is not None and not getattr(client, "api_key", "")
-        if own_down:  # no key for the role's own endpoint: nothing is sent there
-            res = {"reachable": True, "chat_ok": False, "status": 401, "latency_ms": None, "model_listed": None,
-                   "error": f"no API key for {url_host(getattr(client, 'base_url', ''))} is configured "
-                            "(config/keys.local.json, Settings or OPENROUTER_API_KEY)"}
+        if own_down:  # no key for the role's own endpoint: nothing is sent there (no HTTP status either)
+            res = {"reachable": None, "sent": False, "chat_ok": False, "status": None, "latency_ms": None,
+                   "model_listed": None,
+                   "error": f"no API key for {url_host(getattr(client, 'base_url', ''))} is configured, so nothing "
+                            "was sent there (config/keys.local.json, Settings or OPENROUTER_API_KEY)"}
         else:
             res = client.probe(model, timeout_s=self.model_timeout_s)
         notes = client.pop_key_notes() if callable(getattr(client, "pop_key_notes", None)) else []
@@ -493,6 +494,9 @@ class SelfCheck:
             key_note = (f"the {own_key} was refused{code}; the {key_label} answered "
                         f"(nvidia.share_keys) - {explain_http_failure(refused.get('status') if refused else 403, '', model)}")
             measured["key_fallback"] = True
+        if not res.get("chat_ok") and own_down:  # no key here, and no fallback model answered at its endpoint
+            return ("fail", f"{model}: {err}; no fallback model answered at "
+                            f"{url_host(getattr(fb_client, 'base_url', ''))}", measured, res)
         if not res.get("chat_ok"):
             head = f"reachable, but the 1-token chat to {model} failed" + (f" (HTTP {status_code})" if status_code else "")
             detail = f"{head}: {_excerpt(err, 300)}"

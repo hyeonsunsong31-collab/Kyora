@@ -27,6 +27,7 @@ from kyora import server as server_mod
 from kyora.config import Config
 from kyora.server import (KyoraServer, Response, Router, is_json_type, parse_host, read_resource,
                           safe_resource_rel)
+from tests import copy_config  # never the developer's keys.local.json
 
 REPO = Path(__file__).resolve().parent.parent
 GAME_OK = Path(__file__).resolve().parent / "fixtures" / "game-ok"
@@ -77,7 +78,7 @@ class AppServerCase(unittest.TestCase):
         base = Path(cls.tmp.name)
         cls.home = base / "home"
         cls.config_dir = base / "config"
-        shutil.copytree(REPO / "config", cls.config_dir)
+        copy_config(REPO / "config", cls.config_dir)
         cls._old_env = {k: os.environ.get(k) for k in ("KYORA_HOME", "KYORA_CONFIG_DIR")}
         os.environ["KYORA_HOME"] = str(cls.home)
         os.environ["KYORA_CONFIG_DIR"] = str(cls.config_dir)
@@ -608,7 +609,7 @@ class ExclusiveBindTests(unittest.TestCase):
     def test_serve_on_a_busy_port_exits_clearly_before_starting_the_app(self):
         with tempfile.TemporaryDirectory(prefix="kyora-busy-") as d:
             config_dir = Path(d) / "config"
-            shutil.copytree(REPO / "config", config_dir)
+            copy_config(REPO / "config", config_dir)
             blocker = socket.socket()
             self.addCleanup(blocker.close)
             blocker.bind(("127.0.0.1", 0))

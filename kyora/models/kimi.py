@@ -1042,10 +1042,11 @@ class Kimi:
                 own_endpoint = self._two_endpoints() and client is self.client
                 if own_endpoint and not getattr(client, "api_key", ""):
                     host = url_host(getattr(client, "base_url", "")) or "the role's endpoint"
+                    # nothing is sent, so there is no HTTP status: the reason says what is missing
                     raise NIMEndpointDown(
-                        f"no API key for {host} is configured (config/keys.local.json, Settings or "
-                        f"{'OPENROUTER_API_KEY' if getattr(client, 'openrouter', False) else 'the role key'})",
-                        status=401, cooldown_s=ENDPOINT_RETRY_S["key"])
+                        f"no API key for {host} is configured, so nothing was sent there (config/keys.local.json, "
+                        f"Settings or {'OPENROUTER_API_KEY' if getattr(client, 'openrouter', False) else 'the role key'})",
+                        cooldown_s=ENDPOINT_RETRY_S["key"])
                 msgs = conv.messages()
                 images = had_images = count_images(msgs)
                 if images and not accepts_images(model):

@@ -23,6 +23,7 @@ from kyora.models.nemotron import Nemotron
 from kyora.models.nim_client import ModelChain, NIMClient, NIMError, NIMTimeout, NIMUnreachable, explain_http_failure
 from kyora.pipeline.events import EventBus
 from tests.mock_nim import MockNIM
+from tests import copy_config  # never the developer's keys.local.json
 
 REPO = Path(__file__).resolve().parent.parent
 GOOD, BAD = "nvapi-good-key", "nvapi-refused-key"
@@ -238,7 +239,7 @@ class AppWiringTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="kyora-fallback-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.cfg_dir = self.tmp / "config"
-        shutil.copytree(REPO / "config", self.cfg_dir)
+        copy_config(REPO / "config", self.cfg_dir)
         keys = json.loads((self.cfg_dir / "keys.json").read_text(encoding="utf-8"))
         keys["nvidia"]["base_url"] = self.api.mock.url
         keys["nvidia"]["nemotron"]["api_key"] = BAD   # refused, like the Nemotron slot's old key
@@ -305,7 +306,7 @@ class ShippedConfigTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="kyora-shipped-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
         cfg = self.tmp / "config"
-        shutil.copytree(REPO / "config", cfg)
+        copy_config(REPO / "config", cfg)
         keys = json.loads((cfg / "keys.json").read_text(encoding="utf-8"))
         self.assertEqual(keys["nvidia"]["kimi"]["base_url"], "https://openrouter.ai/api/v1")
         self.assertEqual(keys["nvidia"]["kimi"]["api_key"], "", "the OpenRouter key is never committed")
@@ -335,6 +336,19 @@ class ShippedConfigTests(unittest.TestCase):
         self.assertIn(f"answered by the fallback model {ULTRA} at 127.0.0.1", kimi["detail"])
         self.assertEqual(kimi["measured"]["fallback_endpoint"].split(":")[0], "127.0.0.1")
         self.assertTrue(kimi["measured"]["chat_ok"])
+        self.assertIsNone(kimi["measured"]["status"], "nothing was sent to OpenRouter")
+
+    def test_self_check_fails_plainly_when_no_model_can_answer(self):
+        from kyora.selfcheck import SelfCheck
+        self.app.config.apply_patch({"keys": {"nvidia": {"nemotron": {"api_key": BAD}}}})  # NVIDIA refuses it
+        self.app.apply_model_settings()
+        items = {it["id"]: it for it in SelfCheck(self.app).run(probe_models=True)["items"]}
+        kimi = items["kimi"]
+        self.assertEqual(kimi["status"], "fail", kimi)
+        self.assertIn("no API key for openrouter.ai is configured, so nothing was sent there", kimi["detail"])
+        self.assertIn("no fallback model answered at 127.0.0.1", kimi["detail"])
+        for wrong in ("HTTP 401", "reachable"):  # no request went to OpenRouter
+            self.assertNotIn(wrong, kimi["detail"])
 
 
 if __name__ == "__main__":

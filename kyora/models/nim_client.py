@@ -1495,10 +1495,12 @@ def call_with_model_fallback(chain: ModelChain, bus, call: Callable[[str], Any],
                     raise
             else:
                 raise
-            what = (f"HTTP {exc.status}" if exc.status is not None else
-                    "nothing in time" if isinstance(exc, NIMTimeout) else
-                    "an endpoint failure" if isinstance(exc, NIMEndpointDown) else "a temporary error")
-            log.warning("%s: %s answered %s%s; falling back to %s", role, model, what,
+            if isinstance(exc, NIMEndpointDown):  # e.g. no key: nothing was asked, so nothing "answered"
+                what = f"cannot be served there ({_excerpt(str(exc), 200)})"
+            else:
+                what = "answered " + (f"HTTP {exc.status}" if exc.status is not None else
+                                      "nothing in time" if isinstance(exc, NIMTimeout) else "a temporary error")
+            log.warning("%s: %s %s%s; falling back to %s", role, model, what,
                         f" (busy for {wait_s:.0f}s)" if temporary else "", candidates[i + 1])
             if bus is not None:
                 data = {"kind": "model", "role": role, "requested": chain.requested, "from_model": model,

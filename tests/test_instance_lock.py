@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from kyora.util.instance_lock import InstanceLock
+from tests import copy_config  # never the developer's keys.local.json
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -56,7 +57,7 @@ class InstanceLockTests(unittest.TestCase):
         d = _tempdir(self, "kyora-lock-cli-")
         if True:
             config_dir = Path(d) / "config"
-            shutil.copytree(REPO / "config", config_dir)
+            copy_config(REPO / "config", config_dir)
             home = Path(d) / "home"
             held = InstanceLock(home)
             self.assertTrue(held.acquire())
@@ -85,7 +86,7 @@ class BenchEmbeddedServerTests(unittest.TestCase):
         d = _tempdir(self, "kyora-bench-srv-")
         if True:
             config_dir = Path(d) / "config"
-            shutil.copytree(REPO / "config", config_dir)
+            copy_config(REPO / "config", config_dir)
             settings = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
             settings["server"]["port"] = _busy_port(self)
             settings["server"]["preview_port"] = _busy_port(self)

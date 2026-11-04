@@ -145,7 +145,9 @@ class EndpointFallbackTests(_TwoEndpoints):
         [fb] = self.fallbacks()
         self.assertEqual((fb["from_model"], fb["to_model"], fb["temporary"]), (K31, ULTRA, True))
         self.assertIn("no API key for", fb["reason"])
+        self.assertIn("nothing was sent there", fb["reason"])
         self.assertIn("keys.local.json", fb["reason"])
+        self.assertIsNone(fb["status"], "no request, so no HTTP status (the UI would say 'answered HTTP ...')")
         self.assertEqual(fb["cooldown_s"], ENDPOINT_RETRY_S["key"])
 
     def test_no_credits_moves_to_nvidia_and_openrouter_waits(self):
@@ -332,7 +334,9 @@ class KeyStorageTests(unittest.TestCase):
         self.assertEqual(nv.keys_for(nv.kimi.fallback_base_url), [("nemotron key", nv.nemotron.api_key)])
         self.assertTrue(nv.nemotron.api_key.startswith("nvapi-"))
         self.assertEqual(nv.alt_keys("kimi"), [], "the NVIDIA key never goes to OpenRouter")
-        self.assertFalse((REPO / "config" / "keys.local.json").exists(), "no local key file in the repository tree")
+        # a checkout or an unpacked private release may hold the user's keys.local.json: git must ignore it
+        ignored = [ln.strip() for ln in (REPO / ".gitignore").read_text(encoding="utf-8").splitlines()]
+        self.assertTrue({"keys.local.json", "config/keys.local.json"} & set(ignored), ".gitignore keeps it out")
 
     def test_provider_routing_is_turned_off_with_null_and_kept_with_an_empty_object(self):
         # README: "provider": null lets OpenRouter choose; {} merges with the default and keeps the pin
@@ -433,6 +437,29 @@ class PlanFileTests(unittest.TestCase):
         for t in (text, self._render({"plan": {"model": GLM, "fallback": True}})):
             self.assertNotIn("moonshotai/kimi-k3)", t)
             self.assertNotIn("$planner", t)
+
+
+class HermeticTestTests(unittest.TestCase):
+    """The test suite never picks up the developer's own keys (a checkout or a private release may hold them)."""
+
+    def test_key_variables_are_dropped_and_keys_local_json_is_never_copied(self):
+        import tests
+        for name in tests.KEY_ENV:
+            self.assertNotIn(name, os.environ, name)
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "config"
+            src.mkdir()
+            (src / "keys.json").write_text("{}", encoding="utf-8")
+            (src / "keys.local.json").write_text(json.dumps({"nvidia": {"kimi": {"api_key": OR_KEY}}}),
+                                                 encoding="utf-8")
+            dst = Path(tests.copy_config(src, Path(d) / "copy"))
+            self.assertTrue((dst / "keys.json").is_file())
+            self.assertFalse((dst / "keys.local.json").exists())
+        # every test that copies the repository's config folder goes through copy_config
+        for f in sorted((REPO / "tests").rglob("*.py")):
+            text = f.read_text(encoding="utf-8")
+            if 'copytree(REPO / "config"' in text:
+                self.assertIn('ignore_patterns("keys.local.json")', text, f.name)
 
 
 class ReleaseKeyTests(unittest.TestCase):

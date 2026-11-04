@@ -40,9 +40,22 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 - **CI**: the live model job passes the repository secret `OPENROUTER_API_KEY` to the live check (only
   that job; without the secret the role's NVIDIA fallbacks answer and the report says so);
   `scripts/nvidia_diagnose.py` skips slots whose role runs on another endpoint.
-- **Not measured yet**: this environment cannot reach openrouter.ai, so no live OpenRouter call has been
-  made; the tests use a mock that speaks OpenRouter's request and streaming format. The first live call
-  is self-check on the user's device, or the CI job once the secret is set.
+- **Measured live on CI without the OpenRouter secret** (commit 932403b): Kyora sent nothing to OpenRouter,
+  self-check said "no API key for openrouter.ai is configured ... The role is answered by the fallback model
+  nvidia/nemotron-3-ultra-550b-a55b at integrate.api.nvidia.com", and intake, plan, judge (with
+  `requested_model: moonshotai/kimi-k3.1-pro`, `judge_model: nvidia/nemotron-3-ultra-550b-a55b`) and review
+  all answered. No live OpenRouter call has been measured yet: this environment cannot reach openrouter.ai
+  and the repository has no `OPENROUTER_API_KEY` secret; the tests use a mock that speaks OpenRouter's
+  request and streaming format.
+- **No key means no request, and no "HTTP 401"**: the log, the `model.fallback` event (no `status`) and
+  self-check now say that nothing was sent; self-check fails plainly ("no fallback model answered at ...")
+  when no fallback answers either, instead of "reachable, but ... (HTTP 401)".
+- **The tests never use the developer's own keys**: importing the `tests` package drops `OPENROUTER_API_KEY`,
+  `NVIDIA_API_KEY` and `ANTHROPIC_API_KEY` from the test process, and tests copy a config folder without
+  `keys.local.json` (`tests.copy_config`; the UI smoke driver too). Before, running the suite from a checkout
+  or an unpacked private release that holds the OpenRouter key would have sent it to OpenRouter.
+- **CI**: the two Playwright jobs run on `ubuntu-24.04`: `ubuntu-latest` became Ubuntu 26.04, for which
+  Playwright 1.56.1 has no Chromium.
 
 ### Fixed - 2026-10-24: Safari on iPhone/iPad reaches Kyora running in iSH
 

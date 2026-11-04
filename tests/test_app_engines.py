@@ -21,6 +21,7 @@ from kyora.config import Config
 from kyora.server import KyoraServer, Router
 from kyora.util import envsafe
 from tests.mock_nim import MockNIM, tool_response
+from tests import copy_config  # never the developer's keys.local.json
 
 REPO = Path(__file__).resolve().parents[1]
 GOOD = "nvapi-agent-good-key-0123456789"
@@ -55,7 +56,7 @@ class _AppBase(unittest.TestCase):
             os.environ.pop(k, None)
         os.environ["KYORA_HOME"] = str(self.tmp / "home")
         self.cfg_dir = self.tmp / "config"
-        shutil.copytree(REPO / "config", self.cfg_dir)
+        copy_config(REPO / "config", self.cfg_dir)
         os.environ["KYORA_CONFIG_DIR"] = str(self.cfg_dir)
         keys = json.loads((self.cfg_dir / "keys.json").read_text(encoding="utf-8"))
         keys["nvidia"]["base_url"] = self.mock.url

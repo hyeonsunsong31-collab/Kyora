@@ -134,7 +134,10 @@ def main(argv: list[str] | None = None) -> int:
     tmp = Path(tempfile.mkdtemp(prefix="kyora-ui-smoke-"))
     cfg_dir = tmp / "config"
     home = tmp / "home"
-    shutil.copytree(REPO / "config", cfg_dir)
+    # never the developer's private keys: no keys.local.json, no key variables (see tests/__init__.py)
+    shutil.copytree(REPO / "config", cfg_dir, ignore=shutil.ignore_patterns("keys.local.json"))
+    for name in ("OPENROUTER_API_KEY", "NVIDIA_API_KEY", "ANTHROPIC_API_KEY"):
+        os.environ.pop(name, None)
     home.mkdir(parents=True, exist_ok=True)
     os.environ["KYORA_HOME"] = str(home)
     os.environ["KYORA_CONFIG_DIR"] = str(cfg_dir)
