@@ -1,11 +1,18 @@
 #!/bin/sh
 # Start Kyora in iSH on iOS.
 #
-# Usage:  sh launchers/kyora-ish.sh [serve | selfcheck | bench | version] [args...]
+# Usage:  sh launchers/kyora-ish.sh [serve | service ... | selfcheck | bench | version] [args...]
 #
 #   (no command)  serve: start the local server; when it prints "Open:", open that address
 #                 (http://127.0.0.1:8765) in Safari
+#   service install   keep Kyora running in the background: it survives closing the terminal
+#                 session, restarts when it stops, and starts again whenever iSH opens
+#                 (service status | logs | stop | start | restart | uninstall)
 #   other args    passed to Kyora unchanged, e.g.  sh launchers/kyora-ish.sh serve --port 9000
+#
+# What no program can do: run while iOS has terminated the iSH app (swiped away, phone restarted,
+# memory pressure) - iOS stops every process inside iSH then. The service starts again the next
+# time iSH opens.
 #
 # iOS pauses iSH a few seconds after Safari comes to the front, and a paused iSH cannot answer
 # Safari. Kyora therefore keeps iSH running in the background on its own: it holds iSH's location
@@ -18,7 +25,9 @@
 set -eu
 
 usage() {
-    echo "Usage: sh launchers/kyora-ish.sh [serve | selfcheck | bench | version] [args...]"
+    echo "Usage: sh launchers/kyora-ish.sh [serve | service ... | selfcheck | bench | version] [args...]"
+    echo "  service install   run in the background, also after this terminal is closed, and start"
+    echo "                    again whenever iSH opens (status | logs | stop | start | restart | uninstall)"
 }
 
 KYORA_HOME="${KYORA_HOME:-$HOME/.kyora}"
@@ -30,7 +39,7 @@ root=$(dirname "$script_dir")
 cmd=serve
 if [ $# -gt 0 ]; then
     case "$1" in
-        serve|selfcheck|bench|version) cmd=$1; shift ;;
+        serve|service|selfcheck|bench|version) cmd=$1; shift ;;
         hub|--hub)
             echo "iSH cannot run Claude Code, so it cannot be a Hub. Run the Hub on your PC and link this phone." >&2
             exit 2 ;;

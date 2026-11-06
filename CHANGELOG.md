@@ -4,6 +4,30 @@ All notable changes to Kyora. Versions follow [Semantic Versioning](https://semv
 
 ## Unreleased
 
+### Added - 2026-11-06: Kyora keeps running after the terminal is closed (background service)
+
+- **`kyora service install`** (`kyora.ps1 service install` on Windows, `sh launchers/kyora-ish.sh service
+  install` on iSH) starts Kyora under a supervisor that no terminal owns and sets it up to start again by
+  itself. The supervisor (`kyora service run`) starts `kyora serve` (or `hub`) and starts it again
+  whenever it exits, after 1 s up to 60 s (reset after five minutes of uptime), and writes its output to
+  `KYORA_HOME/logs/service.log` (2 MB, three older files).
+- **Windows**: the supervisor runs as `pythonw.exe` without a console; the server without a window. The
+  Task Scheduler task "Kyora" starts it at every logon (no time limit, also on battery, restarted if it
+  fails); where Task Scheduler is refused, the per-user Run key does (`--method runkey`).
+- **iSH / POSIX**: the supervisor runs in its own session and ignores SIGHUP; a marked `~/.profile` block
+  starts it when a login shell starts, which iSH runs whenever the app opens.
+- `service status | logs | stop | start | restart | uninstall`. A stop asks the server through a stop
+  file (it shuts down cleanly, exit code 0) and ends it by force after 20 s. `stop` never touches a
+  `kyora serve` started in a terminal. An autostart keeps the config folder `install` chose (it runs
+  from another working directory).
+- `kyora serve` says that it runs only while its terminal stays open and how to install the service;
+  "Another Kyora is already running" names `kyora service stop`.
+- Stated limits: nothing runs while the computer is off, asleep or logged off, or while iOS has
+  terminated the iSH app; the service starts again at the next logon or the next time iSH opens.
+- Tests: the supervisor's restart and stop logic, the real server detached (its own session, SIGHUP,
+  killed and started again, stopped cleanly), the stop file, the Task Scheduler XML, the profile block.
+  CI registers the task and the Run key on Windows and runs the iSH flow on 32-bit Alpine.
+
 ### Changed - 2026-11-03: the Kimi role runs Kimi K3.1 Pro through OpenRouter
 
 - **The Kimi role (intake, plan, judge, review) asks `moonshotai/kimi-k3.1-pro` at

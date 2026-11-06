@@ -1,4 +1,4 @@
-"""Kyora command line: ``serve``, ``hub``, ``selfcheck``, ``bench``, ``version``."""
+"""Kyora command line: ``serve``, ``hub``, ``service``, ``selfcheck``, ``bench``, ``version``."""
 from __future__ import annotations
 
 import argparse
@@ -33,9 +33,29 @@ def _claim_home(app):
         return lock
     pid = lock.holder_pid()
     print(f"Another Kyora is already running with this home ({app.home}{', pid ' + pid if pid else ''}).\n"
-          "Stop it first, or start this one with a different --home.", file=sys.stderr)
+          "Stop it first (if it is the background service: kyora service stop), or start this one with a "
+          "different --home.", file=sys.stderr)
     app.stop()
     return None
+
+
+def _watch_stop_file(server, path: str) -> None:
+    """Under the background service: shut the server down cleanly once the service's stop file appears."""
+    started = time.time()
+
+    def loop() -> None:
+        stop_file = Path(path)
+        while True:
+            try:
+                if stop_file.stat().st_mtime >= started - 1.0:
+                    print("Stopping (kyora service stop) ...", flush=True)
+                    server.shutdown()
+                    return
+            except OSError:
+                pass
+            time.sleep(1.0)
+
+    threading.Thread(target=loop, name="kyora-service-stop", daemon=True).start()
 
 
 def cmd_serve(args, hub_mode: bool = False) -> int:
@@ -82,6 +102,12 @@ def cmd_serve(args, hub_mode: bool = False) -> int:
     if app.missing:
         print("Unavailable components: " + ", ".join(f"{k} ({v})" for k, v in app.missing.items()))
     keeper = _ish_background(server.url) if on_ish else None
+    from .service import ENV_SERVICE, ENV_STOP_FILE
+    if os.environ.get(ENV_STOP_FILE):
+        _watch_stop_file(server, os.environ[ENV_STOP_FILE])
+    if not os.environ.get(ENV_SERVICE):
+        print("Kyora runs while this terminal stays open. To keep it running after you close the terminal, "
+              "and start it again by itself, run: kyora service install", flush=True)
     if getattr(args, "open", False):
         threading.Timer(0.8, lambda: webbrowser.open(server.url)).start()
     try:
@@ -114,6 +140,115 @@ def _ish_background(url: str):
         timer.daemon = True
         timer.start()
     return keeper
+
+
+def _service_home(args) -> Path:
+    from .util.fs import kyora_home
+    return Path(args.home).expanduser().resolve() if getattr(args, "home", None) else kyora_home()
+
+
+def _print_status(st: dict) -> None:
+    if not st["running"]:
+        print(f"Kyora service: not running (home {st['home']}).")
+    else:
+        server = f"server pid {st['server_pid']}" if st.get("server_pid") else "server starting or restarting"
+        print(f"Kyora service: running since {st.get('since') or '?'} (supervisor pid {st['supervisor_pid']}, "
+              f"{server}, restarts {st.get('restarts', 0)}).")
+        print(f"  {st['url'] or '(address not known yet)'} - "
+              + ("answering" if st["answering"] else "not answering yet (iSH: the first start takes a while)"))
+    inst = st.get("installed") or {}
+    if inst:
+        how = {"task": "Task Scheduler task 'Kyora' at logon", "runkey": "the Run key at logon",
+               "profile": f"login shells ({inst.get('target')})"}.get(inst.get("method"), inst.get("method"))
+        print(f"  starts by itself: {how}")
+    else:
+        print("  starts by itself: no (kyora service install sets that up)")
+    if st.get("last_exit") is not None:
+        print(f"  last server exit code: {st['last_exit']}")
+    print(f"  log: {st['log']}")
+
+
+def cmd_service(args) -> int:
+    from . import service
+    home = _service_home(args)
+    act = args.action
+    if act == "run":
+        return service.Supervisor(home).run()
+    if act in ("install", "start", "restart"):
+        serve_args: list[str] | None = None
+        if any(v is not None for v in (args.host, args.port, args.preview_port)):
+            serve_args = []
+            for flag, value in (("--host", args.host), ("--port", args.port), ("--preview-port", args.preview_port)):
+                if value is not None:
+                    serve_args += [flag, str(value)]
+        from .config import Config
+        spec_before = service._read_json(service.Paths(home).spec)
+        # The config folder is chosen by install (or an explicit --config), never by an autostart: that runs
+        # from another working directory (a login shell, Task Scheduler) and could resolve another folder.
+        if args.config:
+            config_dir = Path(args.config).expanduser().resolve()
+        elif act == "install" or not spec_before.get("config"):
+            config_dir = Config.resolve_dir(None).resolve()
+        else:
+            config_dir = None
+        spec = service.write_spec(home, args.mode, serve_args, config_dir)
+        if act == "install":
+            try:
+                info = service.install(home, method=args.method)
+            except RuntimeError as exc:
+                print(f"Could not set up the autostart: {exc}", file=sys.stderr)
+                return 1
+            for note in info.get("notes") or []:
+                print(f"Note: {note}; using the Run key instead.")
+            if not args.quiet:
+                print({"task": "Kyora now starts at every logon (Task Scheduler task 'Kyora', restarted if it fails).",
+                       "runkey": "Kyora now starts at every logon (Run key).",
+                       "profile": f"Kyora now starts whenever a login shell starts ({info.get('target')}); "
+                                  "on iSH that is whenever the iSH app opens."}[info["method"]])
+        def what(sp: dict) -> tuple:
+            return sp.get("mode"), sp.get("args"), sp.get("config")
+        changed = bool(spec_before) and what(spec_before) != what(spec)
+        if act == "restart" or (changed and service.supervisor_running(home)[0]):
+            service.stop(home)  # a running service picks up a new mode, port or config folder
+        try:
+            st = service.start(home, wait_s=args.wait if args.wait is not None else 90.0)
+        except RuntimeError as exc:
+            print(f"Could not start the Kyora service: {exc}", file=sys.stderr)
+            return 1
+        if not args.quiet:
+            _print_status(st)
+            print(f"  started: {st.get('started_by')}")
+            print("It keeps running after you close this terminal. Stop it: kyora service stop; "
+                  "remove the autostart: kyora service uninstall.")
+        if args.open and st.get("url") and st.get("answering"):
+            webbrowser.open(st["url"])
+        return 0 if st["running"] else 1
+    if act == "stop":
+        res = service.stop(home)
+        if not args.quiet:
+            print("Kyora service stopped." + (" (ended by force)" if res.get("forced") else "")
+                  if res.get("stopped") else "Kyora service was not running.")
+            if service._read_json(service.Paths(home).install):
+                print("It starts again at the next logon / login shell; kyora service uninstall removes that.")
+        return 0
+    if act == "uninstall":
+        res = service.uninstall(home)
+        if not args.quiet:
+            print("Kyora service " + ("stopped" if res["stopped"] else "was not running")
+                  + "; removed: " + (", ".join(res["removed"]) or "nothing to remove"))
+        return 0
+    if act == "status":
+        st = service.status(home)
+        if args.json:
+            print(json.dumps(st, indent=2))
+        else:
+            _print_status(st)
+        return 0 if st["running"] else 3
+    if act == "logs":
+        text = service.tail(home, args.lines)
+        print(text or f"(no service log yet: {service.Paths(home).log})")
+        return 0
+    return 2
 
 
 def cmd_selfcheck(args) -> int:
@@ -204,6 +339,25 @@ def main(argv=None) -> int:
                        help="port of the game preview listener (default: settings server.preview_port, else port + 1)")
     p_hub.add_argument("--open", action="store_true")
 
+    p_svc = sub.add_parser("service", help="keep Kyora running in the background: it survives closing the "
+                                           "terminal, restarts when it stops, and starts at logon / when iSH opens")
+    p_svc.add_argument("action", choices=["install", "start", "stop", "restart", "status", "logs", "uninstall", "run"],
+                       help="install: autostart + start now; start/stop/restart: now only; status; logs; "
+                            "uninstall: stop + remove the autostart; run: the supervisor itself (used by the others)")
+    p_svc.add_argument("mode", nargs="?", choices=["serve", "hub"], default=None,
+                       help="what the service runs (default: as before, else serve)")
+    common(p_svc)
+    p_svc.add_argument("--host")
+    p_svc.add_argument("--port", type=int)
+    p_svc.add_argument("--preview-port", type=int)
+    p_svc.add_argument("--method", choices=["auto", "task", "runkey"], default="auto",
+                       help="Windows autostart: Task Scheduler (task), the Run key (runkey), or task then runkey (auto)")
+    p_svc.add_argument("--open", action="store_true", help="open the UI in a browser once it answers")
+    p_svc.add_argument("--wait", type=float, default=None, help="seconds to wait until the server answers (default 90)")
+    p_svc.add_argument("--quiet", action="store_true")
+    p_svc.add_argument("--json", action="store_true", help="status as JSON")
+    p_svc.add_argument("--lines", type=int, default=60, help="logs: how many lines")
+
     p_check = sub.add_parser("selfcheck", help="check models, engines, tools and Tokkio reachability")
     common(p_check)
     p_check.add_argument("--json", action="store_true")
@@ -231,6 +385,8 @@ def main(argv=None) -> int:
         return cmd_serve(args, hub_mode=args.hub)
     if args.cmd == "hub":
         return cmd_serve(args, hub_mode=True)
+    if args.cmd == "service":
+        return cmd_service(args)
     if args.cmd == "selfcheck":
         return cmd_selfcheck(args)
     if args.cmd == "bench":

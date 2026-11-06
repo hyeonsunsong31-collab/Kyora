@@ -199,6 +199,11 @@ defences in depth, not a sandbox: model-written code still runs as your user.
   the NVIDIA endpoint is reachable, or through a Kyora Hub; with neither, the run is BLOCKED. iSH
   emulates an x86 CPU in software, so everything, including a local BUILD, is slow. Browser tests run
   in Safari through the harness.
+* **Running "forever"** (`kyora service install`): Kyora survives a closed terminal, restarts its server
+  when it stops, and starts again by itself at logon (Windows) or when iSH opens. Nothing runs while
+  the computer is off, asleep or logged off, or after iOS terminated the iSH app (swiped away, phone
+  restarted, memory reclaimed): iOS stops every process inside iSH then. Self-check says whether the
+  service runs and starts by itself.
 
 Details: [`platforms.md`](platforms.md). Hub protocol: [`hub-mode.md`](hub-mode.md). Agent engine:
 [`agent-engine.md`](agent-engine.md).

@@ -88,6 +88,32 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\kyora.ps1 serve 
 * To reach the PC from a phone, allow Python through Windows Defender Firewall on private networks
   when Windows asks (first `kyora hub`).
 
+### Keep Kyora running on Windows (background service)
+
+`kyora.ps1 serve` stops when its PowerShell window is closed. To keep Kyora running:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\kyora.ps1 service install        # or: service install hub
+```
+
+* It starts Kyora now, opens the UI, and registers the Task Scheduler task **Kyora**: it starts at every
+  logon of your account, has no time limit (`ExecutionTimeLimit` PT0S), keeps running on battery, and is
+  restarted by Task Scheduler if it fails. If your PC's policy refuses the task, Kyora uses the per-user
+  Run key (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `Kyora`) instead and says so;
+  `--method runkey` chooses it directly. Both run Kyora with your own account and rights; the Run key
+  needs no administrator rights, and where creating the task would need them, the Run key is used.
+* What runs is a supervisor, `pythonw.exe kyora.pyz service run`: no console window, so closing any
+  PowerShell window does not end it. It starts `kyora serve` (without a window) and starts it again
+  whenever it exits, after 1 s up to 60 s; a run that lasted five minutes resets the pause. Its output
+  goes to `%USERPROFILE%\.kyora\logs\service.log` (2 MB, three older files kept).
+* `kyora.ps1 service status` (pid, address, answering, restarts), `service logs`, `service stop` (until
+  the next logon), `service start`, `service restart` (after a change of port, mode or config folder),
+  `service uninstall` (stops it and removes the task or Run key).
+* Limits: nothing runs while the PC is off, asleep or hibernating, or after you log off (Windows ends
+  your processes then); Kyora starts again at the next logon. The config folder is the one `install`
+  found (the `config\` folder next to `kyora.pyz`, with your `keys.local.json`); keys you only set as
+  environment variables in a PowerShell window are not seen by the service - put them in Settings.
+
 ## Android (Termux)
 
 Install Termux (the Termux project publishes it on F-Droid and GitHub), then:
@@ -178,6 +204,29 @@ macOS, whose networking iOS shares, runs that test too).
 * Browser acceptance tests run in Safari through Kyora's harness page, which the UI opens for you.
 * If Alpine's `python3` is older than 3.10, point `/etc/apk/repositories` at a newer Alpine release
   and run `apk update && apk upgrade`; `install-ish.sh` checks the version.
+
+### Keep Kyora running on iSH (background service)
+
+```sh
+sh launchers/kyora-ish.sh service install
+```
+
+* Kyora starts in the background and keeps running after you close the terminal session (`exit`, a
+  closed iPad window): the supervisor runs in a session of its own and ignores SIGHUP. It starts the
+  server again whenever it exits. iOS still pauses iSH while another app is in front unless the
+  location stream keeps it running (above) - the service starts the same server, so that applies as is.
+* `install` also adds a marked block to `~/.profile`, so a new login shell starts the service if it is
+  not running - iSH runs a login shell every time the app opens. `service status`, `service logs`,
+  `service stop`, `service start`, `service restart` and `service uninstall` (removes the block) work as
+  on Windows; the log is `~/.kyora/logs/service.log`.
+* What no program can do: run while iOS has terminated the iSH app - you swiped it away, the phone
+  restarted, or iOS reclaimed its memory. iOS stops every process inside iSH then, Kyora included.
+  The next time you open iSH, the `~/.profile` block starts Kyora again (allow about a minute: Python
+  starts slowly under the emulation); the projects, slides and runs on disk are kept, and an
+  interrupted run can be resumed.
+* The CI job runs this on 32-bit Alpine: `service install` from a shell that then exits, SIGHUP to the
+  supervisor, a killed server started again, `service stop`, a new login shell starting it again, and
+  `service uninstall`. The real iOS app lifecycle cannot run on CI.
 
 ## Linux / macOS (from source)
 

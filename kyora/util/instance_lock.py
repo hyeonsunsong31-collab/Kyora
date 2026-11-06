@@ -26,9 +26,13 @@ _BUSY_ERRNOS = {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, getattr(errno, "E
 
 
 class InstanceLock:
-    def __init__(self, home: Path | str):
+    """An advisory lock file in ``home`` plus a pid file naming its holder (default ``kyora.lock`` /
+    ``kyora.pid``; the background service's supervisor uses its own pair, see :mod:`kyora.service`)."""
+
+    def __init__(self, home: Path | str, lock_name: str = LOCK_NAME, pid_name: str = PID_NAME):
         self.home = Path(home)
-        self.path = self.home / LOCK_NAME
+        self.path = self.home / lock_name
+        self.pid_path = self.home / pid_name
         self._fh = None
         self.supported = True
 
@@ -56,15 +60,29 @@ class InstanceLock:
             self.supported = False
         self._fh = fh
         try:
-            (self.home / PID_NAME).write_text(f"{os.getpid()}\n", encoding="ascii")
+            self.pid_path.write_text(f"{os.getpid()}\n", encoding="ascii")
         except OSError as exc:
-            log.debug("cannot write %s: %s", PID_NAME, exc)
+            log.debug("cannot write %s: %s", self.pid_path.name, exc)
         return True
+
+    def is_held(self) -> bool | None:
+        """Whether another process holds this lock now (``None``: locking does not work on this platform)."""
+        probe = InstanceLock(self.home, self.path.name, self.pid_path.name)
+        probe.pid_path = self.home / (self.pid_path.name + ".probe")  # never overwrite the holder's pid
+        if not probe.acquire():
+            return True
+        supported = probe.supported
+        probe.release()
+        try:
+            probe.pid_path.unlink()
+        except OSError:
+            pass
+        return False if supported else None
 
     def holder_pid(self) -> str:
         """The pid recorded by the instance that holds the lock ('' when unknown)."""
         try:
-            return (self.home / PID_NAME).read_text(encoding="ascii").strip()
+            return self.pid_path.read_text(encoding="ascii").strip()
         except OSError:
             return ""
 
@@ -90,4 +108,4 @@ class InstanceLock:
             fh.close()
 
 
-__all__ = ["InstanceLock", "LOCK_NAME"]
+__all__ = ["InstanceLock", "LOCK_NAME", "PID_NAME"]

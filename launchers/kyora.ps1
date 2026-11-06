@@ -3,11 +3,16 @@
     Start Kyora on Windows.
 
 .DESCRIPTION
-    Usage:  kyora.ps1 [serve|hub|selfcheck|bench|version] [args...]
+    Usage:  kyora.ps1 [serve|hub|service|selfcheck|bench|version] [args...]
 
       serve       run the local Kyora server and open the UI in your browser (default command;
-                  add --no-open to skip the browser)
+                  add --no-open to skip the browser). It stops when this window is closed.
       hub         serve and expose the code engine to phones/tablets on your LAN (prints link + QR)
+      service     keep Kyora running in the background, also after this window is closed:
+                    service install     start it now and at every logon (Task Scheduler task
+                                        "Kyora"; restarted if it stops; opens the browser)
+                    service status | logs | stop | start | restart | uninstall
+                  "service install hub" runs the Hub in the background instead.
       selfcheck   check Nemotron, Kimi K3.1 Pro, Claude Code, Node, Git and Tokkio reachability
       bench       Kyora Bench (real pipeline runs; costs NVIDIA and OpenRouter tokens and Claude usage)
       version     print the Kyora version
@@ -29,13 +34,15 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$Commands = @('serve', 'hub', 'selfcheck', 'bench', 'version')
+$Commands = @('serve', 'hub', 'service', 'selfcheck', 'bench', 'version')
 $MinPython = [version]'3.10'
 
 function Show-Usage {
-    Write-Host 'Usage: kyora.ps1 [serve|hub|selfcheck|bench|version] [args...]'
-    Write-Host '  serve      local server + UI (opens the browser; --no-open to skip)'
+    Write-Host 'Usage: kyora.ps1 [serve|hub|service|selfcheck|bench|version] [args...]'
+    Write-Host '  serve      local server + UI (opens the browser; --no-open to skip); stops with this window'
     Write-Host '  hub        serve + expose the code engine on the LAN (link + QR for phones)'
+    Write-Host '  service    install: run in the background from now on and at every logon, also after'
+    Write-Host '             this window is closed; status | logs | stop | start | restart | uninstall'
     Write-Host '  selfcheck  check models, engines, tools and Tokkio'
     Write-Host '  bench      Kyora Bench (real runs; costs tokens)'
     Write-Host '  version    print the version'
@@ -97,6 +104,16 @@ if ($command -eq 'serve') {
         $rest = @($rest | Where-Object { $_ -ne '--no-open' })
     } elseif ($rest -notcontains '--open') {
         $rest = @('--open') + $rest
+    }
+}
+if ($command -eq 'service') {
+    # service install|start|restart open the UI once Kyora answers, unless --no-open
+    $action = ''
+    if ($rest.Count -gt 0) { $action = [string]$rest[0] }
+    if ($rest -contains '--no-open') {
+        $rest = @($rest | Where-Object { $_ -ne '--no-open' })
+    } elseif (@('install', 'start', 'restart') -contains $action -and $rest -notcontains '--open') {
+        $rest = $rest + @('--open')
     }
 }
 

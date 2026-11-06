@@ -129,7 +129,11 @@ class LauncherContentTests(unittest.TestCase):
         t = self.read("kyora.ps1")
         for needle in ("Set-StrictMode -Version Latest", "kyora.pyz", "Split-Path -Parent $PSScriptRoot",
                        "'-m', 'kyora'", "$env:KYORA_HOME", "'--open'", "exit $code",
-                       "'serve', 'hub', 'selfcheck', 'bench', 'version'"):
+                       "'serve', 'hub', 'service', 'selfcheck', 'bench', 'version'"):
+            self.assertIn(needle, t)
+        # the background service: install/start/restart open the UI once it answers, --no-open is Kyora-free
+        for needle in ("if ($command -eq 'service')", "@('install', 'start', 'restart') -contains $action",
+                       "service install", "also after this window is closed"):
             self.assertIn(needle, t)
 
     def test_termux_requirements(self):
@@ -152,6 +156,9 @@ class LauncherContentTests(unittest.TestCase):
         self.assertIn("KYORA_ISH_BACKGROUND=0", run)
         self.assertIn("port=8765", run)
         self.assertIn('exec python3 "$@"', run)
+        self.assertIn("serve|service|selfcheck|bench|version) cmd=$1", run)
+        self.assertIn("service install", run)
+        self.assertIn("iOS has terminated the iSH app", run, "the launcher states what no program can do")
 
     def test_no_secrets_echoed(self):
         for f in SH_FILES + PS1_FILES:

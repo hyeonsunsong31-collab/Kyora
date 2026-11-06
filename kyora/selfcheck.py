@@ -58,6 +58,7 @@ LABELS: dict[str, str] = {
     "nemotron": "NVIDIA Nemotron-3-Ultra", "kimi": "Kimi K3.1 Pro (Moonshot AI, via OpenRouter)", "anthropic_api": "Anthropic Messages API (optional)",
     "agent_engine": AGENT_LABEL, "engine_selected": "Selected code engine", "hub": "Kyora Hub", "tokkio_ui": "Tokkio UI",
     "tokkio_configurator": "Tokkio ACE Configurator", "disk": "Disk space", "lan": "LAN",
+    "service": "Background service",
 }
 ORDER = tuple(LABELS)
 
@@ -186,6 +187,7 @@ class SelfCheck:
             _Probe(("hub",), self._p_hub, 45.0),
             _Probe(("tokkio_ui", "tokkio_configurator"), self._p_tokkio, 20.0),
             _Probe(("disk",), self._p_disk, 10.0),
+            _Probe(("service",), self._p_service, 10.0),
             _Probe(("lan",), self._p_lan, 10.0),
         ]
 
@@ -351,6 +353,30 @@ class SelfCheck:
         if usage.free >= MIN_FREE_BYTES:
             return item("disk", "ok", detail, measured)
         return item("disk", "warn", detail + " (less than 2 GB: builds, slides and screenshots may not fit)", measured)
+
+    def _p_service(self) -> dict:
+        """Whether Kyora runs as the background service and starts by itself (kyora service install)."""
+        from . import service
+        home = Path(getattr(self.app, "home", None) or ".")
+        st = service.status(home, probe=False)
+        inst = (st.get("installed") or {}).get("method")
+        how = {"task": "at logon (Task Scheduler task 'Kyora')", "runkey": "at logon (Run key)",
+               "profile": "when a login shell starts (on iSH: when the app opens)"}.get(inst or "", "")
+        measured = {"running": st["running"], "supervisor_pid": st["supervisor_pid"], "autostart": inst,
+                    "restarts": st.get("restarts", 0), "log": st["log"]}
+        if st["running"] and how:
+            return item("service", "ok", f"running in the background (supervisor pid {st['supervisor_pid']}, "
+                                         f"restarts {st.get('restarts', 0)}); starts by itself {how}", measured)
+        if st["running"]:
+            return item("service", "warn", "running in the background, but it does not start by itself after a "
+                                           "restart, logoff or (iSH) the app being closed: kyora service install",
+                        measured)
+        if how:
+            return item("service", "warn", f"installed (starts by itself {how}) but not running now: "
+                                           "kyora service start", measured)
+        return item("service", "warn", "not installed: Kyora stops when the terminal that started it closes. "
+                                       "kyora service install keeps it running and starts it again by itself",
+                    measured)
 
     def _p_lan(self) -> dict:
         addrs = lan_addresses()

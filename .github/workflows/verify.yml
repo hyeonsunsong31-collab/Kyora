@@ -98,6 +98,55 @@ jobs:
           "second Kyora on the same home exit code: $second"
           taskkill /PID $p.Id /T /F | Out-Null
           if ($second -ne 2 -or -not (Select-String -Path second.err -Pattern "Another Kyora is already running" -Quiet)) { throw "a second Kyora on the same KYORA_HOME was not refused" }
+      - name: Windows PowerShell 5.1 - service install (Task Scheduler task at logon); this window then closes
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $env:KYORA_HOME = Join-Path $env:RUNNER_TEMP "kyora-home-service"
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\kyora.ps1 service install --port 18795 --no-open
+          if ($LASTEXITCODE -ne 0) { throw "service install failed: $LASTEXITCODE" }
+          $xml = schtasks /Query /TN Kyora /XML | Out-String
+          foreach ($want in '<LogonTrigger>', '<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>', '<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>', '<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>', '<RestartOnFailure>', 'service run --home') {
+            if ($xml -notlike "*$want*") { throw "the Kyora task lacks $want" }
+          }
+          "Task Scheduler task Kyora is registered (logon trigger, no time limit, battery allowed, restart on failure)"
+      - name: service - answers after the window that started it closed; its server is started again after a kill
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $env:KYORA_HOME = Join-Path $env:RUNNER_TEMP "kyora-home-service"
+          $s = Invoke-RestMethod http://127.0.0.1:18795/api/status
+          "answering after the starting PowerShell exited: platform=$($s.platform.kind)"
+          $st = python -m kyora service status --json | ConvertFrom-Json
+          "supervisor pid $($st.supervisor_pid), server pid $($st.server_pid)"
+          Stop-Process -Id $st.server_pid -Force
+          $ok = $false
+          foreach ($i in 1..120) {
+            Start-Sleep 1
+            try { $st2 = python -m kyora service status --json | ConvertFrom-Json; if ($st2.answering -and $st2.restarts -ge 1) { $ok = $true; break } } catch {}
+          }
+          if (-not $ok) { python -m kyora service logs; throw "the server was not started again" }
+          "started again: server pid $($st2.server_pid), restarts $($st2.restarts), same supervisor: $($st2.supervisor_pid -eq $st.supervisor_pid)"
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\kyora.ps1 service uninstall
+          schtasks /Query /TN Kyora 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) { throw "the Kyora task is still registered after uninstall" }
+          $still = $true; try { Invoke-RestMethod http://127.0.0.1:18795/api/status | Out-Null } catch { $still = $false }
+          if ($still) { throw "Kyora still answers after uninstall" }
+          "uninstalled: task removed, Kyora stopped"
+      - name: service with the Run key (for PCs whose policy refuses Task Scheduler)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $env:KYORA_HOME = Join-Path $env:RUNNER_TEMP "kyora-home-runkey"
+          python -m kyora service install --method runkey --port 18796
+          if ($LASTEXITCODE -ne 0) { throw "service install --method runkey failed: $LASTEXITCODE" }
+          $v = (Get-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name Kyora).Kyora
+          "Run key: $v"
+          if ($v -notlike "*pythonw*service run --home*") { throw "unexpected Run key value" }
+          Invoke-RestMethod http://127.0.0.1:18796/api/status | Out-Null
+          python -m kyora service uninstall
+          if (Get-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name Kyora -ErrorAction SilentlyContinue) { throw "the Run key value is still there" }
+          "Run key autostart added, answered, removed"
       - name: install.ps1 -SkipClaude (winget path)
         shell: powershell
         continue-on-error: true
@@ -199,6 +248,37 @@ jobs:
             grep -q "Kyora 0.1.0 - ish" serve.log
             grep -q "iSH: in Safari, open http://127.0.0.1:8765" serve.log
             grep -q "Kyora keeps iSH running while Safari is in front" serve.log
+            # the background service as on the phone: it outlives the shell that started it, starts its server
+            # again after a kill, and comes back with the next login shell (iSH runs one when the app opens)
+            ( while :; do echo "+0.000000,+0.000000"; sleep 1; done > /dev/location ) &
+            feeder=$!
+            export KYORA_HOME=/tmp/kyora-service
+            sh -c "sh launchers/kyora-ish.sh service install --port 18766 --wait 300"
+            grep -q ">>> kyora service >>>" "$HOME/.profile"
+            sup=$(cat "$KYORA_HOME/service/supervisor.pid")
+            if [ "$(cut -d" " -f6 /proc/$sup/stat)" = "$(cut -d" " -f6 /proc/$$/stat)" ]; then echo "supervisor in this shell session"; exit 1; fi
+            kill -HUP "$sup"; sleep 1; kill -0 "$sup"
+            echo "supervisor $sup: own session, survived SIGHUP"
+            wget -q -O /dev/null http://127.0.0.1:18766/api/status
+            server=$(python3 -c "import json; print(json.load(open(\"$KYORA_HOME/service/state.json\"))[\"child_pid\"])")
+            kill -9 "$server"
+            i=0
+            until python3 -m kyora service status --json | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if d[\"answering\"] and d[\"restarts\"] >= 1 else 1)"; do
+              i=$((i + 1)); if [ "$i" -ge 180 ]; then python3 -m kyora service logs; exit 1; fi; sleep 1
+            done
+            echo "server killed and started again"
+            sh launchers/kyora-ish.sh service stop
+            if wget -q -O /dev/null http://127.0.0.1:18766/api/status 2>/dev/null; then echo "still answering after stop"; exit 1; fi
+            (cd / && sh -l -c true)
+            i=0
+            until wget -q -O /dev/null http://127.0.0.1:18766/api/status 2>/dev/null; do
+              i=$((i + 1)); if [ "$i" -ge 300 ]; then python3 -m kyora service logs; exit 1; fi; sleep 1
+            done
+            echo "a new login shell started the service again"
+            sh launchers/kyora-ish.sh service status
+            sh launchers/kyora-ish.sh service uninstall
+            if grep -q "kyora service" "$HOME/.profile"; then echo "profile block left behind"; exit 1; fi
+            kill "$feeder" 2>/dev/null || true
             exit "$rc"
           '
 

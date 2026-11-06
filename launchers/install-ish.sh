@@ -48,6 +48,9 @@ Notes for iSH (iOS):
     for iSH - choose "Allow While Using App" (Kyora keeps no location; it only holds iSH's location
     stream open). Open http://127.0.0.1:8765 in Safari once Kyora prints "Open:".
   * Browser tests run in Safari through Kyora's test harness page; the UI opens it for you.
+  * To keep Kyora running after you close the terminal, and start it again whenever iSH opens:
+    sh launchers/kyora-ish.sh service install. iOS stops everything inside iSH when the app itself is
+    terminated (swiped away, phone restarted); the service then starts the next time iSH opens.
 EOF
 echo ""
 echo "Next steps:"

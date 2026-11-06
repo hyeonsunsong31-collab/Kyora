@@ -22,6 +22,7 @@ merged model, it never fakes output, metrics or verdicts, and when a piece is mi
 - [Architecture](#architecture)
 - [Quick start](#quick-start)
 - [First run](#first-run)
+- [Keep Kyora running (background service)](#keep-kyora-running-background-service)
 - [Without a Claude subscription](#without-a-claude-subscription)
 - [Kimi K3.1 Pro on OpenRouter](#kimi-k31-pro-on-openrouter)
 - [NVIDIA status (measured 2026-10-18)](#nvidia-status-measured-2026-10-18)
@@ -154,6 +155,30 @@ in a source checkout).
 7. **Open deck** - each project has an auto-generated HTML presentation (concept, design tokens,
    screenshots, test and gate results, changelog, attribution; print it to PDF from the browser).
    It is written into the game as `kyora/deck.html`, so slide ZIPs carry it.
+
+## Keep Kyora running (background service)
+
+`serve` runs while its terminal stays open. To start Kyora once and keep it running - also after you
+close PowerShell or the iSH terminal - install it as a background service:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\launchers\kyora.ps1 service install   # Windows
+```
+```sh
+sh launchers/kyora-ish.sh service install                                                    # iSH
+```
+
+* A supervisor that no terminal owns runs `kyora serve` and starts it again whenever it exits (a
+  crash, an error, a killed process), after 1 s up to 60 s. Output: `~/.kyora/logs/service.log`.
+* It starts by itself again: on Windows at every logon (Task Scheduler task "Kyora": no time limit,
+  also on battery, restarted if it fails; the per-user Run key where Task Scheduler is refused); on
+  iSH whenever the app opens (a marked block in `~/.profile`).
+* `service status`, `service logs`, `service stop`, `service start`, `service restart`,
+  `service uninstall`; `service install hub` keeps a Hub running instead.
+* **What no software can do**: run while the PC is off, asleep or logged off, or while iOS has
+  terminated the iSH app (swiped away, phone restarted, memory reclaimed) - iOS stops every process in
+  iSH then. Kyora starts again at the next logon or the next time iSH opens; projects and runs on disk
+  are kept. Details: [`docs/platforms.md`](docs/platforms.md).
 
 ## Without a Claude subscription
 
@@ -527,6 +552,8 @@ decides who counts as "the same machine" carefully.
 | Preview stays blank on another device | Games come from the preview port (8766 by default, `preview_port` in `/api/status`). Let it through the firewall too, or set `server.preview_port`. |
 | `403 host not allowed: <name>` | Kyora was reached by a name it does not know as its own (DNS rebinding protection). Use the IP address or `localhost`, or add the name to `server.allowed_hosts` in `settings.json` and restart. |
 | `Kyora cannot listen on ...` at start | Another Kyora (or another program) already uses the port or the preview port. Stop it, or start with `--port N --preview-port M`. |
+| `Another Kyora is already running with this home` | The background service (or another terminal) runs Kyora with this home already: open its address, or `kyora service stop` first. `kyora service status` shows what runs. |
+| Kyora stopped after closing the window / iSH | `serve` runs only while its terminal is open: use `service install`. On iSH, iOS stops everything when the app is terminated; the service starts again the next time iSH opens (about a minute). `kyora service logs` shows why a server exited. |
 | PowerShell refuses to run the scripts | Start them with `powershell -NoProfile -ExecutionPolicy Bypass -File ...` as shown, or `Unblock-File .\launchers\*.ps1`. |
 
 ## Licences and attribution
